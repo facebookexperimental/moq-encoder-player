@@ -246,7 +246,8 @@ Note: Encoder and Player clock have to be in sync for this metric to be accurate
 
 ## Testing
 
-- Follow the installation instructions of [moq-encoder-player](https://github.com/facebookexperimental/moq-encoder-player).
+- Follow the installation instructions of [moq-go-server](https://github.com/facebookexperimental/moq-go-server).
+
 - Clone this repo
 
 ```bash
@@ -270,10 +271,10 @@ Note: You need to use this script to **run the player** because it adds some nee
 
 ENJOY YOUR POCing!!! :-)
 
-![Encoder UI](./pics/encoder-ui.png)
+![Encoder UI](./pics/encoder-page-ui.png)
 Fig6: Encoder UI
 
-![Player UI](./pics/player-ui.png)
+![Player UI](./pics/player-page-ui.png)
 Fig7: Player UI
 
 ## TODO
