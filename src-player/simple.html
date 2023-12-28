@@ -1,0 +1,168 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <style>
+        .boxed {
+            border: 1px solid black;
+        }
+
+        .styleform label {
+            float: left;
+            margin: 5px 10px 5px 10px;
+        }
+
+        .styleform input {
+            margin: 5px 10px 5px 10px;
+        }
+
+        /* this gives space for the label on the left */
+        .styleform .clear {
+            clear: both;
+        }
+
+        /* prevent elements from stacking weirdly */
+    </style>
+    <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
+</head>
+
+<body>
+    <h1>Simple MOQ subscriber</h1>
+    <div class="boxed">
+        <div class="styleform">
+            <form>
+                <h2>Data needed</h2>
+                <label id="wtDestData">MOQ WT Relay:<input id="wtServerUrl" type="text"
+                        value="moq://localhost:4433/moq" size="64"></label>
+                <div class="clear"></div>
+                <label>Namespace:<input id="namespace" type="text" value="simplechat"></label>
+                <div class="clear"></div>
+                <label>Track name:<input id="trackName" type="text" value="foo"></label>
+                <div class="clear"></div>
+                <label>AuthInfo (must match with publisher):<input id="authInfo" type="text" value="secret"></label>
+                <div class="clear"></div>
+                <button id="btnStart" type="button">Start</button>
+                <button id="btnStop" type="button" disabled>Stop</button>
+            </form>
+        </div>
+    </div>
+    <div class="boxed">
+        <ol id="receivedMessages"></ol>
+    </div>
+</body>
+<script type="module">
+    // Main vars
+    const VERBOSE = true;
+
+    const downloaderConfig = {      
+        urlHostPort: '',
+        urlPath: '',
+
+        isSendingStats: false,
+
+        moqTracks: {
+            "data": {
+                id: undefined, // Needs to be set in subscription OK message
+                namespace: "simplechat",
+                name: "foo",
+                maxInFlightRequests: 5,
+                isHipri: false,
+                authInfo: "secret"
+            }
+        },
+    }
+
+    // Current workers
+    let muxerDownloaderWorker = null;
+
+    // Read & parse QS data
+    const queryString = window.location.search;
+    console.log("Read querystring: " + queryString);
+    const qsParams = new URLSearchParams(queryString);
+    
+    function initUI() {
+        const qsHost = qsParams.get('host')
+        if (qsHost != undefined) {
+            document.getElementById("wtServerUrl").value = qsHost;
+        }
+    }
+
+    async function start() {
+        document.getElementById("btnStart").disabled = true;
+        document.getElementById("btnStop").disabled = false;
+
+        createWorkers();
+
+        muxerDownloaderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        
+        // Ini downloaderConfig
+        // Get url data
+        downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+        downloaderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;
+        downloaderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
+        downloaderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
+
+        muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig });
+    }
+
+    async function stop() {
+        document.getElementById("btnStart").disabled = false
+        document.getElementById("btnStop").disabled = true
+
+        const stopMsg = { type: "stop" };
+        muxerDownloaderWorker.postMessage(stopMsg);
+    }
+
+    function createWorkers() {
+        // Create a worker to download chunk
+        muxerDownloaderWorker = new Worker("./moq_demuxer_downloader.js", {type: "module"});
+    }
+
+    function addReceivedMessage(str) {
+        const list = document.getElementById('receivedMessages');
+
+        const finalStr = new Date().toISOString() + ": " + str;
+
+        const entry = document.createElement('li');
+        entry.appendChild(document.createTextNode(finalStr));
+        list.appendChild(entry);
+    }
+
+    function processWorkerMessage(e) {
+        // LOGGING
+        if ((e.data.type === "debug") && (VERBOSE === true)) {
+            // logging debug
+            console.debug(e.data.data);
+        } else if (e.data.type === "info") {
+            // logging info
+            console.log(e.data.data);
+        } else if (e.data.type === "error") {
+            // logging error
+            console.error(e.data.data);
+        } else if (e.data.type === "warning") {
+            // logging warn
+            console.warn(e.data.data);
+
+            // data
+        } else if (e.data.type === "data") {
+            addReceivedMessage(e.data.chunk)
+
+            // UNKNOWN
+        } else {
+            console.warn("unknown message: " + JSON.stringify(e.data));
+        }
+    }
+
+    // Add listeners from HTML
+    window.addEventListener("load", (event) => {initUI();});
+    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+</script>

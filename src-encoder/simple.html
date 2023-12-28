@@ -1,0 +1,195 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <style>
+        .boxed {
+            border: 1px solid black;
+        }
+
+        .styleform label {
+            float: left;
+            margin: 5px 10px 5px 10px;
+        }
+
+        .styleform input {
+            margin: 5px 10px 5px 10px;
+        }
+
+        /* this gives space for the label on the left */
+        .styleform .clear {
+            clear: both;
+        }
+
+        /* prevent elements from stacking weirdly */
+    </style>
+    <title>Simple MOQ publisher (by Jordi Cenzano)</title>
+</head>
+
+<body>
+    <h1>Simple MOQ publisher</h1>
+    <div class="boxed">
+        <div class="styleform">
+            <form>
+                <h2>Data needed</h2>
+                <div class="clear"></div>
+                <label id="wtDestData">MOQT WT Relay:<input id="wtServerUrl" type="text"
+                        value="moq://localhost:4433/moq" size="64"></label>
+                <div class="clear"></div>
+                <label>Namespace:<input id="namespace" type="text" value="simplechat"></label>
+                <div class="clear"></div>
+                <label>Track name:<input id="trackName" type="text" value="foo"></label>
+                <div class="clear"></div>
+                <label>AuthInfo (shared with subscribers):<input id="authInfo" type="text" value="secret"></label>
+                <div class="clear"></div>
+                <label>Max inflight requests:<input id="maxInflightRequests" type="text" value="5"></label>
+                <div class="clear"></div>
+                <button id="btnStart" type="button">Start</button>
+                <button id="btnStop" type="button" disabled>Stop</button>
+            </form>
+        </div>
+    </div>
+    <div class="boxed">
+        <div class="styleform">
+            <form>
+                <h2>Object data</h2>
+                <div class="clear"></div>
+                <label id="objPayloadLb">ObjPayload:<input id="objPayload" type="text" value="Hello MOQ!" size="32"></label>
+                <div class="clear"></div>
+                <button id="btnSend" type="button" disabled>Send object</button>
+            </form>
+        </div>
+    </div>
+</body>
+<script type="module">
+    // Main vars
+    const VERBOSE = true;
+    
+    let msgSeqId = 0;
+
+    let muxerSenderWorker = null;
+
+    const muxerSenderConfig = {
+        urlHostPort: '',
+        urlPath: '',
+
+        isSendingStats: false,
+
+        moqTracks: {
+            "data": {
+                id: 0,
+                namespace: "simplechat",
+                name: "foo",
+                maxInFlightRequests: 5,
+                isHipri: false,
+                authInfo: "secret"
+            }
+        },
+    }
+
+    // Read & parse QS data
+    const queryString = window.location.search;
+    console.log("Read querystring: " + queryString);
+    const qsParams = new URLSearchParams(queryString);
+
+    function numToStrWithPad(d, length) {
+        let r = d.toString();
+        while (r.length < length) {
+            r = "0" + r;
+        }
+        return r;
+    }
+
+    function createWorkers() {
+        // Create send worker
+        muxerSenderWorker = new Worker("./moq_sender.js", { type: "module" } );
+    }
+
+    function initUI() {
+        initHostUI();
+    }
+
+    function initHostUI() {
+        const qsHost = qsParams.get('host')
+        if (qsHost != undefined) {
+            document.getElementById("wtServerUrl").value = qsHost;
+        }
+    }
+
+    function stop() {
+        document.getElementById("btnStart").disabled = false
+        document.getElementById("btnStop").disabled = true
+        document.getElementById("btnSend").disabled = true
+        
+        const stopMsg = { type: "stop" };
+        
+        muxerSenderWorker.postMessage(stopMsg);
+
+        msgSeqId = 0
+    }
+
+    function processWorkerMessage(e) {
+        // LOGGING
+        if ((e.data.type === "debug") && (VERBOSE === true)) {
+            // logging debug
+            console.debug(e.data.data);
+        } else if (e.data.type === "info") {
+            // logging info
+            console.log(e.data.data);
+        } else if (e.data.type === "error") {
+            // logging error
+            console.error(e.data.data);
+        } else if (e.data.type === "warning") {
+            // logging warning
+            console.warn(e.data.data);
+
+            // DROPPED
+        } else if (e.data.type === "dropped") { // DROPPED
+            console.warn("Dropped frame" + JSON.stringify(e.data));
+            
+            // OTHER
+        } else {
+            console.info("msg " + JSON.stringify(e.data));
+        }
+    }
+
+    function start() {
+        document.getElementById("btnStart").disabled = true
+        document.getElementById("btnStop").disabled = false
+        document.getElementById("btnSend").disabled = false
+
+        createWorkers();
+
+        muxerSenderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+
+        // Transport
+        // Get url data
+        muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+        muxerSenderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;
+        muxerSenderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
+        muxerSenderConfig.moqTracks["data"].maxInFlightRequests = Number(document.getElementById('maxInflightRequests').value);
+        muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
+        
+        // Initialize muxer - sender
+        muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
+    }
+
+    function send() {
+        const data = document.getElementById('objPayload').value;
+        muxerSenderWorker.postMessage({ type: "data", chunk: data, seqId: msgSeqId++});
+    }
+
+    // Add listeners from HTML
+    window.addEventListener("load", (event) => {initUI();});
+    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+    document.getElementById('btnSend').addEventListener("click", (event) => {send();});
+</script>
