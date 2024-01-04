@@ -266,7 +266,7 @@ Note: You need to use this script to **run the player** because it adds some nee
 - Load encoder webpage, url: `http://localhost:8080/src-encoder/`
   - Click "start"
 - Load player webpage, url: `http://localhost:8080/src-player/`
-  - Copy `StreamID` from encoder webpage and paste it into Receiver demuxer - streamID
+  - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
   - Click "start"
 
 ENJOY YOUR POCing!!! :-)
