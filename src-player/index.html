@@ -61,9 +61,9 @@ LICENSE file in the root directory of this source tree.
                 <label>(this + jitter is the max latency allowed)</label>                
                 <div class="clear"></div>
                 <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
-                        value="200"></label>
+                        value="200" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
                 <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
-                        value="100"></label>
+                        value="100" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
                 <div class="clear"></div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -112,6 +112,8 @@ LICENSE file in the root directory of this source tree.
         <div class="styleform">
             <h3>Audio</h3>
             <form>
+                <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
+                <div class="clear"></div>
                 <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
                 <div class="clear"></div>
                 <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
@@ -119,6 +121,8 @@ LICENSE file in the root directory of this source tree.
             </form>
             <h3>Video</h3>
             <form>
+                <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
+                <div class="clear"></div>
                 <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
                 <div class="clear"></div>
                 <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
@@ -330,9 +334,25 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("fullTrackNames").value = `${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-video`;
     }
 
+    async function updateJitterAudio() {
+        const maxSizeMs = Number(document.getElementById('audioJitterBufferMs').value);
+        if (wtAudioJitterBuffer != null) {
+            wtAudioJitterBuffer.UpdateMaxSize(maxSizeMs);
+        }
+    }
+
+    async function updateJitterVideo() {
+        const maxSizeMs = Number(document.getElementById('videoJitterBufferMs').value);
+        if (wtVideoJitterBuffer != null) {
+            wtVideoJitterBuffer.UpdateMaxSize(maxSizeMs);
+        }
+    }
+
     async function start() {
         document.getElementById("btnStart").disabled = true;
         document.getElementById("btnStop").disabled = false;
+        document.getElementById("btnJitterAudioUpdate").disabled = false;
+        document.getElementById("btnJitterVideoUpdate").disabled = false;
 
         playerBufferMs = document.getElementById('playerBufferMs').value;
         playerMaxBufferMs = document.getElementById('playerMaxBufferMs').value;
@@ -379,6 +399,8 @@ LICENSE file in the root directory of this source tree.
 
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
+        document.getElementById("btnJitterAudioUpdate").disabled = true;
+        document.getElementById("btnJitterVideoUpdate").disabled = true;
 
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
@@ -534,15 +556,18 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateJitterStatsUI(mediaType, data) {
+        let elementMaxSize = 'videoJitterCurrentMaxSize'
         let elementNameSize = 'videoJitterSize';
         let elementNameGaps = 'videoJitterGaps';
         if (mediaType === 'audio') {
+            elementMaxSize = 'audioJitterCurrentMaxSize'
             elementNameSize = 'audioJitterSize';
             elementNameGaps = 'audioJitterGaps';
         }
 
         document.getElementById(elementNameSize).value = data.size;
         document.getElementById(elementNameGaps).value = `${data.numTotalGaps} (${data.numTotalLostStreams} streams lost)`;
+        document.getElementById(elementMaxSize).value = `${data.currentMaSizeMs} ms`;
     }
 
     function updateFirstChunkTSUI(mediaType, ts) {
@@ -852,4 +877,6 @@ LICENSE file in the root directory of this source tree.
     window.addEventListener("load", (event) => {initUI();});
     document.getElementById('btnStart').addEventListener("click", (event) => {start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+    document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
+    document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
 </script>
