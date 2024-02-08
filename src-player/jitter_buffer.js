@@ -85,7 +85,7 @@ export class JitterBuffer {
   }
 
   GetStats () {
-    return { numTotalGaps: this.numTotalGaps, numTotalLostStreams: this.numTotalLostStreams, totalLengthMs: this.totalLengthMs, size: this.elementsList.length }
+    return { numTotalGaps: this.numTotalGaps, numTotalLostStreams: this.numTotalLostStreams, totalLengthMs: this.totalLengthMs, size: this.elementsList.length, currentMaSizeMs: this.bufferSizeMs }
   }
 
   Clear () {
@@ -94,5 +94,11 @@ export class JitterBuffer {
     this.numTotalGaps = 0
     this.numTotalLostStreams = 0
     this.lastSeqIdDelivered = undefined
+  }
+
+  UpdateMaxSize(bufferSizeMs) {
+    if (bufferSizeMs > 0) {
+      this.bufferSizeMs = bufferSizeMs;
+    }
   }
 }
