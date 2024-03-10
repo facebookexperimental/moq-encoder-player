@@ -18,6 +18,7 @@ let workerState = StateEnum.Created
 
 let urlHostPortEp = ''
 let isSendingStats = false
+let currentSubscribeId = 0
 let tracks = {}
 // Example
 /* moqTracks: {
@@ -151,10 +152,10 @@ async function moqReceiveObjects (moqt) {
   }
 }
 
-function getTrackTypeFromTrackId (trackId) {
+function getTrackTypeFromTrackAlias (trackAlias) {
   let ret
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    if (trackData.id === trackId) {
+    if (trackData.alias === trackAlias) {
       ret = trackType
       break
     }
@@ -166,11 +167,11 @@ async function moqReceiveProcessObjects (readerStream) {
   const startTime = Date.now()
 
   const moqObj = await moqParseObjectHeader(readerStream)
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT obj: ${moqObj.trackId}/${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT subscribeId: ${moqObj.subscribeId}, trackAlias: ${moqObj.trackAlias}. ${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
 
-  const trackType = getTrackTypeFromTrackId(moqObj.trackId)
+  const trackType = getTrackTypeFromTrackAlias(moqObj.trackAlias)
   if (trackType === undefined) {
-    throw new Error(`Unexpected trackId received ${moqObj.trackId}. Expecting ${JSON.stringify(tracks)}`)
+    throw new Error(`Unexpected trackAlias received ${moqObj.trackAlias}. Expecting ${JSON.stringify(tracks)}`)
   }
 
   if (trackType !== 'data') {
@@ -229,14 +230,13 @@ async function moqCreateSubscriberSession (moqt) {
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    await moqSendSubscribe(moqt.controlWriter, trackData.namespace, trackData.name, trackData.authInfo)
+    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, trackData.alias, trackData.namespace, trackData.name, trackData.authInfo)
     const subscribeResp = await moqParseSubscribeResponse(moqt.controlReader)
     sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-    if (trackData.namespace !== subscribeResp.namespace || trackData.name !== subscribeResp.trackName) {
-      throw new Error(`expecting ${trackData.namespace}/${trackData.name}/, got ${subscribeResp.namespace}/${subscribeResp.trackName}`)
+    if (subscribeResp.subscribeId !== currentSubscribeId) {
+      throw new Error(`expecting subscribeId ${currentSubscribeId}/, got ${subscribeResp.subscribeId}`)
     }
-    // Update trackId
-    trackData.id = subscribeResp.trackId
+    currentSubscribeId++
   }
 }
 
