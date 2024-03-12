@@ -539,24 +539,30 @@ LICENSE file in the root directory of this source tree.
     }
 
     function onVideoSourceChanged(newVideoDeviceId) {
+        // Get selected audio device
         const audioSourceSelectedIndex = document.getElementById('audioSources').selectedIndex;
         let selectedAudioSourceDeviceId = '';
         if (audioSourceSelectedIndex >= 0) {
             selectedAudioSourceDeviceId = document.getElementById('audioSources').options[audioSourceSelectedIndex].value;
         }
+
+        // Get new selected video device
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
 
+        // Restart preview with new selection
         restartPreviewUI(newVideoDeviceId, selectedAudioSourceDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
     }
 
     function onAudioSourceChanged(newAudioDeviceId) {
+        // Get selected video device
         const videoSourceSelectedIndex = document.getElementById('videoSources').selectedIndex;
         let selectedVideoSourceDeviceId = '';
-        if (audioSourceSelectedIndex >= 0) {
+        if (videoSourceSelectedIndex >= 0) {
             selectedVideoSourceDeviceId = document.getElementById('videoSources').options[videoSourceSelectedIndex].value;
-        }
+        }        
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
 
+        // Restart preview with new selection
         restartPreviewUI(selectedVideoSourceDeviceId, newAudioDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
     }
 
