@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqParseSubscribeResponse } from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqParseSubscribeResponse, moqSendUnSubscribe} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -61,6 +61,11 @@ self.addEventListener('message', async function (e) {
 
     // Abort and wait for all inflight requests
     try {
+      const p = await unSubscribeTracks(moqt)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sending ${p.length} unsubscribes`)
+      await Promise.all(p)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent unsubscribes, closing MOQT`)
+
       await moqClose(moqt)
     } catch (err) {
       // Expected to finish some promises with abort error
@@ -258,4 +263,19 @@ function checkTrackData () {
     }
   }
   return ''
+}
+
+async function unSubscribeTracks(moqt) {
+  const ret = []
+  for (const [_, trackData] of Object.entries(tracks)) {
+    if ('subscribeId' in trackData) {
+      const p = await moqSendUnSubscribe(moqt.controlWriter, trackData.subscribeId)
+      ret.push(p)
+      delete trackData.subscribeId
+    }
+    if ('trackAlias' in trackData) {
+      delete trackData.trackAlias
+    }
+  }
+  return ret
 }

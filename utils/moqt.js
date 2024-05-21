@@ -36,16 +36,18 @@ export const MOQ_SUBSCRIPTION_ERROR_GENERIC = 0
 export const MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS = 0x2
 
 // MOQ messages
-const MOQ_MESSAGE_OBJECT = 0x0
-const MOQ_MESSAGE_CLIENT_SETUP = 0x40
-const MOQ_MESSAGE_SERVER_SETUP = 0x41
+export const MOQ_MESSAGE_OBJECT = 0x0
+export const MOQ_MESSAGE_CLIENT_SETUP = 0x40
+export const MOQ_MESSAGE_SERVER_SETUP = 0x41
 
-const MOQ_MESSAGE_SUBSCRIBE = 0x3
-const MOQ_MESSAGE_SUBSCRIBE_OK = 0x4
-const MOQ_MESSAGE_SUBSCRIBE_ERROR = 0x5
+export const MOQ_MESSAGE_SUBSCRIBE = 0x3
+export const MOQ_MESSAGE_SUBSCRIBE_OK = 0x4
+export const MOQ_MESSAGE_SUBSCRIBE_ERROR = 0x5
+export const MOQ_MESSAGE_UNSUBSCRIBE = 0xa
 
-const MOQ_MESSAGE_ANNOUNCE = 0x6
-const MOQ_MESSAGE_ANNOUNCE_OK = 0x7
+export const MOQ_MESSAGE_ANNOUNCE = 0x6
+export const MOQ_MESSAGE_ANNOUNCE_OK = 0x7
+
 // const MOQ_MESSAGE_ANNOUNCE_ERROR = 0x8
 // const MOQ_MESSAGE_UNANNOUNCE = 0x9
 
@@ -210,6 +212,8 @@ function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace,
   return concatBuffer([messageTypeBytes, subscribeIDBytes, trackAliasBytes, trackNamespaceBytes, trackNameBytes, startGroupBytesMode, startGroupBytesValue, startObjectBytesMode, startObjectBytesValue, endGroupBytesMode, endObjectBytesMode, numberOfParamsBytes, authInfoParamIdBytes, authInfoBytes])
 }
 
+// SUBSCRIBE OK
+
 function moqCreateSubscribeResponseMessageBytes (subscribeId, expiresMs) {
   // Message type
   const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_OK)
@@ -221,6 +225,8 @@ function moqCreateSubscribeResponseMessageBytes (subscribeId, expiresMs) {
 
   return concatBuffer([messageTypeBytes, subscribeIdBytes, expiresMsBytes])
 }
+
+// SUBSCRIBE ERROR
 
 function moqCreateSubscribeErrorMessageBytes (subscribeId, errorCode, reason, trackAlias) {
   // Message type
@@ -238,9 +244,26 @@ function moqCreateSubscribeErrorMessageBytes (subscribeId, errorCode, reason, tr
   return concatBuffer([messageTypeBytes, subscribeIdBytes, errorCodeBytes, reasonBytes, trackAliasBytes])
 }
 
+// UNSUBSCRIBE
+
+function moqCreateUnSubscribeMessageBytes (subscribeId) {
+  // Message type
+  const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_UNSUBSCRIBE)
+
+  // Subscribe Id
+  const subscribeIdBytes = numberToVarInt(subscribeId)
+
+  return concatBuffer([messageTypeBytes, subscribeIdBytes])
+}
+
 export async function moqSendSubscribe (writerStream, subscribeId, trackAlias, trackNamespace, trackName, authInfo) {
   return moqSend(writerStream, moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace, trackName, authInfo))
 }
+
+export async function moqSendUnSubscribe (writerStream, subscribeId) {
+  return moqSend(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
+}
+
 
 export async function moqParseSubscribeResponse (readerStream) {
   const ret = { isError: false }
@@ -263,13 +286,24 @@ export async function moqParseSubscribeResponse (readerStream) {
   return ret
 }
 
-export async function moqParseSubscribe (readerStream) {
-  const ret = { subscribeId: -1, trackAlias: -1, namespace: '', trackName: '', startGroup: -1, startObject: -1, endGroup: -1, endObject: -1, parameters: null }
-  const type = await varIntToNumber(readerStream)
-  if (type !== MOQ_MESSAGE_SUBSCRIBE) {
-    throw new Error(`SUBSCRIBE type must be ${MOQ_MESSAGE_SUBSCRIBE}, got ${type}`)
+export async function moqParseMsg (readerStream) {
+  const msgType = await varIntToNumber(readerStream)
+  let data = null
+  // TODO: Add all messages and use this function
+  if (msgType === MOQ_MESSAGE_SUBSCRIBE) {
+    data = await moqParseSubscribe(readerStream)
+  } else if (msgType === MOQ_MESSAGE_UNSUBSCRIBE) {
+    data = await moqParseUnSubscribe(readerStream)
+  } else {
+    throw new Error(`UNKNOWN msg type received, got ${msgType}`)
   }
 
+  return {type: msgType, data: data}
+}
+
+async function moqParseSubscribe (readerStream) {
+  const ret = { subscribeId: -1, trackAlias: -1, namespace: '', trackName: '', startGroup: -1, startObject: -1, endGroup: -1, endObject: -1, parameters: null }
+  
   // SubscribeId
   ret.subscribeId = await varIntToNumber(readerStream)
 
@@ -311,6 +345,15 @@ export async function moqParseSubscribe (readerStream) {
   }
 
   ret.parameters = await mpqReadParameters(readerStream)
+
+  return ret
+}
+
+async function moqParseUnSubscribe (readerStream) {
+  const ret = { subscribeId: -1 }
+  
+  // SubscribeId
+  ret.subscribeId = await varIntToNumber(readerStream)
 
   return ret
 }
