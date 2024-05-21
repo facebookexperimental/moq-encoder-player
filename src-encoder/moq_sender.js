@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqParseSubscribe, moqCreateControlStream, moqSendSubscribeResponse, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse } from '../utils/moqt.js'
+import { moqCreate, moqClose, moqParseSubscribe, moqCreateControlStream, moqSendSubscribeResponse, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -161,27 +161,33 @@ self.addEventListener('message', async function (e) {
     return
   }
 
-  // TODO:JOC keep tracks of subscribeId per track and send objects more than once of I have more than 1 subs
-  // This seems NOT efficient at all!!! For now let's get latest subscriber per track
-  const subscribeId = tracks[type].subscribers[tracks[type].subscribers.length - 1]
+  // Send one object per every subscriber
+  // Relay needs to aggregate subscriptions to avoid overload pub -> relay link
   const firstFrameClkms = (e.data.firstFrameClkms === undefined || e.data.firstFrameClkms < 0) ? 0 : e.data.firstFrameClkms
   const compensatedTs = (e.data.compensatedTs === undefined || e.data.compensatedTs < 0) ? 0 : e.data.compensatedTs
   const estimatedDuration = (e.data.estimatedDuration === undefined || e.data.estimatedDuration < 0) ? e.data.chunk.duration : e.data.estimatedDuration
   const seqId = (e.data.seqId === undefined) ? 0 : e.data.seqId
-
   const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata }
-  sendChunkToTransport(chunkData, subscribeId, inFlightRequests[type], tracks[type].maxInFlightRequests)
+  
+  let i = 0
+  while (i < tracks[type].subscribers.length) {
+    const subscribeId = tracks[type].subscribers[i].subscribeId
+    const trackAlias = tracks[type].subscribers[i].trackAlias
+  
+    sendChunkToTransport(chunkData, subscribeId, trackAlias, inFlightRequests[type], tracks[type].maxInFlightRequests)
     .then(val => {
       if (val !== undefined && val.dropped === true) {
         sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: type, ts: chunkData.timestamp, msg: val.message })
       } else {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `SENT CHUNK ${type} - ${seqId}`)
+        sendMessageToMain(WORKER_PREFIX, 'debug', `SENT CHUNK ${type} - seqId: ${seqId} for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}`)
       }
     })
     .catch(err => {
       sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: chunkData.mediaType, ts: chunkData.timestamp, msg: err.message })
-      sendMessageToMain(WORKER_PREFIX, 'error', 'error sending chunk. Err:  ' + err.message)
+      sendMessageToMain(WORKER_PREFIX, 'error', `error sending chunk. For subscribeId: ${subscribeId}, trackAlias: ${trackAlias}. Err:  ${err.message}`)
     })
+    i++
+  }
 
   // Report stats
   if (isSendingStats) {
@@ -194,36 +200,50 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
 
   while (workerState === StateEnum.Running) {
     const subscribe = await moqParseSubscribe(controlReader)
-    const track = getTrackFromAlias(subscribe.trackAlias)
+    const fullTrackName = getTrackFullName(subscribe.namespace, subscribe.trackName)
+    const track = getTrackFromFullTrackName(fullTrackName)
     if (track == null) {
-      sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe received ${subscribe.trackAlias} is NOT in tracks ${JSON.stringify(tracks)}`)
-    } else {
-      if (track.authInfo !== subscribe.parameters.authInfo) {
-        sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe authInfo ${subscribe.parameters.authInfo} does not match with ${JSON.stringify(tracks)}`)
-      } else {
-        if (!('subscribers' in track)) {
-          track.subscribers = []
-        }
-        track.subscribers.push(subscribe.subscribeId)
-    
-        sendMessageToMain(WORKER_PREFIX, 'info', `New subscriber for track ${subscribe.trackAlias}(${subscribe.namespace}/${subscribe.trackName}). Current num subscriber: ${track.subscribers.length}. AuthInfo MATCHED!`)
-        await moqSendSubscribeResponse(controlWriter, subscribe.subscribeId, 0)
-      }
+      sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe received ${fullTrackName} is NOT in tracks ${JSON.stringify(tracks)}`)
+      continue
     }
+    if (track.authInfo !== subscribe.parameters.authInfo) {
+      sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe authInfo ${subscribe.parameters.authInfo} does not match with ${JSON.stringify(tracks)}`)
+      // TODO: send subs error
+      continue
+    }
+    if (!('subscribers' in track)) {
+      track.subscribers = []
+    }
+    if (getSubscriberTrackFromTrackAlias(track.subscribers, subscribe.trackAlias) != null) {
+      sendMessageToMain(WORKER_PREFIX, 'error', `TrackAlias already in use ${subscribe.trackAlias}`)
+      // TODO: send subs error
+      continue
+    }
+    if (getSubscriberTrackFromSubscribeID(track.subscribers, subscribe.subscribeId) != null) {
+      sendMessageToMain(WORKER_PREFIX, 'error', `SubscribeID already in use ${subscribe.subscribeId}`)
+      // TODO: send subs error
+      continue
+    }
+    // Add subscribe
+    track.subscribers.push(subscribe)
+
+    sendMessageToMain(WORKER_PREFIX, 'info', `New subscriber for track ${subscribe.trackAlias}(${subscribe.namespace}/${subscribe.trackName}). Current num subscriber: ${track.subscribers.length}. AuthInfo MATCHED!`)
+    
+    await moqSendSubscribeResponse(controlWriter, subscribe.subscribeId, 0)
   }
 }
 
-async function sendChunkToTransport (chunkData, subscribeId, inFlightRequests, maxFlightRequests) {
+async function sendChunkToTransport (chunkData, subscribeId, trackAlias, inFlightRequests, maxFlightRequests) {
   if (chunkData == null) {
     return { dropped: true, message: 'chunkData is null' }
   }
   if (Object.keys(inFlightRequests).length >= maxFlightRequests) {
     return { dropped: true, message: 'too many inflight requests' }
   }
-  return createRequest(chunkData, subscribeId)
+  return createRequest(chunkData, subscribeId, trackAlias)
 }
 
-async function createRequest (chunkData, subscribeId) {
+async function createRequest (chunkData, subscribeId, trackAlias) {
   let packet = null
 
   if (chunkData.mediaType === 'data') {
@@ -239,22 +259,16 @@ async function createRequest (chunkData, subscribeId) {
 
     packet.SetData(chunkData.mediaType, chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
   }
-  return createSendPromise(packet, subscribeId)
+  return createSendPromise(packet, subscribeId, trackAlias)
 }
 
-async function createSendPromise (packet, subscribeId) {
+async function createSendPromise (packet, subscribeId, trackAlias) {
   if (moqt.wt === null) {
-    throw new Error(`request not send because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}`)
+    return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
   }
-
-  if (!(packet.GetData().mediaType in tracks)) {
-    throw new Error(`OBJECT mediaType NOT supported (no track found), received ${packet.GetData().mediaType}, tracks: ${JSON.stringify(tracks)}`)
-  }
-  const trackAlias = tracks[packet.GetData().mediaType].alias
-
   if (!(trackAlias in moqPublisherState)) {
     if (packet.GetData().chunkType === 'delta') {
-      return { dropped: true, message: `Dropped chunk because first object can not be delta, data: ${packet.GetDataStr()}` }
+      return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
     }
     moqPublisherState[trackAlias] = createTrackState()
   }
@@ -287,9 +301,8 @@ async function createSendPromise (packet, subscribeId) {
 
   p.finally(() => {
     removeFromInflight(packet.GetData().mediaType, packet.GetData().pId)
+    return { dropped: false, message: `Sent chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}` }
   })
-
-  return p
 }
 
 function addToInflight (mediaType, p) {
@@ -380,10 +393,42 @@ function createTrackState () {
   }
 }
 
-function getTrackFromAlias (trackAlias) {
+function getTrackFromFullTrackName (fullTrackName) {
   for (const [, trackData] of Object.entries(tracks)) {
-    if (trackData.alias === trackAlias) {
+    if (getTrackFullName(trackData.namespace, trackData.name) === fullTrackName) {
       return trackData
+    }
+  }
+  return null
+}
+
+function getSubscriberTrackFromTrackAlias (subscribers, trackAlias) {
+  if (subscribers == undefined || subscribers.length <= 0) {
+    return null
+  }
+  let i = 0
+  while (i < subscribers.length) {
+    for (const [, trackData] of Object.entries(tracks)) {
+      if (subsTrack.trackAlias === trackAlias) {
+        return trackData
+      }
+      i++
+    }
+  }
+  return null
+}
+
+function getSubscriberTrackFromSubscribeID (subscribers, subscribeId) {
+  if (subscribers == undefined || subscribers.length <= 0) {
+    return null
+  }
+  let i = 0
+  while (i < subscribers.length) {
+    for (const [, trackData] of Object.entries(tracks)) {
+      if (subsTrack.subscribeId === subscribeId) {
+        return trackData
+      }
+      i++
     }
   }
   return null

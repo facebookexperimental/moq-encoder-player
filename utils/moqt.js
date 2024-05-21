@@ -327,6 +327,10 @@ export async function moqParseObjectHeader (readerStream) {
   return ret
 }
 
+export function getTrackFullName(namespace, trackName) {
+  return namespace + trackName
+}
+
 // Helpers
 
 function moqCreateStringBytes (str) {

@@ -19,19 +19,20 @@ let workerState = StateEnum.Created
 let urlHostPortEp = ''
 let isSendingStats = false
 let currentSubscribeId = 0
-let tracks = {}
+let currentTrackAlias = 0
+let tracks = {} // We add subscribeId and trackAlias
 // Example
 /* moqTracks: {
     "audio": {
-        id: 0,
-        isHipri: true,
-        authInfo: "secret"
-    },
-    "video": {
-        id: 1,
-        isHipri: false,
-        authInfo: "secret"
-    }
+      namespace: "vc",
+      name: "-audio",
+      authInfo: "secret"
+  },
+  "video": {
+      namespace: "vc",
+      name: "-video",
+      authInfo: "secret"
+  }
 } */
 
 // MOQT data
@@ -152,11 +153,14 @@ async function moqReceiveObjects (moqt) {
   }
 }
 
-function getTrackTypeFromTrackAlias (trackAlias) {
-  let ret
+function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
+  let ret = undefined
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    if (trackData.alias === trackAlias) {
-      ret = trackType
+    if (trackData.trackAlias === trackAlias) {
+      if (subscribeId != undefined && trackData.subscribeId != subscribeId) {
+          break
+      }
+      ret = {type: trackType, data: trackData}
       break
     }
   }
@@ -169,12 +173,12 @@ async function moqReceiveProcessObjects (readerStream) {
   const moqObj = await moqParseObjectHeader(readerStream)
   sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT subscribeId: ${moqObj.subscribeId}, trackAlias: ${moqObj.trackAlias}. ${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
 
-  const trackType = getTrackTypeFromTrackAlias(moqObj.trackAlias)
-  if (trackType === undefined) {
-    throw new Error(`Unexpected trackAlias received ${moqObj.trackAlias}. Expecting ${JSON.stringify(tracks)}`)
+  const trackInfo = getTrackInfoFromTrackAlias(moqObj.trackAlias, moqObj.subscribeId)
+  if (trackInfo === undefined) {
+    throw new Error(`Unexpected trackAlias/subscriptionId ${moqObj.trackAlias}/${moqObj.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
   }
 
-  if (trackType !== 'data') {
+  if (trackInfo.type !== 'data') {
     const packet = new LocPackager()
     await packet.ReadBytes(readerStream)
 
@@ -229,14 +233,16 @@ async function moqCreateSubscriberSession (moqt) {
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
+  // Send subscribe for tracks audio and video
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, trackData.alias, trackData.namespace, trackData.name, trackData.authInfo)
+    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
     const subscribeResp = await moqParseSubscribeResponse(moqt.controlReader)
     sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
     if (subscribeResp.subscribeId !== currentSubscribeId) {
-      throw new Error(`expecting subscribeId ${currentSubscribeId}/, got ${subscribeResp.subscribeId}`)
+      throw new Error(`expecting subscribeId ${currentSubscribeId}, got ${subscribeResp.subscribeId}`)
     }
-    currentSubscribeId++
+    trackData.subscribeId = currentSubscribeId++
+    trackData.trackAlias = currentTrackAlias++
   }
 }
 
