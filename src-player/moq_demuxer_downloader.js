@@ -237,12 +237,13 @@ async function moqCreateSubscriberSession (moqt) {
   for (const [trackType, trackData] of Object.entries(tracks)) {
     await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
     const subscribeResp = await moqParseSubscribeResponse(moqt.controlReader)
-    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-    if (subscribeResp.subscribeId !== currentSubscribeId) {
-      throw new Error(`expecting subscribeId ${currentSubscribeId}, got ${subscribeResp.subscribeId}`)
+    if (!subscribeResp.isError && subscribeResp.subscribeId === currentSubscribeId) {
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+      trackData.subscribeId = currentSubscribeId++
+      trackData.trackAlias = currentTrackAlias++
+    } else {
+      sendMessageToMain(WORKER_PREFIX, 'error', `Received SUBSCRIBE error response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
     }
-    trackData.subscribeId = currentSubscribeId++
-    trackData.trackAlias = currentTrackAlias++
   }
 }
 

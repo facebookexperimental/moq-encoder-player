@@ -31,6 +31,10 @@ export const MOQ_LOCATION_MODE_ABSOLUTE = 0x1
 export const MOQ_LOCATION_MODE_RELATIVE_PREVIOUS = 0x2
 export const MOQ_LOCATION_MODE_RELATIVE_NEXT = 0x3
 
+// MOQ SUBSCRIPTION ERRORS
+export const MOQ_SUBSCRIPTION_ERROR_GENERIC = 0
+export const MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS = 0x2
+
 // MOQ messages
 const MOQ_MESSAGE_OBJECT = 0x0
 const MOQ_MESSAGE_CLIENT_SETUP = 0x40
@@ -38,6 +42,7 @@ const MOQ_MESSAGE_SERVER_SETUP = 0x41
 
 const MOQ_MESSAGE_SUBSCRIBE = 0x3
 const MOQ_MESSAGE_SUBSCRIBE_OK = 0x4
+const MOQ_MESSAGE_SUBSCRIBE_ERROR = 0x5
 
 const MOQ_MESSAGE_ANNOUNCE = 0x6
 const MOQ_MESSAGE_ANNOUNCE_OK = 0x7
@@ -217,22 +222,44 @@ function moqCreateSubscribeResponseMessageBytes (subscribeId, expiresMs) {
   return concatBuffer([messageTypeBytes, subscribeIdBytes, expiresMsBytes])
 }
 
+function moqCreateSubscribeErrorMessageBytes (subscribeId, errorCode, reason, trackAlias) {
+  // Message type
+  const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_ERROR)
+
+  // Subscribe Id
+  const subscribeIdBytes = numberToVarInt(subscribeId)
+  // errorCode
+  const errorCodeBytes = numberToVarInt(errorCode)
+  // Reason
+  const reasonBytes = moqCreateStringBytes(reason)
+  // trackAlias
+  const trackAliasBytes = numberToVarInt(trackAlias)
+
+  return concatBuffer([messageTypeBytes, subscribeIdBytes, errorCodeBytes, reasonBytes, trackAliasBytes])
+}
+
 export async function moqSendSubscribe (writerStream, subscribeId, trackAlias, trackNamespace, trackName, authInfo) {
   return moqSend(writerStream, moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace, trackName, authInfo))
 }
 
 export async function moqParseSubscribeResponse (readerStream) {
-  const ret = { subscribeId: '', expires: -1 }
+  const ret = { isError: false }
   const type = await varIntToNumber(readerStream)
-  if (type !== MOQ_MESSAGE_SUBSCRIBE_OK) {
-    throw new Error(`SUBSCRIBE answer type must be ${MOQ_MESSAGE_SUBSCRIBE_OK}, got ${type}`)
+  if (type !== MOQ_MESSAGE_SUBSCRIBE_OK && type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+    throw new Error(`SUBSCRIBE answer type must be ${MOQ_MESSAGE_SUBSCRIBE_OK} or ${MOQ_MESSAGE_SUBSCRIBE_ERROR} got ${type}`)
   }
-
-  // subscribeId
-  ret.subscribeId = await varIntToNumber(readerStream)
-  // Expires
-  ret.expires = await varIntToNumber(readerStream)
-
+  if (type === MOQ_MESSAGE_SUBSCRIBE_OK) {
+    // subscribeId
+    ret.subscribeId = await varIntToNumber(readerStream)
+    // Expires
+    ret.expires = await varIntToNumber(readerStream)
+  } else if (type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+    ret.isError = true
+    ret.subscribeId = await varIntToNumber(readerStream)
+    ret.errorCode = await varIntToNumber(readerStream)
+    ret.errorReason = await moqStringRead(readerStream)
+    ret.trackAlias = await varIntToNumber(readerStream)
+  }
   return ret
 }
 
@@ -290,6 +317,10 @@ export async function moqParseSubscribe (readerStream) {
 
 export async function moqSendSubscribeResponse (writerStream, subscribeId, expiresMs) {
   return moqSend(writerStream, moqCreateSubscribeResponseMessageBytes(subscribeId, expiresMs))
+}
+
+export async function moqSendSubscribeError (writerStream, subscribeId, errorCode, reason, trackAlias) {
+  return moqSend(writerStream, moqCreateSubscribeErrorMessageBytes(subscribeId, errorCode, reason, trackAlias))
 }
 
 // OBJECT

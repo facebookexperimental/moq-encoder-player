@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqParseSubscribe, moqCreateControlStream, moqSendSubscribeResponse, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqParseSubscribe, moqCreateControlStream, moqSendSubscribeResponse, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName, MOQ_SUBSCRIPTION_ERROR_GENERIC, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -207,21 +207,27 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
       continue
     }
     if (track.authInfo !== subscribe.parameters.authInfo) {
-      sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe authInfo ${subscribe.parameters.authInfo} does not match with ${JSON.stringify(tracks)}`)
-      // TODO: send subs error
+      const errorCode = MOQ_SUBSCRIPTION_ERROR_GENERIC
+      const errReason = `Invalid subscribe authInfo ${subscribe.parameters.authInfo}`
+      sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
+      await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
       continue
     }
     if (!('subscribers' in track)) {
       track.subscribers = []
     }
     if (getSubscriberTrackFromTrackAlias(track.subscribers, subscribe.trackAlias) != null) {
-      sendMessageToMain(WORKER_PREFIX, 'error', `TrackAlias already in use ${subscribe.trackAlias}`)
-      // TODO: send subs error
+      const errorCode = MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS
+      const errReason = `TrackAlias already in use ${subscribe.trackAlias}`
+      sendMessageToMain(WORKER_PREFIX, 'error', `${errReason}`)
+      await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
       continue
     }
     if (getSubscriberTrackFromSubscribeID(track.subscribers, subscribe.subscribeId) != null) {
-      sendMessageToMain(WORKER_PREFIX, 'error', `SubscribeID already in use ${subscribe.subscribeId}`)
-      // TODO: send subs error
+      const errorCode = MOQ_SUBSCRIPTION_ERROR_GENERIC
+      const errReason = `SubscribeID already in use ${subscribe.subscribeId}`
+      sendMessageToMain(WORKER_PREFIX, 'error', `${errReason}`)
+      await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
       continue
     }
     // Add subscribe
