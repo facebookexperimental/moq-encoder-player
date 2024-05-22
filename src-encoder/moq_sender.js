@@ -133,7 +133,6 @@ self.addEventListener('message', async function (e) {
           sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receiving subscription loop in control stream')
         })
         .catch(err => {
-          throw err //TODO JOC
           if (workerState !== StateEnum.Stopped) {
             sendMessageToMain(WORKER_PREFIX, 'error', `Error in the subscription loop in control stream. Err: ${JSON.stringify(err)}`)
           } else {
