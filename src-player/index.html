@@ -653,58 +653,60 @@ LICENSE file in the root directory of this source tree.
             const seqId = e.data.seqId;
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
-            const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, seqId, extraData);
-            if (orderedVideoData !== undefined) {
-                if (timingInfo.muxer.currentVideoTs < 0) {
-                    updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
-                }
+            if (wtVideoJitterBuffer != null) {
+                const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, seqId, extraData);
+                if (orderedVideoData !== undefined) {
+                    if (timingInfo.muxer.currentVideoTs < 0) {
+                        updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
+                    }
 
-                // Download is sequential
-                if (orderedVideoData.isDisco) {
-                    console.warn(`VIDEO DISCO detected in seqId: ${orderedVideoData.seqId}`);
-                }
-                if (orderedVideoData.repeatedOrBackwards) {
-                    console.warn(`VIDEO Repeated or backwards chunk, discarding, seqId: ${orderedVideoData.seqId}`);
-                } else {
-                    // Adds pts to wallClk info
-                    latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
+                    // Download is sequential
+                    if (orderedVideoData.isDisco) {
+                        console.warn(`VIDEO DISCO detected in seqId: ${orderedVideoData.seqId}`);
+                    }
+                    if (orderedVideoData.repeatedOrBackwards) {
+                        console.warn(`VIDEO Repeated or backwards chunk, discarding, seqId: ${orderedVideoData.seqId}`);
+                    } else {
+                        // Adds pts to wallClk info
+                        latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
 
-                    timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
-                    updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                    videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco });
+                        timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
+                        updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
+                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco });
+                    }
                 }
+                updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
             }
-            updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
-
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
             const seqId = e.data.seqId;
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
-            const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
-            if (orderedAudioData !== undefined) {
-                if (timingInfo.muxer.currentAudioTs < 0) {
-                    updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
-                }
+            if (wtAudioJitterBuffer != null) {
+                const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
+                if (orderedAudioData !== undefined) {
+                    if (timingInfo.muxer.currentAudioTs < 0) {
+                        updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
+                    }
 
-                // Download is sequential
-                if (orderedAudioData.isDisco) {
-                    console.warn(`AUDIO DISCO detected in seqId: ${orderedAudioData.seqId}`);
-                }
-                if (orderedAudioData.repeatedOrBackwards) {
-                    console.warn(`AUDIO Repeated or backwards chunk, discarding, seqId: ${orderedAudioData.seqId}`);
-                } else {
-                    // Adds pts to wallClk info
-                    latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
+                    // Download is sequential
+                    if (orderedAudioData.isDisco) {
+                        console.warn(`AUDIO DISCO detected in seqId: ${orderedAudioData.seqId}`);
+                    }
+                    if (orderedAudioData.repeatedOrBackwards) {
+                        console.warn(`AUDIO Repeated or backwards chunk, discarding, seqId: ${orderedAudioData.seqId}`);
+                    } else {
+                        // Adds pts to wallClk info
+                        latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
 
-                    timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
+                        timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
 
-                    updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                    audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, isDisco: orderedAudioData.isDisco });
+                        updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
+                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, isDisco: orderedAudioData.isDisco });
+                    }
                 }
+                updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
             }
-            updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
-
             // FRAME
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.frame;
@@ -746,7 +748,7 @@ LICENSE file in the root directory of this source tree.
 
             updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
 
-            if (videoRendererBuffer.AddItem(vFrame) === false) {
+            if (videoRendererBuffer != null && videoRendererBuffer.AddItem(vFrame) === false) {
                 console.warn("Dropped video frame because video renderer is full");
                 vFrame.close();
             }

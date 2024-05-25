@@ -6,11 +6,14 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeResponse, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName, MOQ_SUBSCRIPTION_ERROR_GENERIC, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
 const WORKER_PREFIX = '[MOQ-SENDER]'
+
+// Show verbose exceptions
+const MOQT_DEV_MODE = true
 
 let moqPublisherState = {}
 
@@ -60,12 +63,21 @@ self.addEventListener('message', async function (e) {
     try {
       abortController.abort()
       await Promise.all(getAllInflightRequestsArray())
+
+      await unAnnounceTracks(moqt)
     } catch (err) {
+      if (MOQT_DEV_MODE) {throw err}
       // Expected to finish some promises with abort error
       // The abort "errors" are already sent to main "thead" by sendMessageToMain inside the promise
       sendMessageToMain(WORKER_PREFIX, 'info', `Aborting streams while exiting. Err: ${err.message}`)
     } finally {
-      await moqClose(moqt)
+      try {
+        await moqClose(moqt)
+      }
+      catch(err) {
+        if (MOQT_DEV_MODE) {throw err}
+        sendMessageToMain(WORKER_PREFIX, 'error', `Error while closing WT. Err: ${err}`)
+      }
     }
     return
   }
@@ -115,8 +127,9 @@ self.addEventListener('message', async function (e) {
         .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'WT closed transport session')
         })
-        .catch(error => {
-          sendMessageToMain(WORKER_PREFIX, 'error', 'WT error, closed transport. Err: ' + error)
+        .catch(err => {
+          if (MOQT_DEV_MODE) {throw err}
+          sendMessageToMain(WORKER_PREFIX, 'error', `WT error, closed transport. Err: ${err}`)
         })
 
       await moqt.wt.ready
@@ -133,6 +146,7 @@ self.addEventListener('message', async function (e) {
           sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receiving subscription loop in control stream')
         })
         .catch(err => {
+          if (MOQT_DEV_MODE) {throw err}
           if (workerState !== StateEnum.Stopped) {
             sendMessageToMain(WORKER_PREFIX, 'error', `Error in the subscription loop in control stream. Err: ${JSON.stringify(err)}`)
           } else {
@@ -140,6 +154,7 @@ self.addEventListener('message', async function (e) {
           }
         })
     } catch (err) {
+      if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'error', `Initializing MOQ. Err: ${JSON.stringify(err)}`)
     }
 
@@ -183,6 +198,7 @@ self.addEventListener('message', async function (e) {
       }
     })
     .catch(err => {
+      if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: chunkData.mediaType, ts: chunkData.timestamp, msg: err.message })
       sendMessageToMain(WORKER_PREFIX, 'error', `error sending chunk. For subscribeId: ${subscribeId}, trackAlias: ${trackAlias}. Err:  ${err.message}`)
     })
@@ -202,6 +218,7 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
     const moqMsg = await moqParseMsg(controlReader)
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE) {
       const subscribe = moqMsg.data
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE: ${JSON.stringify(subscribe)}`)
       const fullTrackName = getTrackFullName(subscribe.namespace, subscribe.trackName)
       const track = getTrackFromFullTrackName(fullTrackName)
       if (track == null) {
@@ -209,7 +226,7 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
         continue
       }
       if (track.authInfo !== subscribe.parameters.authInfo) {
-        const errorCode = MOQ_SUBSCRIPTION_ERROR_GENERIC
+        const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
         const errReason = `Invalid subscribe authInfo ${subscribe.parameters.authInfo}`
         sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
         await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
@@ -226,7 +243,7 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
         continue
       }
       if (getSubscriberTrackFromSubscribeID(subscribe.subscribeId) != null) {
-        const errorCode = MOQ_SUBSCRIPTION_ERROR_GENERIC
+        const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
         const errReason = `SubscribeID already in use ${subscribe.subscribeId}`
         sendMessageToMain(WORKER_PREFIX, 'error', `${errReason}`)
         await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
@@ -237,17 +254,25 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
   
       sendMessageToMain(WORKER_PREFIX, 'info', `New subscriber for track ${subscribe.trackAlias}(${subscribe.namespace}/${subscribe.trackName}). Current num subscriber: ${track.subscribers.length}. AuthInfo MATCHED!`)
       
-      await moqSendSubscribeResponse(controlWriter, subscribe.subscribeId, 0)
-
+      const lastSent = getLastSentFromTrackAlias(subscribe.trackAlias)
+      await moqSendSubscribeOk(controlWriter, subscribe.subscribeId, 0, lastSent.group, lastSent.obj)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for subscribeId: ${subscribe.subscribeId}, last: ${lastSent.group}/${lastSent.obj}`)
     }
     else if (moqMsg.type === MOQ_MESSAGE_UNSUBSCRIBE) {
       const unsubscribe = moqMsg.data
-      const subscription = removeSubscriberFromTrack(unsubscribe.subscribeId)
-      if (subscription != null) {
-        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber for subscribeId: ${subscription.subscribeId}`)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received UNSUBSCRIBE: ${JSON.stringify(unsubscribe)}`)
+      const subscribe = removeSubscriberFromTrack(unsubscribe.subscribeId)
+      if (subscribe != null) {
+        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber for subscribeId: ${subscribe.subscribeId}`)
       } else {
-        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${subscription.subscribeId}`)
+        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${subscribe.subscribeId}`)
       }
+      
+      const lastSent = getLastSentFromTrackAlias(subscribe.trackAlias)
+      const errorCode = MOQ_SUBSCRIPTION_DONE_ENDED
+      const errReason = "Subscription Ended, received unSubscribe"
+      await moqSendSubscribeDone(controlWriter, subscribe.subscribeId, errorCode, errReason, lastSent.group, lastSent.obj)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_DONE for subscribeId: ${subscribe.subscribeId}, err: ${errorCode}(${errReason}), last: ${lastSent.group}/${lastSent.obj}`)
     }
   }
 }
@@ -355,11 +380,15 @@ async function moqCreatePublisherSession (moqt) {
     if (!announcedNamespaces.includes(trackData.namespace)) {
       await moqSendAnnounce(moqt.controlWriter, trackData.namespace, trackData.authInfo)
       const announceResp = await moqParseAnnounceResponse(moqt.controlReader)
-      sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
-      if (trackData.namespace !== announceResp.namespace) {
-        throw new Error(`expecting namespace ${trackData.namespace}, got ${JSON.stringify(announceResp)}`)
+      if (!announceResp.isError) {
+        sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
+        if (trackData.namespace !== announceResp.namespace) {
+          throw new Error(`expecting namespace ${trackData.namespace}, got ${JSON.stringify(announceResp)}`)
+        }
+        announcedNamespaces.push(trackData.namespace)
+      } else {
+        sendMessageToMain(WORKER_PREFIX, 'error', `Received ANNOUNCE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
       }
-      announcedNamespaces.push(trackData.namespace)
     }
   }
 }
@@ -486,3 +515,24 @@ function getInflightRequestsReport () {
   return ret
 }
 
+function getLastSentFromTrackAlias(trackAlias) {
+  const ret = {group: undefined, obj: undefined}
+  if (trackAlias in moqPublisherState) {
+    ret.group = moqPublisherState[trackAlias].currentGroupSeq
+    ret.obj = moqPublisherState[trackAlias].currentObjectSeq
+  }
+  return ret
+}
+
+async function unAnnounceTracks() {
+  for (const [trackType, trackData] of Object.entries(tracks)) {
+      try {
+        await moqSendUnAnnounce(moqt.controlWriter, trackData.namespace)
+        sendMessageToMain(WORKER_PREFIX, 'info', `Sent UnAnnounce for ${trackData.namespace}`)
+      }
+      catch (err) {
+        if (MOQT_DEV_MODE) {throw err}
+        sendMessageToMain(WORKER_PREFIX, 'error', `on UnAnnounce. Err: ${err}`)
+      }
+  }
+}
