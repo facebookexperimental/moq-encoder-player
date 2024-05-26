@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqParseSetupResponse, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, moqParseAnnounceResponse, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -61,23 +61,17 @@ self.addEventListener('message', async function (e) {
 
     // Abort and wait for all inflight requests
     try {
+      //TODO JOC finish abort controller
       abortController.abort()
       await Promise.all(getAllInflightRequestsArray())
 
       await unAnnounceTracks(moqt)
+      await moqClose(moqt)
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
       // Expected to finish some promises with abort error
       // The abort "errors" are already sent to main "thead" by sendMessageToMain inside the promise
-      sendMessageToMain(WORKER_PREFIX, 'info', `Aborting streams while exiting. Err: ${err.message}`)
-    } finally {
-      try {
-        await moqClose(moqt)
-      }
-      catch(err) {
-        if (MOQT_DEV_MODE) {throw err}
-        sendMessageToMain(WORKER_PREFIX, 'error', `Error while closing WT. Err: ${err}`)
-      }
+      sendMessageToMain(WORKER_PREFIX, 'info', `Aborting / closing streams while exiting. Err: ${err.message}`)
     }
     return
   }
@@ -274,6 +268,9 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
       await moqSendSubscribeDone(controlWriter, subscribe.subscribeId, errorCode, errReason, lastSent.group, lastSent.obj)
       sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_DONE for subscribeId: ${subscribe.subscribeId}, err: ${errorCode}(${errReason}), last: ${lastSent.group}/${lastSent.obj}`)
     }
+    else {
+      sendMessageToMain(WORKER_PREFIX, 'warning', `Unexpected message (type ${moqMsg.type} received, ignoring`)
+    }
   }
 }
 
@@ -368,7 +365,12 @@ function removeFromInflight (mediaType, id) {
 async function moqCreatePublisherSession (moqt) {
   // SETUP
   await moqSendSetup(moqt.controlWriter, MOQ_PARAMETER_ROLE_PUBLISHER)
-  const setupResponse = await moqParseSetupResponse(moqt.controlReader)
+
+  const moqMsg = await moqParseMsg(moqt.controlReader)
+  if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
+    throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
+  }
+  const setupResponse = moqMsg.data
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
   if (setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_SUBSCRIBER && setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_BOTH) {
     throw new Error(`role not supported. Supported  ${MOQ_PARAMETER_ROLE_SUBSCRIBER}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
@@ -379,16 +381,19 @@ async function moqCreatePublisherSession (moqt) {
   for (const [trackType, trackData] of Object.entries(tracks)) {
     if (!announcedNamespaces.includes(trackData.namespace)) {
       await moqSendAnnounce(moqt.controlWriter, trackData.namespace, trackData.authInfo)
-      const announceResp = await moqParseAnnounceResponse(moqt.controlReader)
-      if (!announceResp.isError) {
-        sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
-        if (trackData.namespace !== announceResp.namespace) {
-          throw new Error(`expecting namespace ${trackData.namespace}, got ${JSON.stringify(announceResp)}`)
-        }
-        announcedNamespaces.push(trackData.namespace)
-      } else {
-        sendMessageToMain(WORKER_PREFIX, 'error', `Received ANNOUNCE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+      const moqMsg = await moqParseMsg(moqt.controlReader)
+      if (moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_ERROR) {
+        throw new Error(`Expected MOQ_MESSAGE_ANNOUNCE_OK or MOQ_MESSAGE_ANNOUNCE_ERROR, received ${moqMsg.type}`)
       }
+      if (moqMsg.type === MOQ_MESSAGE_ANNOUNCE_ERROR) {
+        throw new Error(`Received ANNOUNCE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+      }
+      const announceResp = moqMsg.data
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
+      if (trackData.namespace !== announceResp.namespace) {
+        throw new Error(`expecting namespace ${trackData.namespace}, got ${JSON.stringify(announceResp)}`)
+      }
+      announcedNamespaces.push(trackData.namespace)
     }
   }
 }

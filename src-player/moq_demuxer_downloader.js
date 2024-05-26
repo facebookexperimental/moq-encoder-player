@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseSetupResponse, moqParseSubscribeDone, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqParseSubscribeResponse, moqSendUnSubscribe} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -237,7 +237,11 @@ async function moqReceiveProcessObjects (readerStream) {
 
 async function moqCreateSubscriberSession (moqt) {
   await moqSendSetup(moqt.controlWriter, MOQ_PARAMETER_ROLE_SUBSCRIBER)
-  const setupResponse = await moqParseSetupResponse(moqt.controlReader)
+  const moqMsg = await moqParseMsg(moqt.controlReader)
+  if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
+    throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
+  }
+  const setupResponse = moqMsg.data
   if (setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_PUBLISHER && setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_BOTH) {
     throw new Error(`role not supported. Supported ${MOQ_PARAMETER_ROLE_PUBLISHER} or ${MOQ_PARAMETER_ROLE_BOTH}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
   }
@@ -246,14 +250,20 @@ async function moqCreateSubscriberSession (moqt) {
   // Send subscribe for tracks audio and video
   for (const [trackType, trackData] of Object.entries(tracks)) {
     await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
-    const subscribeResp = await moqParseSubscribeResponse(moqt.controlReader)
-    if (!subscribeResp.isError && subscribeResp.subscribeId === currentSubscribeId) {
-      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-      trackData.subscribeId = currentSubscribeId++
-      trackData.trackAlias = currentTrackAlias++
-    } else {
-      sendMessageToMain(WORKER_PREFIX, 'error', `Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+    const moqMsg = await moqParseMsg(moqt.controlReader)
+    if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+      throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
     }
+    if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+      throw new Error(`Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+    }
+    const subscribeResp = moqMsg.data    
+    if (subscribeResp.subscribeId !== currentSubscribeId) {
+      throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
+    }
+    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+    trackData.subscribeId = currentSubscribeId++
+    trackData.trackAlias = currentTrackAlias++
   }
 }
 
@@ -278,9 +288,13 @@ async function unSubscribeTracks(moqt) {
       try {
         await moqSendUnSubscribe(moqt.controlWriter, trackData.subscribeId)
         sendMessageToMain(WORKER_PREFIX, 'info', `Sent UnSubscribe for ${trackData.subscribeId}`)
-        const subscribeDone = await moqParseSubscribeDone(moqt.controlReader)// TODO check same subscribeID
-        // TODO When server works check same subscribeID subscribeDone.subscribeId == trackData.subscribeId
-        sendMessageToMain(WORKER_PREFIX, 'info', `Received SubscribeDone for subscibeId: ${subscribeDone.subscribeId}: ${JSON.stringify(subscribeDone)}`)  
+        const moqMsg = await moqParseMsg(moqt.controlReader)
+        if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_DONE) {
+          throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_DONE received ${moqMsg.type}`)
+        }
+        const subscribeDone = moqMsg.data
+        sendMessageToMain(WORKER_PREFIX, 'info', `Received SubscribeDone for subscibeId: ${subscribeDone.subscribeId}: ${JSON.stringify(subscribeDone)}`)
+        // TODO When server works check same subscribeID subscribeDone.subscribeId == trackData.subscribeId 
       }
       catch (err) {
         if (MOQT_DEV_MODE) {throw err}
