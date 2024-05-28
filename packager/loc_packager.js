@@ -41,7 +41,7 @@ export class LocPackager {
     this.data = data
   }
 
-  async ReadBytes (readerStream) {
+  async ReadBytes (readerStream, abortController) {
     const mediaTypeInt = await varIntToNumber(readerStream)
     if (mediaTypeInt === 0) {
       this.mediaType = 'data'
@@ -72,7 +72,7 @@ export class LocPackager {
     } else {
       this.metadata = null
     }
-    this.data = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
+    this.data = await readUntilEof(readerStream, this.READ_BLOCK_SIZE, abortController)
   }
 
   GetData () {

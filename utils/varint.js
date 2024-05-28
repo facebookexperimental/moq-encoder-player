@@ -5,7 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { buffReadFrombyobReader } from './buffer_utils.js'
+"use strict"
+
+import { buffReadFrombyobReader, getReaderFromByobWrapper, freeReaderFromByobWrapper} from './buffer_utils.js'
 
 const MAX_U6 = Math.pow(2, 6) - 1
 const MAX_U14 = Math.pow(2, 14) - 1
@@ -27,9 +29,9 @@ export function numberToVarInt (v) {
   }
 }
 
-export async function varIntToNumber (readableStream) {
+export async function varIntToNumber (readableStream, abortController) {
   let ret
-  const reader = readableStream.getReader({ mode: 'byob' })
+  const reader = getReaderFromByobWrapper(readableStream, abortController)
   try {
     let buff = new ArrayBuffer(8)
 
@@ -50,7 +52,7 @@ export async function varIntToNumber (readableStream) {
       throw new Error('impossible')
     }
   } finally {
-    reader.releaseLock()
+    freeReaderFromByobWrapper(readableStream, reader, abortController)
   }
   return ret
 }

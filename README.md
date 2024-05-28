@@ -279,6 +279,8 @@ Fig7: Player UI
 
 ## TODO
 
+- Add "use strict" 
+- Add code linter
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
 - Player: Do not use main thead for anything except reporting
 - Player: Accept different sampling frequency than the audio renderer

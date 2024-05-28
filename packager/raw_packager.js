@@ -28,8 +28,8 @@ export class RawPackager {
     this.data = data
   }
 
-  async ReadBytes (readerStream) {
-    const payloadBytes = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
+  async ReadBytes (readerStream, abortController) {
+    const payloadBytes = await readUntilEof(readerStream, this.READ_BLOCK_SIZE, abortController)
     this.data = new TextDecoder().decode(payloadBytes)
   }
 

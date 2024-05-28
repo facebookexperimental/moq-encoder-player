@@ -115,7 +115,6 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      // eslint-disable-next-line no-undef
       moqt.wt = new WebTransport(url.href)
       moqt.wt.closed
         .then(() => {
@@ -136,7 +135,7 @@ self.addEventListener('message', async function (e) {
       workerState = StateEnum.Running
 
       startLoopSubscriptionsLoop(moqt.controlReader, moqt.controlWriter)
-        .then(_ => {
+        .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receiving subscription loop in control stream')
         })
         .catch(err => {
@@ -209,7 +208,7 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
   sendMessageToMain(WORKER_PREFIX, 'info', 'Started subscription loop')
 
   while (workerState === StateEnum.Running) {
-    const moqMsg = await moqParseMsg(controlReader)
+    const moqMsg = await moqParseMsg(controlReader, abortController)
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE) {
       const subscribe = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE: ${JSON.stringify(subscribe)}`)
@@ -366,7 +365,7 @@ async function moqCreatePublisherSession (moqt) {
   // SETUP
   await moqSendSetup(moqt.controlWriter, MOQ_PARAMETER_ROLE_PUBLISHER)
 
-  const moqMsg = await moqParseMsg(moqt.controlReader)
+  const moqMsg = await moqParseMsg(moqt.controlReader, abortController)
   if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
     throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
   }
@@ -381,7 +380,7 @@ async function moqCreatePublisherSession (moqt) {
   for (const [trackType, trackData] of Object.entries(tracks)) {
     if (!announcedNamespaces.includes(trackData.namespace)) {
       await moqSendAnnounce(moqt.controlWriter, trackData.namespace, trackData.authInfo)
-      const moqMsg = await moqParseMsg(moqt.controlReader)
+      const moqMsg = await moqParseMsg(moqt.controlReader, abortController)
       if (moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_ERROR) {
         throw new Error(`Expected MOQ_MESSAGE_ANNOUNCE_OK or MOQ_MESSAGE_ANNOUNCE_ERROR, received ${moqMsg.type}`)
       }
@@ -486,7 +485,7 @@ function getSubscriberTrackFromSubscribeID (subscribeId) {
 }
 
 function removeSubscriberFromTrack (subscribeId) {
-  for (const [_, trackData] of Object.entries(tracks)) {
+  for (const trackData of Object.values(tracks)) {
     if ("subscribers" in trackData && trackData.subscribers.length > 0) {
       let i = 0
       if ('subscribers' in trackData) {
@@ -530,7 +529,7 @@ function getLastSentFromTrackAlias(trackAlias) {
 }
 
 async function unAnnounceTracks() {
-  for (const [trackType, trackData] of Object.entries(tracks)) {
+  for (const trackData of Object.values(tracks)) {
       try {
         await moqSendUnAnnounce(moqt.controlWriter, trackData.namespace)
         sendMessageToMain(WORKER_PREFIX, 'info', `Sent UnAnnounce for ${trackData.namespace}`)

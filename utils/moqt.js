@@ -5,6 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+"use strict"
+
 import { numberToVarInt, varIntToNumber } from './varint.js'
 import { concatBuffer, buffRead } from './buffer_utils.js'
 
@@ -71,11 +73,7 @@ export async function moqClose (moqt) {
     await moqt.controlWriter.close()
     moqt.controlWriter = null
   }
-  // TODO: We need to cancel the reader (https://developer.mozilla.org/en-US/docs/Web/API/ReadableStreamBYOBReader)
-  if (moqt.controlReader != null) {
-    await moqt.controlReader.cancel("Closing!")
-    moqt.controlReader = null
-  }
+  // The readers are cancelled independetlly
   if (moqt.wt != null) {
     await moqt.wt.close()
     moqt.wt = null
@@ -127,13 +125,13 @@ export async function moqSendSetup (writerStream, moqIntRole) {
   return moqSend(writerStream, moqCreateSetupMessageBytes(moqIntRole))
 }
 
-async function moqParseSetupResponse (readerStream) {
+async function moqParseSetupResponse (readerStream, abortController) {
   const ret = { }
-  ret.version = await varIntToNumber(readerStream)
+  ret.version = await varIntToNumber(readerStream, abortController)
   if (!MOQ_SUPPORTED_VERSIONS.includes(ret.version)) {
     throw new Error(`version sent from server NOT supported. Supported versions ${JSON.stringify(MOQ_SUPPORTED_VERSIONS)}, got from server ${JSON.stringify(MOQ_SUPPORTED_VERSIONS)}`)
   }
-  ret.parameters = await moqReadParameters(readerStream)
+  ret.parameters = await moqReadParameters(readerStream, abortController)
 
   return ret
 }
@@ -162,20 +160,20 @@ export async function moqSendAnnounce (writerStream, namespace, authInfo) {
   return moqSend(writerStream, moqCreateAnnounceMessageBytes(namespace, authInfo))
 }
 
-async function moqParseAnnounceOk (readerStream) {
+async function moqParseAnnounceOk (readerStream, abortController) {
   const ret = { }
   
-  ret.namespace = await moqStringRead(readerStream)
+  ret.namespace = await moqStringRead(readerStream, abortController)
   
   return ret
 }
 
-async function moqParseAnnounceError (msgType, readerStream) {
+async function moqParseAnnounceError (readerStream, abortController) {
   const ret = { }
 
-  ret.namespace = await moqStringRead(readerStream)
-  ret.errorCode = await varIntToNumber(readerStream)
-  ret.reason = await moqStringRead(readerStream)
+  ret.namespace = await moqStringRead(readerStream, abortController)
+  ret.errorCode = await varIntToNumber(readerStream, abortController)
+  ret.reason = await moqStringRead(readerStream, abortController)
   
   return ret
 }
@@ -332,64 +330,63 @@ export async function moqSendUnSubscribe (writerStream, subscribeId) {
   return moqSend(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
 }
 
-async function moqParseSubscribeOk (readerStream) {
+async function moqParseSubscribeOk (readerStream, abortController) {
   const ret = { }
 
-  ret.subscribeId = await varIntToNumber(readerStream)
-  ret.expires = await varIntToNumber(readerStream)
-  const contentExists = await varIntToNumber(readerStream)
+  ret.subscribeId = await varIntToNumber(readerStream, abortController)
+  ret.expires = await varIntToNumber(readerStream, abortController)
+  const contentExists = await varIntToNumber(readerStream, abortController)
   if (contentExists > 0) {
-    ret.lastGroupSent = await varIntToNumber(readerStream)
-    ret.lastObjSent = await varIntToNumber(readerStream)
+    ret.lastGroupSent = await varIntToNumber(readerStream, abortController)
+    ret.lastObjSent = await varIntToNumber(readerStream, abortController)
   }
 
   return ret
 }
 
-async function moqParseSubscribeError (readerStream) {
+async function moqParseSubscribeError (readerStream, abortController) {
   const ret = { }
 
-  ret.subscribeId = await varIntToNumber(readerStream)
-  ret.errorCode = await varIntToNumber(readerStream)
-  ret.errorReason = await moqStringRead(readerStream)
-  ret.trackAlias = await varIntToNumber(readerStream)
+  ret.subscribeId = await varIntToNumber(readerStream, abortController)
+  ret.errorCode = await varIntToNumber(readerStream, abortController)
+  ret.errorReason = await moqStringRead(readerStream, abortController)
+  ret.trackAlias = await varIntToNumber(readerStream, abortController)
 
   return ret
 }
 
-async function moqParseSubscribeDone (readerStream) {
+async function moqParseSubscribeDone (readerStream, abortController) {
   const ret = { }
-  ret.subscribeId = await varIntToNumber(readerStream)
-  ret.errorCode = await varIntToNumber(readerStream)
-  ret.errorReason = await moqStringRead(readerStream)
-  const contentExists = await buffRead(readerStream, 1)
+  ret.subscribeId = await varIntToNumber(readerStream, abortController)
+  ret.errorCode = await varIntToNumber(readerStream, abortController)
+  ret.errorReason = await moqStringRead(readerStream, abortController)
+  const contentExists = await buffRead(readerStream, 1, abortController)
   if (new DataView(contentExists, 0, 1).getUint8() > 0) {
-    ret.lastGroupSent = await varIntToNumber(readerStream)
-    ret.lastObjSent = await varIntToNumber(readerStream)
+    ret.lastGroupSent = await varIntToNumber(readerStream, abortController)
+    ret.lastObjSent = await varIntToNumber(readerStream, abortController)
   }
   return ret
 }
 
-export async function moqParseMsg (readerStream) {
-  const msgType = await varIntToNumber(readerStream)
+export async function moqParseMsg (readerStream, abortController) {
+  const msgType = await varIntToNumber(readerStream, abortController)
   let data = null
-  // TODO: Add all messages and use this function
   if (msgType === MOQ_MESSAGE_SUBSCRIBE) {
-    data = await moqParseSubscribe(readerStream)
+    data = await moqParseSubscribe(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_UNSUBSCRIBE) {
-    data = await moqParseUnSubscribe(readerStream)
+    data = await moqParseUnSubscribe(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_DONE) {
-    data = await moqParseSubscribeDone(readerStream)
+    data = await moqParseSubscribeDone(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_SERVER_SETUP) {
-    data = await moqParseSetupResponse(readerStream)
+    data = await moqParseSetupResponse(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_ANNOUNCE_OK) {
-    data = await moqParseAnnounceOk(readerStream)
+    data = await moqParseAnnounceOk(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_ANNOUNCE_ERROR) {
-    data = await moqParseAnnounceError(readerStream)
+    data = await moqParseAnnounceError(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_OK) {
-    data = await moqParseSubscribeOk(readerStream)
+    data = await moqParseSubscribeOk(readerStream, abortController)
   } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-    data = await moqParseSubscribeError(readerStream)
+    data = await moqParseSubscribeError(readerStream, abortController)
   } else {
     throw new Error(`UNKNOWN msg type received, got ${msgType}`)
   }
@@ -397,44 +394,44 @@ export async function moqParseMsg (readerStream) {
   return {type: msgType, data: data}
 }
 
-async function moqParseSubscribe (readerStream) {
+async function moqParseSubscribe (readerStream, abortController) {
   const ret = { }
   
-  ret.subscribeId = await varIntToNumber(readerStream)
-  ret.trackAlias = await varIntToNumber(readerStream)
-  ret.namespace = await moqStringRead(readerStream)
-  ret.trackName = await moqStringRead(readerStream)
-  ret.startGroup = await varIntToNumber(readerStream)
+  ret.subscribeId = await varIntToNumber(readerStream, abortController)
+  ret.trackAlias = await varIntToNumber(readerStream, abortController)
+  ret.namespace = await moqStringRead(readerStream, abortController)
+  ret.trackName = await moqStringRead(readerStream, abortController)
+  ret.startGroup = await varIntToNumber(readerStream, abortController)
   if (ret.startGroup !== MOQ_LOCATION_MODE_NONE) {
     await varIntToNumber(readerStream)
     // TODO: Do not start sending until this position
   }
   // Start object
-  ret.startObject = await varIntToNumber(readerStream)
+  ret.startObject = await varIntToNumber(readerStream, abortController)
   if (ret.startObject !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
+    await varIntToNumber(readerStream, abortController)
     // TODO: Do not start sending until this position
   }
-  ret.endGroup = await varIntToNumber(readerStream)
+  ret.endGroup = await varIntToNumber(readerStream, abortController)
   if (ret.endGroup !== MOQ_LOCATION_MODE_NONE) {
     await varIntToNumber(readerStream)
     // TODO: Stop sending if NO subscribers after this position
   }
-  ret.endObject = await varIntToNumber(readerStream)
+  ret.endObject = await varIntToNumber(readerStream, abortController)
   if (ret.endObject !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
+    await varIntToNumber(readerStream, abortController)
     // TODO: Stop sending if NO subscribers after this position
   }
-  ret.parameters = await moqReadParameters(readerStream)
+  ret.parameters = await moqReadParameters(readerStream, abortController)
 
   return ret
 }
 
-async function moqParseUnSubscribe (readerStream) {
+async function moqParseUnSubscribe (readerStream, abortController) {
   const ret = { }
   
   // SubscribeId
-  ret.subscribeId = await varIntToNumber(readerStream)
+  ret.subscribeId = await varIntToNumber(readerStream, abortController)
 
   return ret
 }
@@ -470,17 +467,17 @@ export function moqSendObjectToWriter (writer, subscribeId, trackAlias, groupSeq
   return moqSendToWriter(writer, moqCreateObjectBytes(subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data))
 }
 
-export async function moqParseObjectHeader (readerStream) {
-  const type = await varIntToNumber(readerStream)
+export async function moqParseObjectHeader (readerStream, abortController) {
+  const type = await varIntToNumber(readerStream, abortController)
   if (type !== MOQ_MESSAGE_OBJECT_STREAM) {
     throw new Error(`OBJECT answer type must be ${MOQ_MESSAGE_OBJECT_STREAM}, got ${type}`)
   }
 
-  const subscribeId = await varIntToNumber(readerStream)
-  const trackAlias = await varIntToNumber(readerStream)
-  const groupSeq = await varIntToNumber(readerStream)
-  const objSeq = await varIntToNumber(readerStream)
-  const sendOrder = await varIntToNumber(readerStream)
+  const subscribeId = await varIntToNumber(readerStream, abortController)
+  const trackAlias = await varIntToNumber(readerStream, abortController)
+  const groupSeq = await varIntToNumber(readerStream, abortController)
+  const objSeq = await varIntToNumber(readerStream, abortController)
+  const sendOrder = await varIntToNumber(readerStream, abortController)
   const ret = { subscribeId, trackAlias, groupSeq, objSeq, sendOrder }
  
   return ret
@@ -498,9 +495,9 @@ function moqCreateStringBytes (str) {
   return concatBuffer([dataStrLengthBytes, dataStrBytes])
 }
 
-async function moqStringRead (readerStream) {
-  const size = await varIntToNumber(readerStream)
-  const buffer = await buffRead(readerStream, size)
+async function moqStringRead (readerStream, abortController) {
+  const size = await varIntToNumber(readerStream, abortController)
+  const buffer = await buffRead(readerStream, size, abortController)
   return new TextDecoder().decode(buffer)
 }
 
@@ -511,23 +508,23 @@ async function moqSend (writerStream, dataBytes) {
   writer.releaseLock()
 }
 
-async function moqReadParameters (readerStream) {
+async function moqReadParameters (readerStream, abortController) {
   const ret = {}
   // Params
-  const numParams = await varIntToNumber(readerStream)
+  const numParams = await varIntToNumber(readerStream, abortController)
   if (numParams > MOQ_MAX_PARAMS) {
     throw new Error(`exceeded the max number of supported params ${MOQ_MAX_PARAMS}, got ${numParams}`)
   }
   for (let i = 0; i < numParams; i++) {
-    const paramId = await varIntToNumber(readerStream)
+    const paramId = await varIntToNumber(readerStream, abortController)
     if (paramId === MOQ_PARAMETER_AUTHORIZATION_INFO) {
-      ret.authInfo = await moqStringRead(readerStream)
+      ret.authInfo = await moqStringRead(readerStream, abortController)
     } else if (paramId === MOQ_PARAMETER_ROLE) {
-      await varIntToNumber(readerStream)
-      ret.role = await varIntToNumber(readerStream)
+      await varIntToNumber(readerStream, abortController)
+      ret.role = await varIntToNumber(readerStream, abortController)
     } else {
-      const paramLength = await varIntToNumber(readerStream)
-      const skip = await buffRead(readerStream, paramLength)
+      const paramLength = await varIntToNumber(readerStream, abortController)
+      const skip = await buffRead(readerStream, paramLength, abortController)
       ret[`unknown-${i}-${paramId}-${paramLength}`] = JSON.stringify(skip)
     }
   }
