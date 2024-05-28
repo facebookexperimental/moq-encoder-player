@@ -115,7 +115,6 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      // eslint-disable-next-line no-undef
       moqt.wt = new WebTransport(url.href)
       moqt.wt.closed
         .then(() => {
@@ -136,7 +135,7 @@ self.addEventListener('message', async function (e) {
       workerState = StateEnum.Running
 
       startLoopSubscriptionsLoop(moqt.controlReader, moqt.controlWriter)
-        .then(_ => {
+        .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receiving subscription loop in control stream')
         })
         .catch(err => {
@@ -486,7 +485,7 @@ function getSubscriberTrackFromSubscribeID (subscribeId) {
 }
 
 function removeSubscriberFromTrack (subscribeId) {
-  for (const [_, trackData] of Object.entries(tracks)) {
+  for (const trackData of Object.values(tracks)) {
     if ("subscribers" in trackData && trackData.subscribers.length > 0) {
       let i = 0
       if ('subscribers' in trackData) {
@@ -530,7 +529,7 @@ function getLastSentFromTrackAlias(trackAlias) {
 }
 
 async function unAnnounceTracks() {
-  for (const [trackType, trackData] of Object.entries(tracks)) {
+  for (const trackData of Object.values(tracks)) {
       try {
         await moqSendUnAnnounce(moqt.controlWriter, trackData.namespace)
         sendMessageToMain(WORKER_PREFIX, 'info', `Sent UnAnnounce for ${trackData.namespace}`)

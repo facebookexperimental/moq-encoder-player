@@ -108,7 +108,6 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      // eslint-disable-next-line no-undef
       moqt.wt = new WebTransport(url.href)
       moqt.wt.closed
         .then(() => {
@@ -200,7 +199,6 @@ async function moqReceiveProcessObjects (readerStream) {
 
     let chunk
     if (chunkData.mediaType === 'audio') {
-      // eslint-disable-next-line no-undef
       chunk = new EncodedAudioChunk({
         timestamp: chunkData.timestamp,
         type: chunkData.chunkType,
@@ -208,7 +206,6 @@ async function moqReceiveProcessObjects (readerStream) {
         duration: chunkData.duration
       })
     } else if (chunkData.mediaType === 'video') {
-      // eslint-disable-next-line no-undef
       chunk = new EncodedVideoChunk({
         timestamp: chunkData.timestamp,
         type: chunkData.chunkType,
@@ -283,7 +280,7 @@ function checkTrackData () {
 async function unSubscribeTracks(moqt) {
   sendMessageToMain(WORKER_PREFIX, 'info', `Sending ${Object.entries(tracks).length} unsubscribes`)
 
-  for (const [_, trackData] of Object.entries(tracks)) {
+  for (const trackData of Object.values(tracks)) {
     if ('subscribeId' in trackData) {
       try {
         await moqSendUnSubscribe(moqt.controlWriter, trackData.subscribeId)
