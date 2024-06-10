@@ -64,7 +64,7 @@ export class JitterBuffer {
           if (this.lastCorrectSeqId + 1 !== r.seqId) {
             r.isDisco = true
             this.numTotalGaps++
-            this.numTotalLostStreams += (r.seqId - this.lastCorrectSeqId)
+            this.numTotalLostStreams += Math.abs(r.seqId - this.lastCorrectSeqId)
 
             // Check for repeated and backwards seqID
             if (r.seqId <= this.lastCorrectSeqId) {
