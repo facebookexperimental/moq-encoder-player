@@ -191,10 +191,10 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { VideoRenderBuffer } from "./video_render_buffer.js"
-    import { JitterBuffer } from "./jitter_buffer.js"
+    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
+    import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { CicularAudioSharedBuffer } from "./audio_circular_buffer.js"
+    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -469,10 +469,10 @@ LICENSE file in the root directory of this source tree.
 
     function createWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("./moq_demuxer_downloader.js", {type: "module"});
+        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
         
-        audioDecoderWorker = new Worker("./audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("./video_decoder.js", {type: "module"});
+        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
+        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
     }
 
     function clearUI() {
@@ -527,7 +527,7 @@ LICENSE file in the root directory of this source tree.
                 audioCtx = new AudioContext({ latencyHint: "interactive" });
                 audioCtx.transitioning = false;
                 // Add worklet
-                audioCtx.audioWorklet.addModule('source_buffer_worklet.js')
+                audioCtx.audioWorklet.addModule('../render/source_buffer_worklet.js')
                     .then(data => {
                         sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
                         // AudioWorkletNode can be interoperable with other native AudioNodes.

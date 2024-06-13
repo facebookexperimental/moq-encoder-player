@@ -1,0 +1,584 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <style>
+        .boxed {
+            border: 1px solid black;
+        }
+
+        .styleform label {
+            float: left;
+            margin: 5px 10px 5px 10px;
+        }
+
+        .styleform input {
+            margin: 5px 10px 5px 10px;
+        }
+
+        /* this gives space for the label on the left */
+        .styleform .clear {
+            clear: both;
+        }
+        /* prevent elements from stacking weirdly */
+
+        .column {
+            float: left;
+            width: 50%;
+        }
+
+        .row:after {
+            content: "";
+            display: table;
+            clear: both;
+        }
+    </style>
+    <title>Test video call with MOQ (WebCodecs & WebTransport) (by Jordi Cenzano)</title>
+</head>
+
+<body>
+    <div class="row">
+        <h1>MOQT Test video calling</h1>
+        <div class="boxed">
+            <div class="styleform">
+                <form>
+                    <h2>Call data</h2>
+                    <div class="clear"></div>
+                    <label id="wtDestData">MOQT WT Relay:<input id="wtServerUrl" type="text"
+                            value="https://localhost:4433/moq" size="64"></label>
+                    <div class="clear"></div>
+                    <label>Namespace:<input id="namespace" type="text" value="vc"></label>
+                    <div class="clear"></div>
+                    <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+            <div class="styleform">
+                <form>
+                     <div class="clear"></div>
+                    <button id="btnStart" type="button">Start</button>
+                    <button id="btnStop" type="button" disabled>Stop</button>
+                </form>
+            </div>
+        </div>
+        <div class="column">
+            <div class="boxed">
+                <h2>Config data</h2>
+                <div style="text-align: right;">
+                    <button id="btnLocalShowData" type="button">Show/Hide</button>
+                </div>
+                <div id="sectionLocalData" class="styleform" style="display: none;">
+                    <form>
+                        <div class="clear"></div>
+                        <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
+                        <div class="clear"></div>
+                        <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
+                        <div class="clear"></div>
+                        <label>AuthInfo (for all tracks, shared with subscribers):<input id="authInfo" type="text" value="secret"></label>
+                        <div class="clear"></div>
+                        <h3>Video encoding params (h264)</h3>
+                        <label>Input sources: <select id="videoSources"></select></label>                
+                        <div class="clear"></div>
+                        <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                        <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
+                                size="5"></label>
+                        <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="500000" size="8"></label>
+                        <div class="clear"></div>
+                        <h3>Audio encoding params (opus)</h3>
+                        <label>Input sources: <select id="audioSources"></select></label>                
+                        <div class="clear"></div>
+                        <label>Bitrate (bps): <input id="audioEncodingBitrateBps" type="text" value="32000" size="8"></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+            <div class="boxed">
+                <video height="50%" id="vPreview" autoplay muted></video>
+            </div>
+            <div class="boxed">
+                <h2>Real time debugging data</h2>
+                <div style="text-align: right;">
+                    <button id="btnLocalShowStats" type="button">Show/Hide</button>
+                </div>
+                <div id="sectionLocalStats" class="boxed" style="display: none;">
+                    <div class="boxed">     
+                        <div class="styleform" hidden>
+                            <h2>Capture(uncompressed domain)</h2>
+                            <form>
+                                <label>First audio TS(ms): <input id="firstAts" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>First video TS(ms): <input id="firstVts" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>V-A start diff(ms): <input id="VAdiff" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>First comp audio TS(ms): <input id="firstCompAts" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>First comp video TS(ms): <input id="firstCompVts" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>V-A comp start diff(ms): <input id="VACompdiff" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                
+                            </form>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Encoder output (chunks)</h2>
+                        <div class="styleform">
+                            <form>
+                                <label>Current audio TS(ms):<input id="encodedAudioTs" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>Current comp audio TS(ms):<input id="encodedAudioCompensatedTs" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>Encoding audio latency (ms):<input id="encodedAudioLatencyMs" type="text" value="" readonly></label>
+                                <div class="clear"></div>                
+                                <label>Current video TS(ms):<input id="encodedVideoTs" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>Current comp video TS(ms):<input id="encodedVideoCompensatedTs" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                <label>Encoding video latency (ms):<input id="encodedVideoLatencyMs" type="text" value="" readonly></label>
+                                <div class="clear"></div>                
+                                
+                                <label>Current V-A TS(ms):<input id="encodedVADelayCompensatedTS" type="text" value="" readonly></label>
+                                <div class="clear"></div>
+                                                
+                            </form>        
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Muxer sender</h2>
+                        <div>
+                            <h3>Inflight</h3>
+                            <div class="styleform">
+                                <form>
+                                    <label>Inflight audio requests:<input id="uploadStatsAudioInflight" type="text" value=""
+                                            readonly></label>
+                                    <div class="clear"></div>
+                                    <label>Inflight video requests:<input id="uploadStatsVideoInflight" type="text" value=""
+                                            readonly></label>
+                                    <div class="clear"></div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Dropped data (frames / chunks):</h2>
+                        <div class="styleform">
+                            <form>
+                                <label>Total dropped audio chunks: <input id="totalAudioChunksDropped" type="text" value=""
+                                        readonly></label>
+                                <div class="clear"></div>
+                                <label>Total dropped video chunks: <input id="totalVideoChunksDropped" type="text" value=""
+                                        readonly></label>
+                                <div class="clear"></div>
+                            </form>
+                        </div>
+                        <ol id="droppedFrames"></ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="column">
+            <div class="boxed">
+                <h2>Config data</h2>
+                <div style="text-align: right;">
+                    <button id="btnPlayerShowData" type="button">Show/Hide</button>
+                </div>
+                <div id="sectionPlayerData" class="styleform" style="display: none;">
+                    <form>
+                        <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
+                        <label>(it waits until audio buffers this amount to start playback)</label>
+                        <div class="clear"></div>
+                        <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="300"></label>
+                        <label>(this + jitter is the max latency allowed)</label>                
+                        <div class="clear"></div>
+                        <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
+                                value="200" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
+                        <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
+                                value="100" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+            <div class="boxed">
+                <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
+            </div>
+            <div class="boxed">
+                <h2>Playback stats</h2>
+                <div style="text-align: right;">
+                    <button id="btnPlayerShowStats" type="button">Show/Hide</button>
+                </div>
+                <div id="sectionPlayerStats" class="boxed" style="display: none;">
+                    <div class="boxed">
+                        <h2>Latency</h2>
+                        <div class="styleform">
+                            <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
+                            <div class="clear"></div>
+                            <div>
+                                <label>Audio latency capture to renderer (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
+                            </div>
+                            <div>
+                                <label>Video latency capture to renderer (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Receiver demuxer</h2>
+                        <div class="styleform">
+                            <form>
+                                <label>Current received audio TS(ms):</label><input id="currentChunkATS" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Current received video TS(ms):</label><input id="currentChunkVTS" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>V-A diff(ms):</label><input id="currentChunkAVTSDiff" type="text" value="" readonly>
+                                <div class="clear"></div>
+                
+                                <label>First audio TS(ms):</label><input id="firstChunkAts" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>First video TS(ms):</label><input id="firstChunkVts" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>V-A start diff(ms):</label><input id="firstChunkVADiff" type="text" value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Receiver dejitter</h2>
+                        <div class="styleform">
+                            <h3>Audio</h3>
+                            <form>
+                                <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                            <h3>Video</h3>
+                            <form>
+                                <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Decoders</h2>
+                        <div class="styleform">
+                            <h3>Audio</h3>
+                            <form>
+                                <label>Current frame TS compensated (ms):</label><input id="currentFrameATS" type="text" value=""
+                                    readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="currentDecoABuffer" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Timestamp compensation(ms):</label><input id="currentDecoCompAOffset" type="text" value=""
+                                    readonly>
+                                <label>(The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every
+                                    decoded audio sample adds 1/fs (so sample time), that means if we drop and audio packet those
+                                    timestamps will be collapsed creating A/V out of sync. We compensate those lost packets with
+                                    this)</label>
+                                <div class="clear"></div>
+                            </form>
+                            <h3>Video</h3>
+                            <form>
+                                <label>Current frame TS(ms):</label><input id="currentFrameVTS" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="currentDecoVBuffer" type="text" value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                            <label>V-A diff(ms):</label><input id="currentFrameAVTSDiff" type="text" value="" readonly>
+                            <div class="clear"></div>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Renderers</h2>
+                        <div class="styleform">
+                            <h3>Audio</h3>
+                            <form>
+                                <label>Current frame TS(ms):</label><input id="currentRendererATS" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="currentRendererABuffer" type="text" value="" size="48" readonly>
+                                <div class="clear"></div>
+                                <label>Total silence inserted (ms):</label><input id="currentRendererASilenceInserted" type="text"
+                                    value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                            <h3>Video</h3>
+                            <form>
+                                <label>Current frame TS(ms):</label><input id="currentRendererVTS" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Buffer size:</label><input id="currentRendererVBuffer" type="text" value="" readonly>
+                                <div class="clear"></div>
+                                <label>Not printed frames:</label><input id="currentRendererVDiscarded" type="text" value="" readonly>
+                                <div class="clear"></div>
+                            </form>
+                            <label>V-A diff(ms):</label><input id="currentRendererAVTSDiff" type="text" value="" readonly>
+                            <div class="clear"></div>
+                        </div>
+                    </div>
+                    <div class="boxed">
+                        <h2>Dropped data (frames / chunks):</h2>
+                        <ol id="droppedFrames"></ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>   
+</body>
+<script>
+    function initUI() {
+        // TODO
+    }
+
+    function showData(element) {
+        let x = document.getElementById(element);
+        if (x.style.display === "none") {
+            x.style.display = "block";
+        } else {
+            x.style.display = "none";
+        }
+    }
+
+    function start() {
+        // TODO
+    }
+
+    function stop() {
+        // TODO
+    }
+
+    async function initUI() {
+        initEncodingOptionsUI();
+        await populateVideoSourcesUI();
+        await populateAudioSourcesUI();
+
+        // Ini preview
+        const currentVideoDeviceIdIndex = document.getElementById('videoSources').selectedIndex;
+        let currentVideoDeviceId = ""
+        if (currentVideoDeviceIdIndex > 0) {
+            currentVideoDeviceId = document.getElementById("videoSources").options[currentVideoDeviceIdIndex].value;
+        }
+
+        const currentAudioDeviceIdIndex = document.getElementById('audioSources').selectedIndex;
+        let currentAudioDeviceId = ""
+        if (currentVideoDeviceIdIndex > 0) {
+            currentAudioDeviceId = document.getElementById("audioSources").options[currentAudioDeviceIdIndex].value;
+        }
+
+        const currentVideoEncodingIndex = document.getElementById('videoEncodingOptions').selectedIndex < 0 ? 0 : document.getElementById('videoEncodingOptions').selectedIndex;        
+        const currentVideoEncodingOptions = document.getElementById("videoEncodingOptions").options[currentVideoEncodingIndex].data; 
+        
+        restartPreviewUI(currentVideoDeviceId, currentAudioDeviceId, currentVideoEncodingOptions.w, currentVideoEncodingOptions.h);
+    }
+
+    function initEncodingOptionsUI() {
+        const op = document.getElementById("videoEncodingOptions");
+
+        addEncodingOptionUI(op, 320, 180, 15, 12); //1.2
+        addEncodingOptionUI(op, 320, 180, 30, 13, true); //1.3
+        addEncodingOptionUI(op, 854, 480, 15, 30); // 3
+        addEncodingOptionUI(op, 854, 480, 30, 31); //3.1
+        addEncodingOptionUI(op, 1280, 720, 15, 31); //3.1
+        addEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
+        addEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
+        addEncodingOptionUI(op, 1920, 1080, 15, 40); // 4
+        addEncodingOptionUI(op, 1920, 1080, 30, 40); // 4
+    }
+
+    function addEncodingOptionUI(optionsElement, width, height, fps, level, isSelected) {
+        const o = document.createElement("option")
+        o.text = `${width}x${height}@${fps}`
+        o.data = {w: width, h: height, fps: fps, level: level}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
+        enableUI("processingUpdate");
+        const audioConstraints = { };
+        if (newAudioDeviceId != "") {
+            audioConstraints.deviceId = { exact: newAudioDeviceId };
+        }
+        const videoConstraints = { };
+        if (newVideoDeviceId != "") {
+            videoConstraints.deviceId = { exact: newVideoDeviceId };
+        }
+        if (newHeight > 0) {
+            videoConstraints.height = {min: newHeight, ideal: newHeight};
+        }
+        if (newWidth > 0) {
+            videoConstraints.width = {min: newWidth, ideal: newWidth};
+        }
+
+        const constraints = {audio: audioConstraints, video: videoConstraints};
+        // Remove old stream
+        if (document.getElementById('vPreview').srcObject != undefined && document.getElementById('vPreview').srcObject != null) {
+            const mediaStream = document.getElementById('vPreview').srcObject;
+            const videoTracks = mediaStream.getVideoTracks();
+            videoTracks.forEach(function(vTrack) {
+                vTrack.stop();
+            });
+            const audioTracks = mediaStream.getAudioTracks();
+            audioTracks.forEach(function(aTrack) {
+                aTrack.stop();
+            });
+            document.getElementById('vPreview').srcObject = null;
+        }
+
+        // Start new stream
+        navigator.mediaDevices.getUserMedia(constraints)
+        .then(mediaStream => {                    
+            // Connect the stream to the preview video element.
+            document.getElementById('vPreview').srcObject = mediaStream;      
+            
+            return mediaStream;
+        })
+        .then(mediaStream => {
+            document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
+                console.info(`Started preview: ${newVideoDeviceId}, audio: ${newAudioDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
+            });
+        })
+        .catch(err => {
+            console.error(`Started video preview. Err: ${err}`);
+        })
+        .finally(() => {
+            enableUI("readyToPublish");
+        });
+    }
+
+    function enableUI(mode) {
+        if ( mode == "readyToPublish") {
+            document.getElementById("btnStart").disabled = false
+            document.getElementById("btnStop").disabled = true
+            document.getElementById("videoEncodingOptions").disabled = false
+            document.getElementById("videoSources").disabled = false
+            document.getElementById("audioSources").disabled = false
+        } else if (mode == "publishing") {
+            document.getElementById("btnStart").disabled = true
+            document.getElementById("btnStop").disabled = false
+            document.getElementById("videoEncodingOptions").disabled = true
+            document.getElementById("videoSources").disabled = true
+            document.getElementById("audioSources").disabled = true
+        } else if (mode == "processingUpdate") {
+            // Processing preview update
+            document.getElementById("btnStart").disabled = true
+            document.getElementById("btnStop").disabled = true
+            document.getElementById("videoEncodingOptions").disabled = true
+            document.getElementById("videoSources").disabled = true
+            document.getElementById("audioSources").disabled = true
+        } else {
+            console.error(`enableUI unknown mode ${mode}`);
+        }
+    }
+
+    async function populateVideoSourcesUI() {
+        const select = document.getElementById('videoSources');
+        select.innerHTML = '';
+        let count = 0;
+        // This does NOT work if you run chrome locally (test mode)
+        await navigator.mediaDevices
+            .enumerateDevices()
+            .then(devices => {
+                devices.forEach(mediaDevice => {
+                    if (mediaDevice.kind === 'videoinput') {
+                        if (mediaDevice.deviceId != "") {
+                            const option = document.createElement('option');
+                            option.value = mediaDevice.deviceId;
+                            count++;
+                            if (count == 1) option.selected = true;
+                            const label = mediaDevice.label || `Camera ${count}`;
+                            const textNode = document.createTextNode(label);
+                            option.appendChild(textNode);
+                            select.appendChild(option);
+                            console.log(`Video input device added: ${label}(${option.value})`);
+                        }
+                    }
+                })
+            }).catch(err => {
+                console.error(`Showing video sources. Err: ${err.name}-${err.message}`);
+            });
+    }
+
+    async function populateAudioSourcesUI() {
+        const select = document.getElementById('audioSources');
+        select.innerHTML = '';
+        let count = 0;
+        // This does NOT work if you run chrome locally (test mode)
+        await navigator.mediaDevices
+            .enumerateDevices()
+            .then(devices => {
+                devices.forEach(mediaDevice => {
+                    if (mediaDevice.kind === 'audioinput') {
+                        if (mediaDevice.deviceId != "") {
+                            const option = document.createElement('option');
+                            option.value = mediaDevice.deviceId;
+                            count++;
+                            if (count == 1) option.selected = true;
+                            const label = mediaDevice.label || `Microphone ${count}`;
+                            const textNode = document.createTextNode(label);
+                            option.appendChild(textNode);
+                            select.appendChild(option);
+                            console.log(`Audio input device added: ${label}(${option.value})`);
+                        }
+                    }
+                })
+            }).catch(err => {
+                console.error(`Showing audio sources. Err: ${err.name}-${err.message}`);
+            });
+    }
+
+    function onVideoSourceChanged(newVideoDeviceId) {
+        const audioSourceSelectedIndex = document.getElementById('audioSources').selectedIndex;
+        let selectedAudioSourceDeviceId = '';
+        if (audioSourceSelectedIndex >= 0) {
+            selectedAudioSourceDeviceId = document.getElementById('audioSources').options[audioSourceSelectedIndex].value;
+        }
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+
+        restartPreviewUI(newVideoDeviceId, selectedAudioSourceDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
+    }
+
+    function onAudioSourceChanged(newAudioDeviceId) {
+        const videoSourceSelectedIndex = document.getElementById('videoSources').selectedIndex;
+        let selectedVideoSourceDeviceId = '';
+        if (videoSourceSelectedIndex >= 0) {
+            selectedVideoSourceDeviceId = document.getElementById('videoSources').options[videoSourceSelectedIndex].value;
+        }
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+
+        restartPreviewUI(selectedVideoSourceDeviceId, newAudioDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
+    }
+
+    function onVideoEncodingsSettingsChanged(newData) {        
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+        
+        updatePreviewVideoSettingsUI(newData.w, newData.h);
+    }
+
+    // Add listeners from HTML
+    window.addEventListener("load", (event) => {initUI();});
+    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+
+    document.getElementById('btnLocalShowData').addEventListener("click", (event) => {showData("sectionLocalData");});
+    document.getElementById('btnLocalShowStats').addEventListener("click", (event) => {showData("sectionLocalStats");});
+
+    document.getElementById('btnPlayerShowData').addEventListener("click", (event) => {showData("sectionPlayerData");});
+    document.getElementById('btnPlayerShowStats').addEventListener("click", (event) => {showData("sectionPlayerStats");});
+
+    document.getElementById('videoSources').addEventListener("change", (event) => {onVideoSourceChanged(event.target.options[event.target.selectedIndex].value);});
+    document.getElementById('audioSources').addEventListener("change", (event) => {onAudioSourceChanged(event.target.options[event.target.selectedIndex].value);});
+
+    document.getElementById('videoEncodingOptions').addEventListener("change", (event) => {onVideoEncodingsSettingsChanged(event.target.options[event.target.selectedIndex].data);});
+</script>

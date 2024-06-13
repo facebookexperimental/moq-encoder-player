@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, isMetadataValid, serializeMetadata } from './utils.js'
+import { sendMessageToMain, StateEnum, isMetadataValid, serializeMetadata } from '../utils/utils.js'
 
 const WORKER_PREFIX = '[AUDIO-ENC]'
 

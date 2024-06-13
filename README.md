@@ -102,15 +102,15 @@ Main encoder webpage and also glues all encoder pieces together
 
 Stores the frames timestamps and the wall clock generation time from the raw generated frames. That allows us keep track of each frame / chunk creation time (wall clock)
 
-### src_encoder/v_capture.js
+### capture/v_capture.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that waits for the next RGB or YUV video frame from capture device,  augments it adding wallclock, and sends it via post message to video encoder
 
-### src_encoder/a_capture.js
+### capture/a_capture.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Receives the audio PCM frame (few ms, ~10ms to 25ms of audio samples) from capture device, augments it adding wallclock, and finally send it (doing copy) via post message to audio encoder
 
-### src_encoder/v_encoder.js
+### encode/v_encoder.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Encodes RGB or YUV video frames into encoded video chunks
 
@@ -121,7 +121,7 @@ Stores the frames timestamps and the wall clock generation time from the raw gen
 
 Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a chunk per video frame
 
-### src_encoder/a_encoder.js
+### encode/a_encoder.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Encodes PCM audio frames (samples) into encoded audio chunks
 
@@ -131,14 +131,14 @@ Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a c
 
 Note: `opus.frameDuration` setting helps keeping encoding latency low
 
-### src_encoder/packager/loc_packager.js
+### packager/loc_packager.js
 
 - Implements a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/) that is used for `moq_sender.js` as media packager
 
 ![LOC packager format](./pics/LOC-packager.png)
 Fig4: Main block diagra
 
-### src_encoder/moq_sender.js
+### sender/moq_sender.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and sends video and audio packets (see `loc_packager.js`) to the server / relay following [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
 
@@ -166,7 +166,7 @@ To keep the audio and video in-sync the following strategy is applied:
   - Discards (frees) all frames older current ts (except the returned one)
 - It is worth saying that `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync. To workaround that problem we calculate all the audio GAPs duration `timestampOffset` (by last playedTS - newTS, ideally = 0 if NO gaps), and we compensate the issued PTS by that.
 
-### src-player/moq_demuxer_downloader.js
+### receiver/moq_demuxer_downloader.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and extracts video and audio packets (see `loc_packager.js`) from the server / relay following [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
 
@@ -180,7 +180,7 @@ To keep the audio and video in-sync the following strategy is applied:
   - Audio: Create `EncodedAudioChunk`
     - Could be enhanced by init metadata, wallclock, and seqId
 
-### src-player/jitter_buffer.js
+### utils/jitter_buffer.js
 
 Since we do not have any guarantee that QUIC streams are delivered in order we need to order them before sending them to the decoder. This is the function of the deJitter. We create one instance per track, in this case one for Audio, one for video
 
@@ -191,7 +191,7 @@ Since we do not have any guarantee that QUIC streams are delivered in order we n
   - Gaps / discontinuities
   - Total QUIC Stream lost (not arrived in time)
 
-### src-player/audio_decoder.js
+### decode/audio_decoder.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) when it receives and audio chunk it decodes it and it sends the audio PCM samples to the audio renderer.
 `AudioDecoder` does NOT track timestamps on decoded data, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync.
@@ -203,14 +203,14 @@ To workaround that problem we calculate all the audio GAPs duration `timestampOf
     - `timestampOffset += lostTime`
 - Decode chunk and deliver PCM data
 
-### src-player/audio_circular_buffer.js
+### render/audio_circular_buffer.js
 
 Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer) and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics) to implement following mechanisms to share data in a "multi thread" environment:
 
 - Circular buffer (`sharedAudiobuffers`): Main buffer used to share audio PCM data from decoder to renderer `source_buffer_worklet.js`
 - State communication (`sharedStates`): Use to share states and data between renderer `source_buffer_worklet.js` and main thread
 
-### src-player/source_buffer_worklet.js
+### render/source_buffer_worklet.js
 
 [AudioWorkletProcessor](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), implements an audio source Worklet that sends audio samples to renderer.
 
@@ -219,7 +219,7 @@ Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaS
   - In case the buffer is exhausted (underrun) it will insert silence samples and notify timing according to that.
 - Reports last PTS rendered (this is used to sync video to the audio track, so to keep A/V in sync)
 
-### src-player/video_decoder.js
+### decode/video_decoder.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), Decodes video chunks and sends the decoded data (YUV or RGB) to the next stage (`video_render_buffer.js`)
 
@@ -228,7 +228,7 @@ Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaS
   - If it detects a discontinuity drops all video frames until next IDR frame
 - Sends the decoded frame to `video_render_buffer.js`
 
-### src-player/video_render_buffer.js
+### render/video_render_buffer.js
 
 Buffer that stores video decoded frames
 
