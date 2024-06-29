@@ -433,6 +433,7 @@ LICENSE file in the root directory of this source tree.
     function createVideoRendererBuffer() {
         videoRendererBuffer = new VideoRenderBuffer();
     }
+
     function clearVideoRendererBuffer() {
         if (videoRendererBuffer != null) {
             videoRendererBuffer.Clear();
@@ -504,21 +505,6 @@ LICENSE file in the root directory of this source tree.
         buffersInfo.renderer.audio.state = AUDIO_STOPPED;
         buffersInfo.renderer.video.size = -1;
         buffersInfo.renderer.video.lengthMs = -1;
-    }
-
-    function validateHighlightTime(startDateStr, endDateStr) {
-        const startDate = Date.parse(startDateStr);
-        if (isNaN(startDate)) {
-            return "Start date for VOD / Highlight could NOT be parsed";
-        }
-        const endDate = Date.parse(endDateStr);
-        if (isNaN(endDate)) {
-            return "End date for VOD / Highlight could NOT be parsed";
-        }
-        if (startDate >= endDate) {
-            return "Start date is bigger or equal as end date for VOD / Highlight";
-        }
-        return undefined;
     }
 
     async function initializeAudioContext() {

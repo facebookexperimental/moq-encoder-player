@@ -17,6 +17,8 @@ const MOQT_DEV_MODE = true
 
 const QUIC_EXPIRATION_TIMEOUT_DEF_MS = 10000
 
+const SLEEP_SUBSCRIBE_ERROR_MS = 2000
+
 let workerState = StateEnum.Created
 
 let urlHostPortEp = ''
@@ -244,23 +246,30 @@ async function moqCreateSubscriberSession (moqt) {
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
-  // Send subscribe for tracks audio and video
-  for (const [trackType, trackData] of Object.entries(tracks)) {
+  // Send subscribe for tracks audio and video (loop until both done or error)
+  let pending_subscribes = Object.entries(tracks)
+  while (pending_subscribes.length > 0) {
+    const [trackType, trackData] = pending_subscribes[0];
     await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
     const moqMsg = await moqParseMsg(moqt.controlReader)
     if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
       throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
     }
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-      throw new Error(`Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+      sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
+
+      await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
+    } else {
+      const subscribeResp = moqMsg.data    
+      if (subscribeResp.subscribeId !== currentSubscribeId) {
+        throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
+      }
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+      trackData.subscribeId = currentSubscribeId++
+      trackData.trackAlias = currentTrackAlias++
+
+      pending_subscribes.shift()
     }
-    const subscribeResp = moqMsg.data    
-    if (subscribeResp.subscribeId !== currentSubscribeId) {
-      throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
-    }
-    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-    trackData.subscribeId = currentSubscribeId++
-    trackData.trackAlias = currentTrackAlias++
   }
 }
 
