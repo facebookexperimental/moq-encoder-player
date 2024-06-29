@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-This project is provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
+This project is provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-03](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/03/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
 ![Main block diagram](./pics/basic-block-diagram.png)
 Fig1: Main block diagram
@@ -13,7 +13,7 @@ It uses a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-
 
 ## Encoder
 
-The encoder implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) publisher role. It is based on [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext), see the block diagram in fig3
+The encoder implements MOQT publisher role. It is based on [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext), see the block diagram in fig3
 
 ![Encoder block diagram](./pics/encoder-block-diagram.png)
 Fig3: Encoder block diagram
@@ -140,7 +140,7 @@ Fig4: Main block diagra
 
 ### sender/moq_sender.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and sends video and audio packets (see `loc_packager.js`) to the server / relay following [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `loc_packager.js`) to the server / relay following MOQT and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
 
 - Opens a WebTransport session against the relay
 - Implements MOQT publisher handshake for 2 tracks (opening control stream and announcing track namespace)
@@ -151,7 +151,7 @@ Fig4: Main block diagra
 
 ## Player
 
-The encoder implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) subscriber role. It uses [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext) / [Worklet](https://developer.mozilla.org/en-US/docs/Web/API/Worklet), [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer), and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics)
+The encoder implements MOQT subscriber role. It uses [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext) / [Worklet](https://developer.mozilla.org/en-US/docs/Web/API/Worklet), [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer), and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics)
 
 ![Player block diagram](./pics/player-block-diagram.png)
 Fig5: Player block diagram
@@ -168,7 +168,7 @@ To keep the audio and video in-sync the following strategy is applied:
 
 ### receiver/moq_demuxer_downloader.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and extracts video and audio packets (see `loc_packager.js`) from the server / relay following [MOQT draft-01](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `loc_packager.js`) from the server / relay following MOQT and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
 
 - Opens webtransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
