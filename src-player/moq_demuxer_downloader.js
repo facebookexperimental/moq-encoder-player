@@ -6,11 +6,14 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from './utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseSetupResponse, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqParseSubscribeResponse } from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
 const WORKER_PREFIX = '[MOQ-DOWNLOADER]'
+
+// Show verbose exceptions
+const MOQT_DEV_MODE = true
 
 const QUIC_EXPIRATION_TIMEOUT_DEF_MS = 10000
 
@@ -18,19 +21,21 @@ let workerState = StateEnum.Created
 
 let urlHostPortEp = ''
 let isSendingStats = false
-let tracks = {}
+let currentSubscribeId = 0
+let currentTrackAlias = 0
+let tracks = {} // We add subscribeId and trackAlias
 // Example
 /* moqTracks: {
     "audio": {
-        id: 0,
-        isHipri: true,
-        authInfo: "secret"
-    },
-    "video": {
-        id: 1,
-        isHipri: false,
-        authInfo: "secret"
-    }
+      namespace: "vc",
+      name: "-audio",
+      authInfo: "secret"
+  },
+  "video": {
+      namespace: "vc",
+      name: "-video",
+      authInfo: "secret"
+  }
 } */
 
 // MOQT data
@@ -59,10 +64,14 @@ self.addEventListener('message', async function (e) {
 
     // Abort and wait for all inflight requests
     try {
+      await unSubscribeTracks(moqt)
+      sendMessageToMain(WORKER_PREFIX, 'info', 'Unsubscribed from all tracks, closing MOQT')
       await moqClose(moqt)
     } catch (err) {
+      if (MOQT_DEV_MODE) {throw err}
       // Expected to finish some promises with abort error
       // The abort "errors" are already sent to main "thead" by sendMessageToMain inside the promise
+      sendMessageToMain(WORKER_PREFIX, 'error', `Errors closing (some could be ok): ${err}`)
     }
   } else if (type === 'downloadersendini') {
     if (workerState !== StateEnum.Instantiated) {
@@ -99,14 +108,14 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      // eslint-disable-next-line no-undef
       moqt.wt = new WebTransport(url.href)
       moqt.wt.closed
         .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'WT closed transport session')
         })
-        .catch(error => {
-          sendMessageToMain(WORKER_PREFIX, 'error', 'WT error, closed transport. Err: ' + error)
+        .catch(err => {
+          if (MOQT_DEV_MODE) {throw err}
+          sendMessageToMain(WORKER_PREFIX, 'error', `WT error, closed transport. Err: ${err}`)
         })
 
       await moqt.wt.ready
@@ -119,6 +128,7 @@ self.addEventListener('message', async function (e) {
       // Assuming QUIC stream per object
       moqReceiveObjects(moqt, QUIC_EXPIRATION_TIMEOUT_DEF_MS)
     } catch (err) {
+      if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'error', `Initializing MOQ. Err: ${err}`)
     }
   }
@@ -145,17 +155,21 @@ async function moqReceiveObjects (moqt) {
         await moqReceiveProcessObjects(stream.value)
       }
     } catch (err) {
-      sendMessageToMain(WORKER_PREFIX, 'dropped stream', { clkms: Date.now(), seqId: -1, msg: 'Dropped stream because WT error' })
+      if (MOQT_DEV_MODE) {throw err}
+      sendMessageToMain(WORKER_PREFIX, 'dropped stream', { clkms: Date.now(), seqId: -1, msg: `Dropped stream because WT error: ${err}` })
       sendMessageToMain(WORKER_PREFIX, 'error', `WT request. Err: ${JSON.stringify(err)}`)
     }
   }
 }
 
-function getTrackTypeFromTrackId (trackId) {
-  let ret
+function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
+  let ret = undefined
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    if (trackData.id === trackId) {
-      ret = trackType
+    if (trackData.trackAlias === trackAlias) {
+      if (subscribeId != undefined && trackData.subscribeId != subscribeId) {
+          break
+      }
+      ret = {type: trackType, data: trackData}
       break
     }
   }
@@ -166,14 +180,14 @@ async function moqReceiveProcessObjects (readerStream) {
   const startTime = Date.now()
 
   const moqObj = await moqParseObjectHeader(readerStream)
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT obj: ${moqObj.trackId}/${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT subscribeId: ${moqObj.subscribeId}, trackAlias: ${moqObj.trackAlias}. ${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
 
-  const trackType = getTrackTypeFromTrackId(moqObj.trackId)
-  if (trackType === undefined) {
-    throw new Error(`Unexpected trackId received ${moqObj.trackId}. Expecting ${JSON.stringify(tracks)}`)
+  const trackInfo = getTrackInfoFromTrackAlias(moqObj.trackAlias, moqObj.subscribeId)
+  if (trackInfo === undefined) {
+    throw new Error(`Unexpected trackAlias/subscriptionId ${moqObj.trackAlias}/${moqObj.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
   }
 
-  if (trackType !== 'data') {
+  if (trackInfo.type !== 'data') {
     const packet = new LocPackager()
     await packet.ReadBytes(readerStream)
 
@@ -185,7 +199,6 @@ async function moqReceiveProcessObjects (readerStream) {
 
     let chunk
     if (chunkData.mediaType === 'audio') {
-      // eslint-disable-next-line no-undef
       chunk = new EncodedAudioChunk({
         timestamp: chunkData.timestamp,
         type: chunkData.chunkType,
@@ -193,7 +206,6 @@ async function moqReceiveProcessObjects (readerStream) {
         duration: chunkData.duration
       })
     } else if (chunkData.mediaType === 'video') {
-      // eslint-disable-next-line no-undef
       chunk = new EncodedVideoChunk({
         timestamp: chunkData.timestamp,
         type: chunkData.chunkType,
@@ -222,21 +234,33 @@ async function moqReceiveProcessObjects (readerStream) {
 
 async function moqCreateSubscriberSession (moqt) {
   await moqSendSetup(moqt.controlWriter, MOQ_PARAMETER_ROLE_SUBSCRIBER)
-  const setupResponse = await moqParseSetupResponse(moqt.controlReader)
+  const moqMsg = await moqParseMsg(moqt.controlReader)
+  if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
+    throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
+  }
+  const setupResponse = moqMsg.data
   if (setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_PUBLISHER && setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_BOTH) {
     throw new Error(`role not supported. Supported ${MOQ_PARAMETER_ROLE_PUBLISHER} or ${MOQ_PARAMETER_ROLE_BOTH}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
+  // Send subscribe for tracks audio and video
   for (const [trackType, trackData] of Object.entries(tracks)) {
-    await moqSendSubscribe(moqt.controlWriter, trackData.namespace, trackData.name, trackData.authInfo)
-    const subscribeResp = await moqParseSubscribeResponse(moqt.controlReader)
-    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-    if (trackData.namespace !== subscribeResp.namespace || trackData.name !== subscribeResp.trackName) {
-      throw new Error(`expecting ${trackData.namespace}/${trackData.name}/, got ${subscribeResp.namespace}/${subscribeResp.trackName}`)
+    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
+    const moqMsg = await moqParseMsg(moqt.controlReader)
+    if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+      throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
     }
-    // Update trackId
-    trackData.id = subscribeResp.trackId
+    if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+      throw new Error(`Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+    }
+    const subscribeResp = moqMsg.data    
+    if (subscribeResp.subscribeId !== currentSubscribeId) {
+      throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
+    }
+    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+    trackData.subscribeId = currentSubscribeId++
+    trackData.trackAlias = currentTrackAlias++
   }
 }
 
@@ -251,4 +275,33 @@ function checkTrackData () {
     }
   }
   return ''
+}
+
+async function unSubscribeTracks(moqt) {
+  sendMessageToMain(WORKER_PREFIX, 'info', `Sending ${Object.entries(tracks).length} unsubscribes`)
+
+  for (const trackData of Object.values(tracks)) {
+    if ('subscribeId' in trackData) {
+      try {
+        await moqSendUnSubscribe(moqt.controlWriter, trackData.subscribeId)
+        sendMessageToMain(WORKER_PREFIX, 'info', `Sent UnSubscribe for ${trackData.subscribeId}`)
+        const moqMsg = await moqParseMsg(moqt.controlReader)
+        if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_DONE) {
+          throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_DONE received ${moqMsg.type}`)
+        }
+        const subscribeDone = moqMsg.data
+        sendMessageToMain(WORKER_PREFIX, 'info', `Received SubscribeDone for subscibeId: ${subscribeDone.subscribeId}: ${JSON.stringify(subscribeDone)}`)
+        // TODO When server works check same subscribeID subscribeDone.subscribeId == trackData.subscribeId 
+      }
+      catch (err) {
+        if (MOQT_DEV_MODE) {throw err}
+        sendMessageToMain(WORKER_PREFIX, 'error', `on UnSubscribe. Err: ${err}`)
+      } finally {
+        delete trackData.subscribeId
+        if ('trackAlias' in trackData) {
+          delete trackData.trackAlias
+        }
+      }
+    }
+  }
 }
