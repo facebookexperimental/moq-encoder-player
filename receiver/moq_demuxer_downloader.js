@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum } from './utils.js'
+import { sendMessageToMain, StateEnum } from '../utils/utils.js'
 import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
@@ -16,6 +16,8 @@ const WORKER_PREFIX = '[MOQ-DOWNLOADER]'
 const MOQT_DEV_MODE = true
 
 const QUIC_EXPIRATION_TIMEOUT_DEF_MS = 10000
+
+const SLEEP_SUBSCRIBE_ERROR_MS = 2000
 
 let workerState = StateEnum.Created
 
@@ -244,23 +246,30 @@ async function moqCreateSubscriberSession (moqt) {
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
-  // Send subscribe for tracks audio and video
-  for (const [trackType, trackData] of Object.entries(tracks)) {
+  // Send subscribe for tracks audio and video (loop until both done or error)
+  let pending_subscribes = Object.entries(tracks)
+  while (pending_subscribes.length > 0) {
+    const [trackType, trackData] = pending_subscribes[0];
     await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
     const moqMsg = await moqParseMsg(moqt.controlReader)
     if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
       throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
     }
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-      throw new Error(`Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+      sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
+
+      await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
+    } else {
+      const subscribeResp = moqMsg.data    
+      if (subscribeResp.subscribeId !== currentSubscribeId) {
+        throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
+      }
+      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+      trackData.subscribeId = currentSubscribeId++
+      trackData.trackAlias = currentTrackAlias++
+
+      pending_subscribes.shift()
     }
-    const subscribeResp = moqMsg.data    
-    if (subscribeResp.subscribeId !== currentSubscribeId) {
-      throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
-    }
-    sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-    trackData.subscribeId = currentSubscribeId++
-    trackData.trackAlias = currentTrackAlias++
   }
 }
 

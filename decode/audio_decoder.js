@@ -5,8 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, deSerializeMetadata } from './utils.js'
-import { TsQueue } from './ts_queue.js'
+import { sendMessageToMain, StateEnum, deSerializeMetadata} from '../utils/utils.js'
+import { TsQueue } from '../utils/ts_queue.js'
 
 const WORKER_PREFIX = '[AUDIO-DECO]'
 
@@ -67,7 +67,7 @@ self.addEventListener('message', async function (e) {
           }
         })
 
-        audioDecoder.addEventListener('dequeue', (event) => {
+        audioDecoder.addEventListener('dequeue', () => {
           if (audioDecoder != null) {
             ptsQueue.removeUntil(audioDecoder.decodeQueueSize)
           }

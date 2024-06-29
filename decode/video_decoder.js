@@ -5,8 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, deSerializeMetadata } from './utils.js'
-import { TsQueue } from './ts_queue.js'
+import { sendMessageToMain, StateEnum, deSerializeMetadata } from '../utils/utils.js'
+import { TsQueue } from '../utils/ts_queue.js'
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
 
@@ -76,7 +76,7 @@ self.addEventListener('message', async function (e) {
           }
         })
 
-        videoDecoder.addEventListener('dequeue', (event) => {
+        videoDecoder.addEventListener('dequeue', () => {
           if (videoDecoder != null) {
             ptsQueue.removeUntil(videoDecoder.decodeQueueSize)
           }

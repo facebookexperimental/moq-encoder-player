@@ -250,15 +250,15 @@ LICENSE file in the root directory of this source tree.
 
     function createWorkers() {
         // Create a new workers for video / audio frames capture
-        vStreamWorker = new Worker("./v_capture.js", { type: "module" });
-        aStreamWorker = new Worker("./a_capture.js", { type: "module" });
+        vStreamWorker = new Worker("../capture/v_capture.js", { type: "module" });
+        aStreamWorker = new Worker("../capture/a_capture.js", { type: "module" });
 
         // Create a new workers for video / audio frames encode
-        vEncoderWorker = new Worker("v_encoder.js", { type: "module" });
-        aEncoderWorker = new Worker("a_encoder.js", { type: "module" });
+        vEncoderWorker = new Worker("../encode/v_encoder.js", { type: "module" });
+        aEncoderWorker = new Worker("../encode/a_encoder.js", { type: "module" });
 
         // Create send worker
-        muxerSenderWorker = new Worker("moq_sender.js", { type: "module" });
+        muxerSenderWorker = new Worker("../sender/moq_sender.js", { type: "module" });
     }
 
     function clearUI() {
