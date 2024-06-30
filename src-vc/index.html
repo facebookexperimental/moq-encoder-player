@@ -59,20 +59,31 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <label>AuthInfo:<input id="authInfo" type="text" value="secret"></label>
                     <div class="clear"></div>
-                    <label>Full track names to ANNOUNCE:<input id="announceFullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <label>Full track names to ANNOUNCE:<input id="announceFullTrackNames" type="text" value="-" size="128" readonly></label>
                     <div class="clear"></div>
-                    <label>Full track names to SUBSCRIBE:<input id="subscibeFullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <label>Full track names to SUBSCRIBE:<input id="subscibeFullTrackNames" type="text" value="-" size="128" readonly></label>
                     <div class="clear"></div>
                 </form>
-            </div>
+            </div>    
             <div class="styleform">
                 <form>
-                     <div class="clear"></div>
+                    <div class="clear"></div>
                     <button id="btnStart" type="button">Start</button>
                     <button id="btnStop" type="button" disabled>Stop</button>
                 </form>
             </div>
         </div>
+        <!-- Generated URL for invitee -->
+        <div class="boxed">
+            <form>
+                <div style="margin-top: 10px;margin-bottom: 10px;">
+                    <strong>
+                        <label>URL to pass to your invitee:<input id="inviteeUrl" type="text" value="-" size="150" readonly></label>                        
+                    </strong>
+                    <button id="btnInviteeCopy" type="button">Copy</button>    
+                </div>
+            </form>
+        </div>        
         <!-- ENCODER -->
         <div class="column">
             <div class="boxed">
@@ -648,6 +659,9 @@ LICENSE file in the root directory of this source tree.
         // Transfer the readable stream to the worker.
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
         aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);
+
+        // Show invitee URL
+        updateInviteeUrlUI();
     }
 
     async function encoderStop() {
@@ -948,12 +962,14 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("videoEncodingOptions").disabled = false
             document.getElementById("videoSources").disabled = false
             document.getElementById("audioSources").disabled = false
+            document.getElementById("btnInviteeCopy").disabled = true
         } else if (mode == "publishing") {
             document.getElementById("btnStart").disabled = true
             document.getElementById("btnStop").disabled = false
             document.getElementById("videoEncodingOptions").disabled = true
             document.getElementById("videoSources").disabled = true
             document.getElementById("audioSources").disabled = true
+            document.getElementById("btnInviteeCopy").disabled = false
         } else if (mode == "processingUpdate") {
             // Processing preview update
             document.getElementById("btnStart").disabled = true
@@ -961,6 +977,7 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("videoEncodingOptions").disabled = true
             document.getElementById("videoSources").disabled = true
             document.getElementById("audioSources").disabled = true
+            document.getElementById("btnInviteeCopy").disabled = true
         } else {
             console.error(`encoderEnableUI unknown mode ${mode}`);
         }
@@ -1604,10 +1621,14 @@ LICENSE file in the root directory of this source tree.
         const qvc = qsParams.get('vc')
         if (qvc != undefined) {
             document.getElementById("meNamespace").value = qvc;
+        } else {
+            document.getElementById("meNamespace").value = crypto.randomUUID()
         }
         const qvcguest1 = qsParams.get('vcguest1')
         if (qvcguest1 != undefined) {
             document.getElementById("guestNamespace").value = qvcguest1;
+        } else {
+            document.getElementById("guestNamespace").value = crypto.randomUUID()
         }
         const qname = qsParams.get('name')
         if (qname != undefined) {
@@ -1679,6 +1700,30 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function copyInviteeUrlClipboard() {
+        copyToClipboard(document.getElementById("inviteeUrl").value);
+    }
+
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text);
+    }
+
+    function generateInviteeUrl() {
+        const webBaseUrl = window.location.href;
+        const meId = document.getElementById("meNamespace").value;
+        const inviteeId = document.getElementById("guestNamespace").value;
+        const relay = document.getElementById("wtServerUrl").value;
+        const trackBaseName = document.getElementById("trackName").value;
+
+        return `${webBaseUrl}?vc=${inviteeId}&vcguest1=${meId}&name=${trackBaseName}&host=${relay}`;
+    }
+
+    function updateInviteeUrlUI() {
+        const str = generateInviteeUrl()
+
+        document.getElementById("inviteeUrl").value = str;
+    }
+
     function updateFullTrackNameUI() {
         document.getElementById("announceFullTrackNames").value = `${document.getElementById("meNamespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("meNamespace").value}/${document.getElementById("trackName").value}-video`;
         document.getElementById("subscibeFullTrackNames").value = `${document.getElementById("guestNamespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("guestNamespace").value}/${document.getElementById("trackName").value}-video`;
@@ -1709,4 +1754,6 @@ LICENSE file in the root directory of this source tree.
 
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
+
+    document.getElementById('btnInviteeCopy').addEventListener("click", (event) => {copyInviteeUrlClipboard();});
 </script>
