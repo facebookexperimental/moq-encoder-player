@@ -1709,7 +1709,8 @@ LICENSE file in the root directory of this source tree.
     }
 
     function generateInviteeUrl() {
-        const webBaseUrl = window.location.href;
+        const urlPieces = [window.location.protocol, '//', window.location.host, window.location.pathname]
+        const webBaseUrl = urlPieces.join('')
         const meId = document.getElementById("meNamespace").value;
         const inviteeId = document.getElementById("guestNamespace").value;
         const relay = document.getElementById("wtServerUrl").value;

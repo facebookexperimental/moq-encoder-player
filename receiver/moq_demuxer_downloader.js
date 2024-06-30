@@ -256,7 +256,7 @@ async function moqCreateSubscriberSession (moqt) {
       throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
     }
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-      sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
+      sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${trackData.namespace}/${trackData.name} (type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
 
       await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
     } else {
