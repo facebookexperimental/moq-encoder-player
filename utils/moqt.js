@@ -13,7 +13,8 @@ import { concatBuffer, buffRead } from './buffer_utils.js'
 export const MOQ_DRAFT01_VERSION = 0xff000001
 export const MOQ_DRAFT02_VERSION = 0xff000002
 export const MOQ_DRAFT03_VERSION = 0xff000003
-export const MOQ_CURRENT_VERSION = MOQ_DRAFT03_VERSION
+export const MOQ_DRAFT04_VERSION = 0xff000004
+export const MOQ_CURRENT_VERSION = MOQ_DRAFT04_VERSION
 export const MOQ_SUPPORTED_VERSIONS = [MOQ_CURRENT_VERSION]
 
 export const MOQ_PARAMETER_ROLE = 0x0
@@ -39,6 +40,12 @@ export const MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS = 0x2
 
 // MOQ SUBSCRIPTION DONE CODES
 export const MOQ_SUBSCRIPTION_DONE_ENDED = 0x4
+
+// MOQ FILTER TYPES
+export const MOQ_FILTER_TYPE_LATEST_GROUP = 0x1
+export const MOQ_FILTER_TYPE_LATEST_OBJ = 0x2
+export const MOQ_FILTER_TYPE_ABSOLUTE_START = 0x3
+export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4
 
 // MOQ messages
 export const MOQ_MESSAGE_OBJECT_STREAM = 0x0
@@ -218,16 +225,8 @@ function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace,
   // Track name
   const trackNameBytes = moqCreateStringBytes(trackName)
 
-  // Start group
-  const startGroupBytesMode = numberToVarInt(MOQ_LOCATION_MODE_RELATIVE_NEXT)
-  const startGroupBytesValue = numberToVarInt(0)
-  // Start object
-  const startObjectBytesMode = numberToVarInt(MOQ_LOCATION_MODE_ABSOLUTE)
-  const startObjectBytesValue = numberToVarInt(0)
-  // End group
-  const endGroupBytesMode = numberToVarInt(MOQ_LOCATION_MODE_NONE)
-  // End object
-  const endObjectBytesMode = numberToVarInt(MOQ_LOCATION_MODE_NONE)
+  // Filter type (request latest object)
+  const filterTypeBytes = numberToVarInt(MOQ_FILTER_TYPE_LATEST_OBJ)
 
   // Params
   // Number of parameters
@@ -237,7 +236,7 @@ function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace,
   // param[0]: length + auth info
   const authInfoBytes = moqCreateStringBytes(authInfo)
 
-  return concatBuffer([messageTypeBytes, subscribeIDBytes, trackAliasBytes, trackNamespaceBytes, trackNameBytes, startGroupBytesMode, startGroupBytesValue, startObjectBytesMode, startObjectBytesValue, endGroupBytesMode, endObjectBytesMode, numberOfParamsBytes, authInfoParamIdBytes, authInfoBytes])
+  return concatBuffer([messageTypeBytes, subscribeIDBytes, trackAliasBytes, trackNamespaceBytes, trackNameBytes, filterTypeBytes, numberOfParamsBytes, authInfoParamIdBytes, authInfoBytes])
 }
 
 // SUBSCRIBE OK
@@ -404,27 +403,35 @@ async function moqParseSubscribe (readerStream) {
   ret.trackAlias = await varIntToNumber(readerStream)
   ret.namespace = await moqStringRead(readerStream)
   ret.trackName = await moqStringRead(readerStream)
-  ret.startGroup = await varIntToNumber(readerStream)
-  if (ret.startGroup !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
-    // TODO: Do not start sending until this position
+
+  ret.filterType = await varIntToNumber(readerStream)
+
+  if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_START || ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
+    ret.startGroup = await varIntToNumber(readerStream)
+    if (ret.startGroup !== MOQ_LOCATION_MODE_NONE) {
+      await varIntToNumber(readerStream)
+      // TODO: Do not start sending until this position
+    }
+    // Start object
+    ret.startObject = await varIntToNumber(readerStream)
+    if (ret.startObject !== MOQ_LOCATION_MODE_NONE) {
+      await varIntToNumber(readerStream)
+      // TODO: Do not start sending until this position
+    }
   }
-  // Start object
-  ret.startObject = await varIntToNumber(readerStream)
-  if (ret.startObject !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
-    // TODO: Do not start sending until this position
+  if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
+    ret.endGroup = await varIntToNumber(readerStream)
+    if (ret.endGroup !== MOQ_LOCATION_MODE_NONE) {
+      await varIntToNumber(readerStream)
+      // TODO: Stop sending if NO subscribers after this position
+    }
+    ret.endObject = await varIntToNumber(readerStream)
+    if (ret.endObject !== MOQ_LOCATION_MODE_NONE) {
+      await varIntToNumber(readerStream)
+      // TODO: Stop sending if NO subscribers after this position
+    }    
   }
-  ret.endGroup = await varIntToNumber(readerStream)
-  if (ret.endGroup !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
-    // TODO: Stop sending if NO subscribers after this position
-  }
-  ret.endObject = await varIntToNumber(readerStream)
-  if (ret.endObject !== MOQ_LOCATION_MODE_NONE) {
-    await varIntToNumber(readerStream)
-    // TODO: Stop sending if NO subscribers after this position
-  }
+
   ret.parameters = await moqReadParameters(readerStream)
 
   return ret
@@ -462,8 +469,9 @@ function moqCreateObjectBytes (subscribeId, trackAlias, groupSeq, objSeq, sendOr
   const groupSeqBytes = numberToVarInt(groupSeq)
   const objSeqBytes = numberToVarInt(objSeq)
   const sendOrderBytes = numberToVarInt(sendOrder)
+  const statusBytes = numberToVarInt(0)
 
-  return concatBuffer([messageTypeBytes, subscribeIdBytes, trackAliasBytes, groupSeqBytes, objSeqBytes, sendOrderBytes, data])
+  return concatBuffer([messageTypeBytes, subscribeIdBytes, trackAliasBytes, groupSeqBytes, objSeqBytes, sendOrderBytes, statusBytes, data])
 }
 
 export function moqSendObjectToWriter (writer, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
@@ -481,7 +489,8 @@ export async function moqParseObjectHeader (readerStream) {
   const groupSeq = await varIntToNumber(readerStream)
   const objSeq = await varIntToNumber(readerStream)
   const sendOrder = await varIntToNumber(readerStream)
-  const ret = { subscribeId, trackAlias, groupSeq, objSeq, sendOrder }
+  const status = await varIntToNumber(readerStream)
+  const ret = { subscribeId, trackAlias, groupSeq, objSeq, sendOrder, status}
  
   return ret
 }

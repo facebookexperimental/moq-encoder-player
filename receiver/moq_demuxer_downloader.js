@@ -271,6 +271,7 @@ async function moqCreateSubscriberSession (moqt) {
       pending_subscribes.shift()
     }
   }
+  sendMessageToMain(WORKER_PREFIX, 'info', 'Finished subscription loop')
 }
 
 function checkTrackData () {
