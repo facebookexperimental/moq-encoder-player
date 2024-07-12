@@ -65,7 +65,6 @@ self.addEventListener('message', async function (e) {
     try {
       //TODO JOC finish abort controller
       abortController.abort()
-      await closeUniDataTrackWritersIfNeeded()
       await Promise.all(getAllInflightRequestsArray())
 
       await unAnnounceTracks(moqt)
@@ -464,17 +463,7 @@ function createTrackState () {
   return {
     currentGroupSeq: 0,
     currentObjectSeq: 0,
-    uniDataTrackWriter: null,
   }
-}
-
-async function closeUniDataTrackWritersIfNeeded() {
-  for (const [, trackData] of Object.entries(tracks)) {
-    if ('uniDataTrackWriter' in trackData && trackData.uniDataTrackWriter != null) {
-      await trackData.uniDataTrackWriter.close();
-    }
-  }
-  return
 }
 
 function getTrackFromFullTrackName (fullTrackName) {
