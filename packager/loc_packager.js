@@ -68,7 +68,8 @@ export class LocPackager {
     this.firstFrameClkms = await varIntToNumber(readerStream)
     const metadataSize = await varIntToNumber(readerStream)
     if (metadataSize > 0) {
-      this.metadata = await buffRead(readerStream, metadataSize)
+      let eof = false;
+      eof, this.metadata = await buffRead(readerStream, metadataSize)
     } else {
       this.metadata = null
     }

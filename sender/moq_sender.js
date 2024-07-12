@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
-import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectPerStreamToWriter, moqSendObjectPerDatagramToWriter, moqSendTrackPerStreamHeader, moqSendTrackPerStreamToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -28,13 +28,15 @@ let tracks = {}
         id: 0,
         maxInFlightRequests: 100,
         isHipri: true,
-        authInfo: "secret"
+        authInfo: "secret",
+        moqMapping: "ObjStream",
     },
     "video": {
         id: 1,
         maxInFlightRequests: 50,
         isHipri: false,
-        authInfo: "secret"
+        authInfo: "secret",
+        moqMapping: "ObjStream",
     }
 } */
 
@@ -63,6 +65,7 @@ self.addEventListener('message', async function (e) {
     try {
       //TODO JOC finish abort controller
       abortController.abort()
+      await closeUniDataTrackWritersIfNeeded()
       await Promise.all(getAllInflightRequestsArray())
 
       await unAnnounceTracks(moqt)
@@ -182,7 +185,7 @@ self.addEventListener('message', async function (e) {
     const subscribeId = tracks[type].subscribers[i].subscribeId
     const trackAlias = tracks[type].subscribers[i].trackAlias
   
-    sendChunkToTransport(chunkData, subscribeId, trackAlias, inFlightRequests[type], tracks[type].maxInFlightRequests)
+    sendChunkToTransport(chunkData, subscribeId, trackAlias, inFlightRequests[type], tracks[type].maxInFlightRequests, tracks[type].moqMapping)
     .then(val => {
       if (val !== undefined && val.dropped === true) {
         sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: type, ts: chunkData.timestamp, msg: val.message })
@@ -273,17 +276,17 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
   }
 }
 
-async function sendChunkToTransport (chunkData, subscribeId, trackAlias, inFlightRequests, maxFlightRequests) {
+async function sendChunkToTransport (chunkData, subscribeId, trackAlias, inFlightRequests, maxFlightRequests, moqMapping) {
   if (chunkData == null) {
     return { dropped: true, message: 'chunkData is null' }
   }
   if (Object.keys(inFlightRequests).length >= maxFlightRequests) {
     return { dropped: true, message: 'too many inflight requests' }
   }
-  return createRequest(chunkData, subscribeId, trackAlias)
+  return createRequest(chunkData, subscribeId, trackAlias, moqMapping)
 }
 
-async function createRequest (chunkData, subscribeId, trackAlias) {
+async function createRequest (chunkData, subscribeId, trackAlias, moqMapping) {
   let packet = null
 
   if (chunkData.mediaType === 'data') {
@@ -299,50 +302,129 @@ async function createRequest (chunkData, subscribeId, trackAlias) {
 
     packet.SetData(chunkData.mediaType, chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
   }
-  return createSendPromise(packet, subscribeId, trackAlias)
+  return createSendPromise(packet, subscribeId, trackAlias, moqMapping)
 }
 
-async function createSendPromise (packet, subscribeId, trackAlias) {
+async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
   if (moqt.wt === null) {
-    return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
+    return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
   }
-  if (!(trackAlias in moqPublisherState)) {
-    if (packet.GetData().chunkType === 'delta') {
-      return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
+
+  let p = null;
+  if (moqMapping === MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+    if (!(trackAlias in moqPublisherState)) {
+      if (packet.GetData().chunkType === 'delta') {
+        return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
+      }
+      moqPublisherState[trackAlias] = createTrackState()
     }
-    moqPublisherState[trackAlias] = createTrackState()
+
+    const sendOrder = moqCalculateSendOrder(packet)
+
+    // Get datagram writer
+    const datagramWriter = moqt.wt.datagrams.writable.getWriter();
+
+    // Group sequence, Using it as a joining point
+    if (packet.GetData().chunkType !== 'delta') {
+      moqPublisherState[trackAlias].currentGroupSeq++
+      moqPublisherState[trackAlias].currentObjectSeq = 0
+    }
+    const groupSeq = moqPublisherState[trackAlias].currentGroupSeq
+    const objSeq = moqPublisherState[trackAlias].currentObjectSeq
+
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
+
+    moqSendObjectPerDatagramToWriter(datagramWriter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
+
+    datagramWriter.releaseLock()
+
+    moqPublisherState[trackAlias].currentObjectSeq++
+
+    // TODO JOC
+    // Write async here
+    //p = datagramWriter.close()
+    //p.id = packet.GetData().pId
+    //addToInflight(packet.GetData().mediaType, p)
+  } else if (moqMapping === MOQ_MAPPING_OBJECT_PER_STREAM) {
+    if (!(trackAlias in moqPublisherState)) {
+      if (packet.GetData().chunkType === 'delta') {
+        return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
+      }
+      moqPublisherState[trackAlias] = createTrackState()
+    }
+
+    const sendOrder = moqCalculateSendOrder(packet)
+
+    const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
+    const uniWriter = uniStream.getWriter()
+
+    // Group sequence, Using it as a joining point
+    if (packet.GetData().chunkType !== 'delta') {
+      moqPublisherState[trackAlias].currentGroupSeq++
+      moqPublisherState[trackAlias].currentObjectSeq = 0
+    }
+    const groupSeq = moqPublisherState[trackAlias].currentGroupSeq
+    const objSeq = moqPublisherState[trackAlias].currentObjectSeq
+
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per stream. subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
+
+    moqSendObjectPerStreamToWriter(uniWriter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
+
+    moqPublisherState[trackAlias].currentObjectSeq++
+
+    // Write async here
+    p = uniWriter.close()
+    p.id = packet.GetData().pId
+
+    addToInflight(packet.GetData().mediaType, p)
+  } 
+  else if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM) {
+    if (!(trackAlias in moqPublisherState)) {
+      if (packet.GetData().chunkType === 'delta') {
+        return { dropped: true, message: `Dropped object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
+      }
+      moqPublisherState[trackAlias] = createTrackState()
+
+      // Create stream per track (calculate track priority based on 1st packet)
+      const sendOrder = moqCalculateSendOrder(packet)
+      const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
+      moqPublisherState[trackAlias].uniDataTrackWriter = uniStream.getWriter()
+
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per track header. subscribeId: ${subscribeId}, trackAlias: ${trackAlias}(${sendOrder}).`)
+
+      // Send track header
+      moqSendTrackPerStreamHeader(moqPublisherState[trackAlias].uniDataTrackWriter, subscribeId, trackAlias, sendOrder)
+
+      // Write async here
+      p = Promise.resolve()
+      p.id = trackAlias
+      addToInflight(packet.GetData().mediaType, p)
+    } 
+
+    // Group sequence, Using it as a joining point
+    if (packet.GetData().chunkType !== 'delta') {
+      moqPublisherState[trackAlias].currentGroupSeq++
+      moqPublisherState[trackAlias].currentObjectSeq = 0
+    }
+    const groupSeq = moqPublisherState[trackAlias].currentGroupSeq
+    const objSeq = moqPublisherState[trackAlias].currentObjectSeq
+
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per track. subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}. Data: ${packet.GetDataStr()}`)
+
+    // Stream already opened
+    moqSendTrackPerStreamToWriter(moqPublisherState[trackAlias].uniDataTrackWriter, groupSeq, objSeq, packet.ToBytes())    
+    
+    moqPublisherState[trackAlias].currentObjectSeq++
+  } else {
+    throw new Error(`Unexpected MOQ - QUIC mapping, received ${moqMapping}`)
   }
 
-  const sendOrder = moqCalculateSendOrder(packet)
-
-  const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
-  const uniWriter = uniStream.getWriter()
-
-  // Group sequence, Using it as a joining point
-  if (packet.GetData().chunkType !== 'delta') {
-    moqPublisherState[trackAlias].currentGroupSeq++
-    moqPublisherState[trackAlias].currentObjectSeq = 0
+  if (p != null) {
+    p.finally(() => {
+      removeFromInflight(packet.GetData().mediaType, packet.GetData().pId)
+      return { dropped: false, message: `Sent object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}` }
+    })
   }
-
-  const groupSeq = moqPublisherState[trackAlias].currentGroupSeq
-  const objSeq = moqPublisherState[trackAlias].currentObjectSeq
-
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Sending MOQT subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
-
-  moqSendObjectToWriter(uniWriter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
-
-  moqPublisherState[trackAlias].currentObjectSeq++
-
-  // Write async here
-  const p = uniWriter.close()
-  p.id = packet.GetData().pId
-
-  addToInflight(packet.GetData().mediaType, p)
-
-  p.finally(() => {
-    removeFromInflight(packet.GetData().mediaType, packet.GetData().pId)
-    return { dropped: false, message: `Sent chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}` }
-  })
 }
 
 function addToInflight (mediaType, p) {
@@ -441,8 +523,18 @@ function moqCalculateSendOrder (packet) {
 function createTrackState () {
   return {
     currentGroupSeq: 0,
-    currentObjectSeq: 0
+    currentObjectSeq: 0,
+    uniDataTrackWriter: null,
   }
+}
+
+async function closeUniDataTrackWritersIfNeeded() {
+  for (const [, trackData] of Object.entries(tracks)) {
+    if ('uniDataTrackWriter' in trackData && trackData.uniDataTrackWriter != null) {
+      await trackData.uniDataTrackWriter.close();
+    }
+  }
+  return
 }
 
 function getTrackFromFullTrackName (fullTrackName) {

@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { readUntilEof } from '../utils/buffer_utils.js'
+import { readUntilEof, buffRead } from '../utils/buffer_utils.js'
 
 export class RawPackager {
   READ_BLOCK_SIZE = 1024
@@ -31,6 +31,12 @@ export class RawPackager {
   async ReadBytes (readerStream) {
     const payloadBytes = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
     this.data = new TextDecoder().decode(payloadBytes)
+  }
+
+  async ReadLengthBytes (readerStream, length) {
+    const ret = await buffRead(readerStream, length)
+    this.data = new TextDecoder().decode(ret.buff)
+    return ret.eof
   }
 
   GetData () {

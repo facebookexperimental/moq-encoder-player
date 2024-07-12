@@ -32,19 +32,24 @@ export async function varIntToNumber (readableStream) {
   const reader = readableStream.getReader({ mode: 'byob' })
   try {
     let buff = new ArrayBuffer(8)
+    let retBuff = null
 
-    buff = await buffReadFrombyobReader(reader, buff, 0, 1)
+    retBuff = await buffReadFrombyobReader(reader, buff, 0, 1)
+    buff = retBuff.buff
     const size = (new DataView(buff, 0, 1).getUint8() & 0xc0) >> 6
     if (size === 0) {
       ret = new DataView(buff, 0, 1).getUint8() & 0x3f
     } else if (size === 1) {
-      buff = await buffReadFrombyobReader(reader, buff, 1, 1)
+      retBuff = await buffReadFrombyobReader(reader, buff, 1, 1)
+      buff = retBuff.buff
       ret = new DataView(buff, 0, 2).getUint16() & 0x3fff
     } else if (size === 2) {
-      buff = await buffReadFrombyobReader(reader, buff, 1, 3)
+      retBuff = await buffReadFrombyobReader(reader, buff, 1, 3)
+      buff = retBuff.buff
       ret = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
     } else if (size === 3) {
-      buff = await buffReadFrombyobReader(reader, buff, 1, 7)
+      retBuff = await buffReadFrombyobReader(reader, buff, 1, 7)
+      buff = retBuff.buff
       ret = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
     } else {
       throw new Error('impossible')

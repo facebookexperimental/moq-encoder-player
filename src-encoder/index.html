@@ -56,6 +56,9 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>AuthInfo (for all tracks, shared with subscribers):<input id="authInfo" type="text" value="secret"></label>
                 <div class="clear"></div>
+                <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>  
+                <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>  
+                <div class="clear"></div>
                 <h3>Video encoding params (h264)</h3>
                 <label>Input sources: <select id="videoSources"></select></label>                
                 <div class="clear"></div>
@@ -154,6 +157,10 @@ LICENSE file in the root directory of this source tree.
 <script type="module">
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
 
+    // MOQ send modes
+    const MOQ_MAPPING_OBJECT_PER_STREAM = "ObjPerStream"
+    const MOQ_MAPPING_TRACK_PER_STREAM = "TrackPerStream"
+
     // Main vars
     const VERBOSE = true;
 
@@ -224,14 +231,16 @@ LICENSE file in the root directory of this source tree.
                 name: "-audio",
                 maxInFlightRequests: 100,
                 isHipri: true,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
             },
             "video": {
                 namespace: "vc",
                 name: "-video",
                 maxInFlightRequests: 50,
                 isHipri: false,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
             }
         },
     }
@@ -296,6 +305,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function initUI() {
+        initMOQMappingModesUI();
         initStreamIDUI();
         initHostUI();
         initEncodingOptionsUI();
@@ -470,6 +480,35 @@ LICENSE file in the root directory of this source tree.
 
     function updateFullTrackNameUI() {
         document.getElementById("fullTrackNames").value = `${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-video`;
+    }
+
+    function initMOQMappingModesUI(selectElement) {
+        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM);
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM);
+    }
+
+    function initMOQMappingModeUI(selectElement, moqMappingSelected) {
+        // Object per stream
+        const optionObjStream = document.createElement('option');
+        optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_STREAM || moqMappingSelected == undefined) {
+            optionObjStream.selected = true;        
+        }
+        optionObjStream.appendChild(document.createTextNode("Object per stream"));
+        selectElement.appendChild(optionObjStream);
+
+        //TODO: Object per datagram
+
+        // Multi object streams
+
+        // Stream per track
+        const optionObjTrack = document.createElement('option');
+        optionObjTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
+            optionObjStream.selected = true;        
+        }
+        optionObjTrack.appendChild(document.createTextNode("Object per track"));
+        selectElement.appendChild(optionObjTrack);
     }
 
     function initStreamIDUI() {
@@ -848,11 +887,13 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
+        muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value;
         muxerSenderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+        muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
 
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });

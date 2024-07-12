@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqParseObjectFromTrackPerStreamHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -14,8 +14,6 @@ const WORKER_PREFIX = '[MOQ-DOWNLOADER]'
 
 // Show verbose exceptions
 const MOQT_DEV_MODE = true
-
-const QUIC_EXPIRATION_TIMEOUT_DEF_MS = 10000
 
 const SLEEP_SUBSCRIBE_ERROR_MS = 2000
 
@@ -128,7 +126,7 @@ self.addEventListener('message', async function (e) {
       workerState = StateEnum.Running
 
       // Assuming QUIC stream per object
-      moqReceiveObjects(moqt, QUIC_EXPIRATION_TIMEOUT_DEF_MS)
+      moqReceiveObjects(moqt)
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'error', `Initializing MOQ. Err: ${err}`)
@@ -147,14 +145,34 @@ async function moqReceiveObjects (moqt) {
 
   // Get stream
   const incomingStream = moqt.wt.incomingUnidirectionalStreams
-  const readableStream = incomingStream.getReader()
-
+  const wtReadableStream = incomingStream.getReader()
+  // Get datagrams
+  const wtReader = moqt.wt.datagrams.readable.getReader();
+  
   while (workerState !== StateEnum.Stopped) {
-    const stream = await readableStream.read()
+    const stream = await Promise.any([wtReadableStream.read(), wtReader.read()])
+    let readableStream = null
+    let done = false
+    const isDatagram = (stream.value instanceof Uint8Array)
+
+    if (isDatagram === false) {
+      readableStream = stream.value
+      done = stream.done
+    } else {
+      // Create a BYOT capable reader for the data by reading whole datagram      
+      readableStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(stream.value);
+          controller.close();
+        },
+        type: "bytes",
+      });
+      done = true
+    }
     reportStats()
     try {
-      if (!stream.done) {
-        await moqReceiveProcessObjects(stream.value)
+      if (!done || isDatagram) {
+        await moqReceiveProcessObjects(readableStream)
       }
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
@@ -181,15 +199,16 @@ function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
 async function moqReceiveProcessObjects (readerStream) {
   const startTime = Date.now()
 
-  const moqObj = await moqParseObjectHeader(readerStream)
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Received MOQT subscribeId: ${moqObj.subscribeId}, trackAlias: ${moqObj.trackAlias}. ${moqObj.groupSeq}/${moqObj.objSeq}(${moqObj.sendOrder})`)
+  const moqObjHeader = await moqParseObjectHeader(readerStream)
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
 
-  const trackInfo = getTrackInfoFromTrackAlias(moqObj.trackAlias, moqObj.subscribeId)
+  const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
   if (trackInfo === undefined) {
-    throw new Error(`Unexpected trackAlias/subscriptionId ${moqObj.trackAlias}/${moqObj.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
+    throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
   }
 
   if (trackInfo.type !== 'data') {
+    // TODO: Implememt audio video parsing per different type of streams
     const packet = new LocPackager()
     await packet.ReadBytes(readerStream)
 
@@ -224,11 +243,23 @@ async function moqReceiveProcessObjects (readerStream) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'response: 200, Latency(ms): ' + reqLatencyMs + ', Frame dur(ms): ' + chunkData.duration / 1000 + '. mediaType: ' + chunkData.mediaType + ', seqId:' + chunkData.seqId + ', ts: ' + chunkData.timestamp)
     }
   } else {
-    const packet = new RawPackager()
-    await packet.ReadBytes(readerStream)
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW: ${packet.GetDataStr()})`)
-
-    self.postMessage({ type: 'data', chunk: packet.GetData().data })
+    if (moqObjHeader.type === MOQ_MESSAGE_OBJECT_STREAM || moqObjHeader.type === MOQ_MESSAGE_OBJECT_DATAGRAM) {
+      const packet = new RawPackager()
+      await packet.ReadBytes(readerStream)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
+  
+      self.postMessage({ type: 'data', chunk: packet.GetData().data })  
+    } else if (moqObjHeader.type == MOQ_MESSAGE_STREAM_HEADER_TRACK) {
+      let isEof = false
+      while (isEof === false) {
+        const moqObjTrackPerStream = await moqParseObjectFromTrackPerStreamHeader(readerStream)
+        const packet = new RawPackager()
+        isEof = await packet.ReadLengthBytes(readerStream, moqObjTrackPerStream.payloadLength)
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per track: ${packet.GetDataStr()})`)
+  
+        self.postMessage({ type: 'data', chunk: packet.GetData().data })
+      }
+    }
   }
 }
 

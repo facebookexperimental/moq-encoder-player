@@ -59,7 +59,7 @@ export async function readUntilEof (readableStream, blockSize) {
 }
 
 export async function buffRead (readableStream, size) {
-  const ret = null
+  let ret = null
   if (size <= 0) {
     return ret
   }
@@ -67,11 +67,11 @@ export async function buffRead (readableStream, size) {
   const reader = readableStream.getReader({ mode: 'byob' })
 
   try {
-    buff = await buffReadFrombyobReader(reader, buff, 0, size)
+    ret = await buffReadFrombyobReader(reader, buff, 0, size)    
   } finally {
     reader.releaseLock()
   }
-  return buff
+  return ret
 }
 
 export async function buffReadFrombyobReader (reader, buffer, offset, size) {
@@ -80,6 +80,7 @@ export async function buffReadFrombyobReader (reader, buffer, offset, size) {
     return ret
   }
   let remainingSize = size
+  let eof = false
   while (remainingSize > 0) {
     const { value, done } = await reader.read(new Uint8Array(buffer, offset, remainingSize))
     if (value !== undefined) {
@@ -90,6 +91,7 @@ export async function buffReadFrombyobReader (reader, buffer, offset, size) {
     if (done && remainingSize > 0) {
       throw new Error('short buffer')
     }
+    eof = done
   }
-  return buffer
+  return {eof, buff: buffer}
 }

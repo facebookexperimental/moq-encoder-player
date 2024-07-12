@@ -49,6 +49,9 @@ export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4
 
 // MOQ messages
 export const MOQ_MESSAGE_OBJECT_STREAM = 0x0
+export const MOQ_MESSAGE_OBJECT_DATAGRAM = 0x1
+export const MOQ_MESSAGE_STREAM_HEADER_TRACK = 0x50
+
 export const MOQ_MESSAGE_CLIENT_SETUP = 0x40
 export const MOQ_MESSAGE_SERVER_SETUP = 0x41
 
@@ -62,6 +65,11 @@ export const MOQ_MESSAGE_ANNOUNCE = 0x6
 export const MOQ_MESSAGE_ANNOUNCE_OK = 0x7
 export const MOQ_MESSAGE_ANNOUNCE_ERROR = 0x8
 export const MOQ_MESSAGE_UNANNOUNCE = 0x9
+
+// MOQ - QUIC mapping
+export const MOQ_MAPPING_OBJECT_PER_STREAM = "ObjPerStream"
+export const MOQ_MAPPING_OBJECT_PER_DATAGRAM = "ObjPerDatagram"
+export const MOQ_MAPPING_TRACK_PER_STREAM = "TrackPerStream"
 
 export function moqCreate () {
   return {
@@ -361,7 +369,8 @@ async function moqParseSubscribeDone (readerStream) {
   ret.subscribeId = await varIntToNumber(readerStream)
   ret.errorCode = await varIntToNumber(readerStream)
   ret.errorReason = await moqStringRead(readerStream)
-  const contentExists = await buffRead(readerStream, 1)
+  const retContentExists = await buffRead(readerStream, 1)
+  const contentExists = retContentExists.buff
   if (new DataView(contentExists, 0, 1).getUint8() > 0) {
     ret.lastGroupSent = await varIntToNumber(readerStream)
     ret.lastObjSent = await varIntToNumber(readerStream)
@@ -459,9 +468,8 @@ export async function moqSendSubscribeDone(writerStream, subscribeId, errorCode,
 }
 
 // OBJECT
-// TODO: Send also objects with length, only useful if I put more than one in a quic stream
 
-function moqCreateObjectBytes (subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
+function moqCreateObjectPerStreamBytes (subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
   // Message type
   const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_OBJECT_STREAM)
   const subscribeIdBytes = numberToVarInt(subscribeId)
@@ -474,32 +482,100 @@ function moqCreateObjectBytes (subscribeId, trackAlias, groupSeq, objSeq, sendOr
   return concatBuffer([messageTypeBytes, subscribeIdBytes, trackAliasBytes, groupSeqBytes, objSeqBytes, sendOrderBytes, statusBytes, data])
 }
 
-export function moqSendObjectToWriter (writer, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
-  return moqSendToWriter(writer, moqCreateObjectBytes(subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data))
+function moqCreateObjectPerDatagramBytes (subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
+  // Message type
+  const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_OBJECT_DATAGRAM)
+  const subscribeIdBytes = numberToVarInt(subscribeId)
+  const trackAliasBytes = numberToVarInt(trackAlias)
+  const groupSeqBytes = numberToVarInt(groupSeq)
+  const objSeqBytes = numberToVarInt(objSeq)
+  const sendOrderBytes = numberToVarInt(sendOrder)
+  const statusBytes = numberToVarInt(0)
+
+  return concatBuffer([messageTypeBytes, subscribeIdBytes, trackAliasBytes, groupSeqBytes, objSeqBytes, sendOrderBytes, statusBytes, data])
+}
+
+function moqCreateTrackPerStreamHeaderBytes (subscribeId, trackAlias, sendOrder) {
+  // Message type
+  const messageTypeBytes = numberToVarInt(MOQ_MESSAGE_STREAM_HEADER_TRACK)
+  const subscribeIdBytes = numberToVarInt(subscribeId)
+  const trackAliasBytes = numberToVarInt(trackAlias)
+  const sendOrderBytes = numberToVarInt(sendOrder)
+
+  return concatBuffer([messageTypeBytes, subscribeIdBytes, trackAliasBytes, sendOrderBytes])
+}
+
+function moqCreateTrackPerStreamBytes (groupSeq, objSeq, data) {
+  // No message type
+  const groupSeqBytes = numberToVarInt(groupSeq)
+  const objSeqBytes = numberToVarInt(objSeq)
+  let payLoadLengthBytes = numberToVarInt(0)
+  let statusBytes = new Uint8Array([]);
+  if (data == undefined || data == null || data.byteLength == 0) {
+    statusBytes = numberToVarInt(0)
+  } else {
+    payLoadLengthBytes = numberToVarInt(data.byteLength)
+  }
+  return concatBuffer([groupSeqBytes, objSeqBytes, payLoadLengthBytes, statusBytes, data])
+}
+
+export function moqSendObjectPerStreamToWriter (writer, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
+  return moqSendToWriter(writer, moqCreateObjectPerStreamBytes(subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data))
+}
+
+export function moqSendObjectPerDatagramToWriter (writer, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data) {
+  return moqSendToWriter(writer, moqCreateObjectPerDatagramBytes(subscribeId, trackAlias, groupSeq, objSeq, sendOrder, data))
 }
 
 export async function moqParseObjectHeader (readerStream) {
   const type = await varIntToNumber(readerStream)
-  if (type !== MOQ_MESSAGE_OBJECT_STREAM) {
-    throw new Error(`OBJECT answer type must be ${MOQ_MESSAGE_OBJECT_STREAM}, got ${type}`)
+  if (type !== MOQ_MESSAGE_OBJECT_STREAM && type != MOQ_MESSAGE_STREAM_HEADER_TRACK && type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
+    throw new Error(`OBJECT answer type must be ${MOQ_MESSAGE_OBJECT_STREAM} or ${MOQ_MESSAGE_STREAM_HEADER_TRACK} or ${MOQ_MESSAGE_OBJECT_DATAGRAM}, got ${type}`)
   }
 
-  const subscribeId = await varIntToNumber(readerStream)
-  const trackAlias = await varIntToNumber(readerStream)
-  const groupSeq = await varIntToNumber(readerStream)
-  const objSeq = await varIntToNumber(readerStream)
-  const sendOrder = await varIntToNumber(readerStream)
-  const status = await varIntToNumber(readerStream)
-  const ret = { subscribeId, trackAlias, groupSeq, objSeq, sendOrder, status}
- 
+  let ret
+  if (type == MOQ_MESSAGE_OBJECT_STREAM || type == MOQ_MESSAGE_OBJECT_DATAGRAM) {
+    const subscribeId = await varIntToNumber(readerStream)
+    const trackAlias = await varIntToNumber(readerStream)
+    const groupSeq = await varIntToNumber(readerStream)
+    const objSeq = await varIntToNumber(readerStream)
+    const sendOrder = await varIntToNumber(readerStream)
+    const status = await varIntToNumber(readerStream)
+    ret = {type, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, status}  
+  }
+  if (type == MOQ_MESSAGE_STREAM_HEADER_TRACK) {
+    const subscribeId = await varIntToNumber(readerStream)
+    const trackAlias = await varIntToNumber(readerStream)
+    const sendOrder = await varIntToNumber(readerStream)
+    ret = {type, subscribeId, trackAlias, sendOrder}  
+  }
   return ret
 }
+
+export async function moqParseObjectFromTrackPerStreamHeader (readerStream) { 
+  const groupSeq = await varIntToNumber(readerStream)
+  const objSeq = await varIntToNumber(readerStream)
+  const payloadLength = await varIntToNumber(readerStream)  
+  const ret = {groupSeq, objSeq, payloadLength}  
+  if (payloadLength === 0) {
+    ret.status = await varIntToNumber(readerStream)
+  }
+  return ret
+}
+
+export function moqSendTrackPerStreamHeader (writer, subscribeId, trackAlias, sendOrder) {
+  return moqSendToWriter(writer, moqCreateTrackPerStreamHeaderBytes(subscribeId, trackAlias, sendOrder))
+}
+
+export function moqSendTrackPerStreamToWriter (writer, groupSeq, objSeq, data) {
+  return moqSendToWriter(writer, moqCreateTrackPerStreamBytes(groupSeq, objSeq, data))
+}
+
+// Helpers
 
 export function getTrackFullName(namespace, trackName) {
   return namespace + trackName
 }
-
-// Helpers
 
 function moqCreateStringBytes (str) {
   const dataStrBytes = new TextEncoder().encode(str)
@@ -509,8 +585,8 @@ function moqCreateStringBytes (str) {
 
 async function moqStringRead (readerStream) {
   const size = await varIntToNumber(readerStream)
-  const buffer = await buffRead(readerStream, size)
-  return new TextDecoder().decode(buffer)
+  const ret = await buffRead(readerStream, size)
+  return new TextDecoder().decode(ret.buff)
 }
 
 async function moqSend (writerStream, dataBytes) {
@@ -536,8 +612,8 @@ async function moqReadParameters (readerStream) {
       ret.role = await varIntToNumber(readerStream)
     } else {
       const paramLength = await varIntToNumber(readerStream)
-      const skip = await buffRead(readerStream, paramLength)
-      ret[`unknown-${i}-${paramId}-${paramLength}`] = JSON.stringify(skip)
+      const retSkip = await buffRead(readerStream, paramLength)
+      ret[`unknown-${i}-${paramId}-${paramLength}`] = JSON.stringify(retSkip.buff)
     }
   }
   return ret
