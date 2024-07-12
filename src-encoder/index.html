@@ -483,8 +483,8 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initMOQMappingModesUI(selectElement) {
-        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM);
-        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM);
+        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "video");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "audio");
     }
 
     function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {

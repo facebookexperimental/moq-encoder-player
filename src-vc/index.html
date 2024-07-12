@@ -59,6 +59,10 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <label>AuthInfo:<input id="authInfo" type="text" value="secret"></label>
                     <div class="clear"></div>
+                    <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>  
+                    <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>  
+                    <div class="clear"></div>
+                    <div class="clear"></div>
                     <label>Full track names to ANNOUNCE:<input id="announceFullTrackNames" type="text" value="-" size="128" readonly></label>
                     <div class="clear"></div>
                     <label>Full track names to SUBSCRIBE:<input id="subscibeFullTrackNames" type="text" value="-" size="128" readonly></label>
@@ -361,6 +365,10 @@ LICENSE file in the root directory of this source tree.
 
     // START of encoder data -----------------
 
+    // MOQ send modes
+    const MOQ_MAPPING_OBJECT_PER_STREAM = "ObjPerStream"
+    const MOQ_MAPPING_OBJECT_PER_DATAGRAM = "ObjPerDatagram"
+
     // Main vars
     const VERBOSE = true;
 
@@ -647,11 +655,13 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
+        muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('meNamespace').value;
         muxerSenderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+        muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
 
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
@@ -709,6 +719,36 @@ LICENSE file in the root directory of this source tree.
 
         statsHelper = {};
         dropChunksTotals = {};        
+    }
+
+    function initMOQMappingModesUI(selectElement) {
+        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "video");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "audio");
+    }
+
+    function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
+        // Object per stream
+        const optionObjStream = document.createElement('option');
+        optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_STREAM || moqMappingSelected == undefined) {
+            optionObjStream.selected = true;        
+        }
+        optionObjStream.appendChild(document.createTextNode("Object per stream"));
+        selectElement.appendChild(optionObjStream);
+
+        //TODO: Multi object streams
+
+        if (mediaType === "audio") {
+            // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
+            // Stream per datagram
+            const optionObjTrack = document.createElement('option');
+            optionObjTrack.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
+            if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+                optionObjStream.selected = true;        
+            }
+            optionObjTrack.appendChild(document.createTextNode("Object per datagram"));
+            selectElement.appendChild(optionObjTrack);
+        }
     }
 
     function encoderProcessWorkerMessage(e) {
@@ -1634,6 +1674,8 @@ LICENSE file in the root directory of this source tree.
         if (qname != undefined) {
             document.getElementById("trackName").value = qname;
         }
+
+        initMOQMappingModesUI();
         
         updateFullTrackNameUI();
 
