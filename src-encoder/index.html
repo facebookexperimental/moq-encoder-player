@@ -159,7 +159,7 @@ LICENSE file in the root directory of this source tree.
 
     // MOQ send modes
     const MOQ_MAPPING_OBJECT_PER_STREAM = "ObjPerStream"
-    const MOQ_MAPPING_TRACK_PER_STREAM = "TrackPerStream"
+    const MOQ_MAPPING_OBJECT_PER_DATAGRAM = "ObjPerDatagram"
 
     // Main vars
     const VERBOSE = true;
@@ -487,7 +487,7 @@ LICENSE file in the root directory of this source tree.
         initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM);
     }
 
-    function initMOQMappingModeUI(selectElement, moqMappingSelected) {
+    function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
         // Object per stream
         const optionObjStream = document.createElement('option');
         optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
@@ -497,18 +497,19 @@ LICENSE file in the root directory of this source tree.
         optionObjStream.appendChild(document.createTextNode("Object per stream"));
         selectElement.appendChild(optionObjStream);
 
-        //TODO: Object per datagram
+        //TODO: Multi object streams
 
-        // Multi object streams
-
-        // Stream per track
-        const optionObjTrack = document.createElement('option');
-        optionObjTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
-            optionObjStream.selected = true;        
+        if (mediaType === "audio") {
+            // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
+            // Stream per datagram
+            const optionObjTrack = document.createElement('option');
+            optionObjTrack.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
+            if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+                optionObjStream.selected = true;        
+            }
+            optionObjTrack.appendChild(document.createTextNode("Object per datagram"));
+            selectElement.appendChild(optionObjTrack);
         }
-        optionObjTrack.appendChild(document.createTextNode("Object per track"));
-        selectElement.appendChild(optionObjTrack);
     }
 
     function initStreamIDUI() {

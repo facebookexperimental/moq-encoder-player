@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqParseObjectFromTrackPerStreamHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -125,8 +125,8 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ Initialized')
       workerState = StateEnum.Running
 
-      // Assuming QUIC stream per object
-      moqReceiveObjects(moqt)
+      // We need independent async functions to receive streams and datagrams, something like await Promise.any([wtReadableStream.read(), wtDataGramReader.read()]) does NOT work
+      moqReceiveObjects(moqt)      
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'error', `Initializing MOQ. Err: ${err}`)
@@ -134,51 +134,58 @@ self.addEventListener('message', async function (e) {
   }
 })
 
-async function moqReceiveObjects (moqt) {
+async function moqReceiveObjects(moqt) {
   if (workerState === StateEnum.Stopped) {
     return
   }
   if (moqt.wt === null) {
-    sendMessageToMain(WORKER_PREFIX, 'error', 'we can not start downloading data because WT is not initialized')
+    sendMessageToMain(WORKER_PREFIX, 'error', 'we can not start downloading streams because WT is not initialized')
     return
   }
 
+  try {
+    moqReceiveStreamObjects(moqt)
+    moqReceiveDatagramObjects(moqt)  
+  } catch(err) {
+    if (MOQT_DEV_MODE) {throw err}
+    sendMessageToMain(WORKER_PREFIX, 'dropped data', { clkms: Date.now(), seqId: -1, msg: `Dropped stream because WT error: ${err}` })
+    sendMessageToMain(WORKER_PREFIX, 'error', `WT request. Err: ${JSON.stringify(err)}`)
+  }
+}
+
+async function moqReceiveStreamObjects (moqt) {
   // Get stream
   const incomingStream = moqt.wt.incomingUnidirectionalStreams
   const wtReadableStream = incomingStream.getReader()
+  
+  while (workerState !== StateEnum.Stopped) {
+    const stream = await wtReadableStream.read()
+
+    reportStats()
+
+    if (!stream.done) {
+      await moqReceiveProcessObjects(stream.value)
+    }
+  }
+}
+
+async function moqReceiveDatagramObjects (moqt) {
   // Get datagrams
   const wtReader = moqt.wt.datagrams.readable.getReader();
   
   while (workerState !== StateEnum.Stopped) {
-    const stream = await Promise.any([wtReadableStream.read(), wtReader.read()])
-    let readableStream = null
-    let done = false
-    const isDatagram = (stream.value instanceof Uint8Array)
-
-    if (isDatagram === false) {
-      readableStream = stream.value
-      done = stream.done
-    } else {
-      // Create a BYOT capable reader for the data by reading whole datagram      
-      readableStream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(stream.value);
-          controller.close();
-        },
-        type: "bytes",
-      });
-      done = true
-    }
+    const stream = await wtReader.read()
+   
+    // Create a BYOT capable reader for the data by reading whole datagram      
+    const readableStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(stream.value);
+        controller.close();
+      },
+      type: "bytes",
+    });
     reportStats()
-    try {
-      if (!done || isDatagram) {
-        await moqReceiveProcessObjects(readableStream)
-      }
-    } catch (err) {
-      if (MOQT_DEV_MODE) {throw err}
-      sendMessageToMain(WORKER_PREFIX, 'dropped stream', { clkms: Date.now(), seqId: -1, msg: `Dropped stream because WT error: ${err}` })
-      sendMessageToMain(WORKER_PREFIX, 'error', `WT request. Err: ${JSON.stringify(err)}`)
-    }
+    await moqReceiveProcessObjects(readableStream)
   }
 }
 
@@ -208,7 +215,6 @@ async function moqReceiveProcessObjects (readerStream) {
   }
 
   if (trackInfo.type !== 'data') {
-    // TODO: Implememt audio video parsing per different type of streams
     const packet = new LocPackager()
     await packet.ReadBytes(readerStream)
 
@@ -243,23 +249,11 @@ async function moqReceiveProcessObjects (readerStream) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'response: 200, Latency(ms): ' + reqLatencyMs + ', Frame dur(ms): ' + chunkData.duration / 1000 + '. mediaType: ' + chunkData.mediaType + ', seqId:' + chunkData.seqId + ', ts: ' + chunkData.timestamp)
     }
   } else {
-    if (moqObjHeader.type === MOQ_MESSAGE_OBJECT_STREAM || moqObjHeader.type === MOQ_MESSAGE_OBJECT_DATAGRAM) {
-      const packet = new RawPackager()
-      await packet.ReadBytes(readerStream)
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
-  
-      self.postMessage({ type: 'data', chunk: packet.GetData().data })  
-    } else if (moqObjHeader.type == MOQ_MESSAGE_STREAM_HEADER_TRACK) {
-      let isEof = false
-      while (isEof === false) {
-        const moqObjTrackPerStream = await moqParseObjectFromTrackPerStreamHeader(readerStream)
-        const packet = new RawPackager()
-        isEof = await packet.ReadLengthBytes(readerStream, moqObjTrackPerStream.payloadLength)
-        sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per track: ${packet.GetDataStr()})`)
-  
-        self.postMessage({ type: 'data', chunk: packet.GetData().data })
-      }
-    }
+    const packet = new RawPackager()
+    await packet.ReadBytes(readerStream)
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
+
+    self.postMessage({ type: 'data', chunk: packet.GetData().data })  
   }
 }
 
