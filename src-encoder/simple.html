@@ -50,6 +50,8 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Max inflight requests:<input id="maxInflightRequests" type="text" value="5"></label>
                 <div class="clear"></div>
+                <label>MOQ-QUIC mapping:<select id="moqQuicMapping"></select></label>  
+                <div class="clear"></div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
             </form>
@@ -68,9 +70,11 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
+    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
+
     // Main vars
     const VERBOSE = true;
-    
+
     let msgSeqId = 0;
 
     let muxerSenderWorker = null;
@@ -87,7 +91,8 @@ LICENSE file in the root directory of this source tree.
                 name: "foo",
                 maxInFlightRequests: 5,
                 isHipri: false,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
             }
         },
     }
@@ -112,6 +117,45 @@ LICENSE file in the root directory of this source tree.
 
     function initUI() {
         initHostUI();
+        initMOQQuicMappingModeUI(document.getElementById("moqQuicMapping"), MOQ_MAPPING_OBJECT_PER_STREAM)
+    }
+
+    function initMOQQuicMappingModeUI(selectElement, moqMappingSelected) {
+        // Object per stream
+        const optionObjStream = document.createElement('option');
+        optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_STREAM || moqMappingSelected == undefined) {
+            optionObjStream.selected = true;        
+        }
+        optionObjStream.appendChild(document.createTextNode("Object per stream"));
+        selectElement.appendChild(optionObjStream);
+
+        // Object per datagram
+        const optionObjDataGram = document.createElement('option');
+        optionObjDataGram.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
+        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+            optionObjStream.selected = true;        
+        }
+        optionObjDataGram.appendChild(document.createTextNode("Object per datagram"));
+        selectElement.appendChild(optionObjDataGram);
+
+        // Multi object streams (track per stream)
+        const optionObjPerTrack = document.createElement('option');
+        optionObjPerTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
+            optionObjPerTrack.selected = true;        
+        }
+        optionObjPerTrack.appendChild(document.createTextNode("Track per stream"));
+        selectElement.appendChild(optionObjPerTrack);
+
+        // Multi object streams (group per stream)
+        const optionObjPerGroup = document.createElement('option');
+        optionObjPerGroup.value = MOQ_MAPPING_GROUP_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_GROUP_PER_STREAM) {
+            optionObjPerGroup.selected = true;        
+        }
+        optionObjPerGroup.appendChild(document.createTextNode("Group per stream"));
+        selectElement.appendChild(optionObjPerGroup);
     }
 
     function initHostUI() {
@@ -176,14 +220,16 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         muxerSenderConfig.moqTracks["data"].maxInFlightRequests = Number(document.getElementById('maxInflightRequests').value);
         muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
-        
+        muxerSenderConfig.moqTracks["data"].moqMapping = document.getElementById('moqQuicMapping').value;
+
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
     }
 
     function send() {
         const data = document.getElementById('objPayload').value;
-        muxerSenderWorker.postMessage({ type: "data", chunk: data, seqId: msgSeqId++});
+        const moqMapping = document.getElementById('moqQuicMapping').value;
+        muxerSenderWorker.postMessage({ type: "data", chunk: data, seqId: msgSeqId++, moqMapping: moqMapping});
     }
 
     // Add listeners from HTML

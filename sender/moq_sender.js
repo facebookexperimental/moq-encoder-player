@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
-import { moqCreate, moqClose, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectPerStreamToWriter, moqSendObjectPerDatagramToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, moqSendTrackPerStreamHeader, moqSendTrackPerStreamToWriter, MOQ_MAPPING_GROUP_PER_STREAM, moqSendGroupPerStreamHeader, moqSendGroupPerStreamToWriter} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -28,19 +28,20 @@ let tracks = {}
         id: 0,
         maxInFlightRequests: 100,
         isHipri: true,
-        authInfo: "secret"
+        authInfo: "secret",
+        moqMapping: "ObjStream",
     },
     "video": {
         id: 1,
         maxInFlightRequests: 50,
         isHipri: false,
-        authInfo: "secret"
+        authInfo: "secret",
+        moqMapping: "ObjStream",
     }
 } */
 
 // Inflight req abort signal
 const abortController = new AbortController()
-let inFlightRequests = {}
 
 // MOQT data
 const moqt = moqCreate()
@@ -63,8 +64,8 @@ self.addEventListener('message', async function (e) {
     try {
       //TODO JOC finish abort controller
       abortController.abort()
-      await Promise.all(getAllInflightRequestsArray())
-
+      await moqCloseWrttingStreams(moqt)
+      
       await unAnnounceTracks(moqt)
       await moqClose(moqt)
     } catch (err) {
@@ -129,8 +130,6 @@ self.addEventListener('message', async function (e) {
       await moqCreateControlStream(moqt)
       await moqCreatePublisherSession(moqt)
 
-      inFlightRequests = initInflightReqData(tracks)
-
       sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ Initialized, waiting for subscriptions')
       workerState = StateEnum.Running
 
@@ -176,13 +175,14 @@ self.addEventListener('message', async function (e) {
   const estimatedDuration = (e.data.estimatedDuration === undefined || e.data.estimatedDuration < 0) ? e.data.chunk.duration : e.data.estimatedDuration
   const seqId = (e.data.seqId === undefined) ? 0 : e.data.seqId
   const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata }
-  
+  const moqMapping = (e.data.moqMapping === undefined) ? tracks[type].moqMapping : e.data.moqMapping
+
   let i = 0
   while (i < tracks[type].subscribers.length) {
     const subscribeId = tracks[type].subscribers[i].subscribeId
     const trackAlias = tracks[type].subscribers[i].trackAlias
-  
-    sendChunkToTransport(chunkData, subscribeId, trackAlias, inFlightRequests[type], tracks[type].maxInFlightRequests)
+
+    sendChunkToTransport(chunkData, subscribeId, trackAlias, getNumInflightRequestByType(moqt, type), tracks[type].maxInFlightRequests, moqMapping)
     .then(val => {
       if (val !== undefined && val.dropped === true) {
         sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: type, ts: chunkData.timestamp, msg: val.message })
@@ -200,7 +200,7 @@ self.addEventListener('message', async function (e) {
 
   // Report stats
   if (isSendingStats) {
-    self.postMessage({ type: 'sendstats', clkms: Date.now(), inFlightReq: getInflightRequestsReport() })
+    self.postMessage({ type: 'sendstats', clkms: Date.now(), inFlightReq: getInflightRequestsReport(moqt) })
   }
 })
 
@@ -273,17 +273,17 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
   }
 }
 
-async function sendChunkToTransport (chunkData, subscribeId, trackAlias, inFlightRequests, maxFlightRequests) {
+async function sendChunkToTransport (chunkData, subscribeId, trackAlias, numInflightReqType, maxFlightRequests, moqMapping) {
   if (chunkData == null) {
     return { dropped: true, message: 'chunkData is null' }
   }
-  if (Object.keys(inFlightRequests).length >= maxFlightRequests) {
+  if (numInflightReqType >= maxFlightRequests) {
     return { dropped: true, message: 'too many inflight requests' }
   }
-  return createRequest(chunkData, subscribeId, trackAlias)
+  return createRequest(chunkData, subscribeId, trackAlias, moqMapping)
 }
 
-async function createRequest (chunkData, subscribeId, trackAlias) {
+async function createRequest (chunkData, subscribeId, trackAlias, moqMapping) {
   let packet = null
 
   if (chunkData.mediaType === 'data') {
@@ -299,64 +299,124 @@ async function createRequest (chunkData, subscribeId, trackAlias) {
 
     packet.SetData(chunkData.mediaType, chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
   }
-  return createSendPromise(packet, subscribeId, trackAlias)
+  return createSendPromise(packet, subscribeId, trackAlias, moqMapping)
 }
 
-async function createSendPromise (packet, subscribeId, trackAlias) {
+async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
+  let isFirstObject = false
   if (moqt.wt === null) {
-    return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
+    return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
   }
   if (!(trackAlias in moqPublisherState)) {
     if (packet.GetData().chunkType === 'delta') {
-      return { dropped: true, message: `Dropped chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
+      return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because first object can not be delta, data: ${packet.GetDataStr()}` }
     }
     moqPublisherState[trackAlias] = createTrackState()
+    isFirstObject = true
   }
 
   const sendOrder = moqCalculateSendOrder(packet)
-
-  const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
-  const uniWriter = uniStream.getWriter()
-
+  
   // Group sequence, Using it as a joining point
   if (packet.GetData().chunkType !== 'delta') {
-    moqPublisherState[trackAlias].currentGroupSeq++
+    if (!isFirstObject) {
+      moqPublisherState[trackAlias].currentGroupSeq++
+    }
     moqPublisherState[trackAlias].currentObjectSeq = 0
   }
 
   const groupSeq = moqPublisherState[trackAlias].currentGroupSeq
   const objSeq = moqPublisherState[trackAlias].currentObjectSeq
 
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Sending MOQT subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
+  let p = null;
+  if (moqMapping === MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+    // Get datagram writer
+    const datagramWriter = moqt.wt.datagrams.writable.getWriter();
 
-  moqSendObjectToWriter(uniWriter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
 
-  moqPublisherState[trackAlias].currentObjectSeq++
+    moqSendObjectPerDatagramToWriter(datagramWriter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
 
-  // Write async here
-  const p = uniWriter.close()
-  p.id = packet.GetData().pId
+    datagramWriter.releaseLock()
 
-  addToInflight(packet.GetData().mediaType, p)
+    moqPublisherState[trackAlias].currentObjectSeq++
+  } else if (moqMapping === MOQ_MAPPING_OBJECT_PER_STREAM) {
+    // Get stream writer
+    const writterId = createMultiObjectHash(packet.GetData().mediaType, 'obj', trackAlias, groupSeq, objSeq)
+    const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
+    const uniStreamWritter = uniStream.getWriter()
 
-  p.finally(() => {
-    removeFromInflight(packet.GetData().mediaType, packet.GetData().pId)
-    return { dropped: false, message: `Sent chunk for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}` }
-  })
-}
+    moqt.multiObjectWritter[writterId] = uniStreamWritter
 
-function addToInflight (mediaType, p) {
-  if (p.id in inFlightRequests[mediaType]) {
-    sendMessageToMain(WORKER_PREFIX, 'error', 'id already exists in inflight, this should never happen')
-  } else {
-    inFlightRequests[mediaType][p.id] = p
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per stream. subscribeId: ${subscribeId}, trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
+
+    moqSendObjectPerStreamToWriter(uniStreamWritter, subscribeId, trackAlias, groupSeq, objSeq, sendOrder, packet.ToBytes())
+
+    moqPublisherState[trackAlias].currentObjectSeq++
+
+    // Write async
+    p = uniStreamWritter.close()
+    p.writteId = writterId
+  } else if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM || moqMapping === MOQ_MAPPING_GROUP_PER_STREAM) {
+    let writterId = undefined
+    let lastWriteId = undefined
+    if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM) {
+      writterId = createMultiObjectHash(packet.GetData().mediaType, 'track', trackAlias)
+    } else {
+      writterId = createMultiObjectHash(packet.GetData().mediaType, 'group', trackAlias, groupSeq)
+      lastWriteId = createMultiObjectHash(packet.GetData().mediaType, 'group', trackAlias, groupSeq - 1)
+    }
+    
+    let uniStreamWritter = null
+    if (moqt.multiObjectWritter[writterId] === null || moqt.multiObjectWritter[writterId] === undefined) {
+      // Send order will be the sendorder of the 1st obj in that track / group
+      const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
+      uniStreamWritter = uniStream.getWriter()
+      moqt.multiObjectWritter[writterId] = uniStreamWritter
+
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Created new multi object ${writterId} writter with sendOrder: ${sendOrder}.`)
+
+      if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM) {
+        moqSendTrackPerStreamHeader(uniStreamWritter, subscribeId, trackAlias, sendOrder)
+      } else {
+        moqSendGroupPerStreamHeader(uniStreamWritter, subscribeId, trackAlias, groupSeq, sendOrder)
+      }
+
+      // Close previous group
+      const lastGroupUniStreamWritter = moqt.multiObjectWritter[lastWriteId]
+      if (lastGroupUniStreamWritter != undefined) {
+        p = lastGroupUniStreamWritter.close()
+        p.writteId = lastWriteId
+      }
+    } else {
+      uniStreamWritter = moqt.multiObjectWritter[writterId]
+    }
+
+    // Stream already opened
+    if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM) {
+      moqSendTrackPerStreamToWriter(uniStreamWritter, groupSeq, objSeq, packet.ToBytes())
+    } else {
+      moqSendGroupPerStreamToWriter(uniStreamWritter, objSeq, packet.ToBytes())
+    }
+    
+    moqPublisherState[trackAlias].currentObjectSeq++    
+  }
+  else {
+    throw new Error(`Unexpected MOQ - QUIC mapping, received ${moqMapping} - ${MOQ_MAPPING_OBJECT_PER_STREAM}`)
+  }
+
+  if (p instanceof Promise) {
+    p.finally(() => {
+      if (moqt.multiObjectWritter[p.writteId] != undefined) {
+        delete moqt.multiObjectWritter[p.writteId]
+      }
+      return { dropped: false, message: `Sent object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}` }
+    })
   }
 }
 
-function removeFromInflight (mediaType, id) {
-  if (id in inFlightRequests[mediaType]) {
-    delete inFlightRequests[mediaType][id]
-  }
+function createMultiObjectHash(mediaType, mappingType, trackAlias, groupId, objId) {
+  return `${mediaType}-${mappingType}-${trackAlias}-${groupId}-${objId}`
 }
 
 // MOQT
@@ -409,14 +469,6 @@ function checkTrackData () {
   return ''
 }
 
-function initInflightReqData () {
-  const ret = {}
-  for (const [trackType] of Object.entries(tracks)) {
-    ret[trackType] = {}
-  }
-  return ret
-}
-
 function moqResetState () {
   moqPublisherState = {}
 }
@@ -441,7 +493,7 @@ function moqCalculateSendOrder (packet) {
 function createTrackState () {
   return {
     currentGroupSeq: 0,
-    currentObjectSeq: 0
+    currentObjectSeq: 0,
   }
 }
 
@@ -503,18 +555,20 @@ function removeSubscriberFromTrack (subscribeId) {
   return null
 }
 
-function getAllInflightRequestsArray () {
-  let ret = []
-  for (const [trackType] of Object.entries(tracks)) {
-    ret = ret.concat(ret, Object.values(inFlightRequests[trackType]))
+function getNumInflightRequestByType(moqt, trackType) {
+  let ret = 0
+  for (const key of Object.keys(moqt.multiObjectWritter)) {
+    if (key.startsWith(trackType)) {
+      ret++
+    }
   }
   return ret
 }
 
-function getInflightRequestsReport () {
+function getInflightRequestsReport (moqt) {
   const ret = {}
   for (const [trackType] of Object.entries(tracks)) {
-    ret[trackType] = Object.keys(inFlightRequests[trackType]).length
+    ret[trackType] = getNumInflightRequestByType(moqt, trackType)
   }
   return ret
 }
