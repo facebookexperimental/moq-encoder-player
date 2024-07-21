@@ -87,7 +87,7 @@ export function moqCreate () {
   }
 }
 
-export async function moqClose (moqt) {
+export async function moqCloseWrttingStreams (moqt) {
   const multiWritterClosePromises = []
   for (const multiWritter of Object.values(moqt.multiObjectWritter)) {
     multiWritterClosePromises.push(multiWritter.close())
@@ -96,6 +96,10 @@ export async function moqClose (moqt) {
     await Promise.all(multiWritterClosePromises)
   }
   moqt.multiObjectWritter = {}
+}
+
+export async function moqClose (moqt) {
+  await moqCloseWrttingStreams(moqt)
 
   if (moqt.datagramsReader != null) {
     await moqt.datagramsReader.cancel("Closing!")
