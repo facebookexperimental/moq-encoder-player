@@ -17,6 +17,7 @@ export class RawPackager {
     this.mediaType = ''
     this.chunkType = ''
     this.seqId = -1
+    this.eof = false
 
     this.READ_BLOCK_SIZE = 1024
   }
@@ -28,15 +29,18 @@ export class RawPackager {
     this.data = data
   }
 
-  async ReadBytes (readerStream) {
+  async ReadBytesToEOF (readerStream) {
     const payloadBytes = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
     this.data = new TextDecoder().decode(payloadBytes)
+    this.eof = true
+    return this.eof
   }
 
   async ReadLengthBytes (readerStream, length) {
     const ret = await buffRead(readerStream, length)
     this.data = new TextDecoder().decode(ret.buff)
-    return ret.eof
+    this.eof = ret.eof
+    return this.eof
   }
 
   GetData () {
@@ -54,5 +58,9 @@ export class RawPackager {
 
   ToBytes () {
     return new TextEncoder().encode(this.data)
+  }
+
+  IsEof() {
+    return this.eof
   }
 }

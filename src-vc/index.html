@@ -362,12 +362,9 @@ LICENSE file in the root directory of this source tree.
     const qsParams = new URLSearchParams(queryString);
 
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
+    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM} from "../utils/moqt.js"
 
     // START of encoder data -----------------
-
-    // MOQ send modes
-    const MOQ_MAPPING_OBJECT_PER_STREAM = "ObjPerStream"
-    const MOQ_MAPPING_OBJECT_PER_DATAGRAM = "ObjPerDatagram"
 
     // Main vars
     const VERBOSE = true;
@@ -1717,8 +1714,6 @@ LICENSE file in the root directory of this source tree.
     async function start() {
         await encoderStart()
 
-        // TODO
-        //await sleep(2000)
         await playerStart()
 
         document.getElementById("btnStart").disabled = true

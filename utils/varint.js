@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { buffReadFrombyobReader } from './buffer_utils.js'
+import { buffReadFrombyobReader, ReadStreamClosed } from './buffer_utils.js'
 
 const MAX_U6 = Math.pow(2, 6) - 1
 const MAX_U14 = Math.pow(2, 14) - 1
@@ -27,32 +27,45 @@ export function numberToVarInt (v) {
   }
 }
 
-export async function varIntToNumber (readableStream) {
-  let ret
+export async function varIntToNumberOrThrow (readableStream) {
+  let ret = await varIntToNumber(readableStream)
+  if (ret.eof) {
+    throw new ReadStreamClosed(`Connection closed while reading data`)
+  }
+  return ret.num
+}
+
+async function varIntToNumber (readableStream) {
+  const ret = {eof: false, num: undefined}
   const reader = readableStream.getReader({ mode: 'byob' })
   try {
     let buff = new ArrayBuffer(8)
-    let retBuff = null
-
-    retBuff = await buffReadFrombyobReader(reader, buff, 0, 1)
-    buff = retBuff.buff
-    const size = (new DataView(buff, 0, 1).getUint8() & 0xc0) >> 6
-    if (size === 0) {
-      ret = new DataView(buff, 0, 1).getUint8() & 0x3f
-    } else if (size === 1) {
-      retBuff = await buffReadFrombyobReader(reader, buff, 1, 1)
-      buff = retBuff.buff
-      ret = new DataView(buff, 0, 2).getUint16() & 0x3fff
-    } else if (size === 2) {
-      retBuff = await buffReadFrombyobReader(reader, buff, 1, 3)
-      buff = retBuff.buff
-      ret = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
-    } else if (size === 3) {
-      retBuff = await buffReadFrombyobReader(reader, buff, 1, 7)
-      buff = retBuff.buff
-      ret = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
-    } else {
-      throw new Error('impossible')
+    let retData = await buffReadFrombyobReader(reader, buff, 0, 1)
+    ret.eof = retData.eof
+    if (!ret.eof) {
+      buff = retData.buff
+      const size = (new DataView(buff, 0, 1).getUint8() & 0xc0) >> 6
+      if (size === 0) {
+        ret.eof = retData.eof
+        ret.num = new DataView(buff, 0, 1).getUint8() & 0x3f
+      } else if (size === 1) {
+        retData = await buffReadFrombyobReader(reader, buff, 1, 1)
+        buff = retData.buff
+        ret.eof = retData.eof
+        ret.num = new DataView(buff, 0, 2).getUint16() & 0x3fff
+      } else if (size === 2) {
+        retData = await buffReadFrombyobReader(reader, buff, 1, 3)
+        buff = retData.buff
+        ret.eof = retData.eof
+        ret.num = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
+      } else if (size === 3) {
+        retData = await buffReadFrombyobReader(reader, buff, 1, 7)
+        buff = retData.buff
+        ret.eof = retData.eof
+        ret.num = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
+      } else {
+        throw new Error('impossible')
+      }
     }
   } finally {
     reader.releaseLock()

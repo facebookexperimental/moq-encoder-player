@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_GROUP, moqParseObjectFromTrackPerStreamHeader, moqParseObjectFromGroupPerStreamHeader} from '../utils/moqt.js'
 import { LocPackager } from '../packager/loc_packager.js'
 import { RawPackager } from '../packager/raw_packager.js'
 
@@ -144,7 +144,9 @@ async function moqReceiveObjects(moqt) {
   }
 
   try {
+    // NO await on purpose!
     moqReceiveStreamObjects(moqt)
+    // NO await on purpose!
     moqReceiveDatagramObjects(moqt)  
   } catch(err) {
     if (MOQT_DEV_MODE) {throw err}
@@ -157,104 +159,165 @@ async function moqReceiveStreamObjects (moqt) {
   // Get stream
   const incomingStream = moqt.wt.incomingUnidirectionalStreams
   const wtReadableStream = incomingStream.getReader()
-  
+
   while (workerState !== StateEnum.Stopped) {
     const stream = await wtReadableStream.read()
 
-    reportStats()
-
     if (!stream.done) {
-      await moqReceiveProcessObjects(stream.value)
+      sendMessageToMain(WORKER_PREFIX, 'debug', 'New QUIC stream')
+
+      const moqObjHeader = await moqParseObjectHeader(stream.value)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
+
+      const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
+      if (trackInfo === undefined) {
+        throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
+      }
+
+      // Once stream per track started no other forward types will be read
+      if (moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_TRACK || moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_GROUP) {
+        // NO await on purpose!
+        moqReceiveMultiObjectStream(moqObjHeader.type, stream.value, trackInfo.type)
+      } else if (moqObjHeader.type === MOQ_MESSAGE_OBJECT_STREAM) {
+        reportStats()
+
+        await readAndSendPayload(stream.value, trackInfo.type)
+      }
     }
   }
 }
 
+async function moqReceiveMultiObjectStream(multiObjectType, readerStream, mediaType) {
+  let isEOF = false
+  let moqHeader = {} 
+  let multiObjectTypeStr = "unknown"
+  while (workerState !== StateEnum.Stopped && isEOF === false) {
+    reportStats()
+    try {
+      if (multiObjectType == MOQ_MESSAGE_STREAM_HEADER_GROUP) {
+        multiObjectTypeStr = "StreamPerGroup"
+        moqHeader = await moqParseObjectFromGroupPerStreamHeader(readerStream)
+      } else if (multiObjectType == MOQ_MESSAGE_STREAM_HEADER_TRACK) {
+        multiObjectTypeStr = "StreamPerTrack"
+        moqHeader = await moqParseObjectFromTrackPerStreamHeader(readerStream)
+      } else {
+        throw new Error(`Not supported multiobject type ${multiObjectType}`);
+      }
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received ${multiObjectTypeStr} header ${JSON.stringify(moqHeader)}`)
+
+      // TODO exit the loop on status End of group
+      isEOF = await readAndSendPayload(readerStream, mediaType, moqHeader.payloadLength)
+    } catch(err) {
+      // Error we receive when I have a reader and the stream closes
+      if (err instanceof WebTransportError && err.message.includes("The session is closed")) {
+        isEOF = true
+      } else {
+        throw err
+      }
+    }
+  }
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Exited from ${multiObjectTypeStr} reader loop`)
+}
+
 async function moqReceiveDatagramObjects (moqt) {
+  if (moqt.datagramsReader != null) {
+    throw new Error('Unexpected already initialized datagramsReader')
+  }
+
   // Get datagrams
-  const wtReader = moqt.wt.datagrams.readable.getReader();
+  moqt.datagramsReader = moqt.wt.datagrams.readable.getReader();
   
   while (workerState !== StateEnum.Stopped) {
-    const stream = await wtReader.read()
-   
-    // Create a BYOT capable reader for the data by reading whole datagram      
-    const readableStream = new ReadableStream({
-      start(controller) {
+    const stream = await moqt.datagramsReader.read()
+
+    if (!stream.done) {
+      // Create a BYOT capable reader for the data by reading whole datagram      
+      const readableStream = new ReadableStream({
+        start(controller) {
         controller.enqueue(stream.value);
         controller.close();
       },
       type: "bytes",
     });
     reportStats()
-    await moqReceiveProcessObjects(readableStream)
+
+    const moqObjHeader = await moqParseObjectHeader(readableStream)
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
+   
+    const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
+    if (trackInfo === undefined) {
+      throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
+    }
+
+    if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
+      throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
+    }
+    await readAndSendPayload(readableStream, trackInfo.type)
+    }
   }
+
+  sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from datagrams loop')
 }
 
-function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
-  let ret = undefined
-  for (const [trackType, trackData] of Object.entries(tracks)) {
-    if (trackData.trackAlias === trackAlias) {
-      if (subscribeId != undefined && trackData.subscribeId != subscribeId) {
-          break
-      }
-      ret = {type: trackType, data: trackData}
-      break
-    }
-  }
-  return ret
-}
-
-async function moqReceiveProcessObjects (readerStream) {
-  const startTime = Date.now()
-
-  const moqObjHeader = await moqParseObjectHeader(readerStream)
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
-
-  const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
-  if (trackInfo === undefined) {
-    throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
-  }
-
-  if (trackInfo.type !== 'data') {
-    const packet = new LocPackager()
-    await packet.ReadBytes(readerStream)
-
-    const chunkData = packet.GetData()
-    if ((chunkData.chunkType === undefined) || (chunkData.mediaType === undefined)) {
-      throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
-    }
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-LOC: ${packet.GetDataStr()})`)
-
-    let chunk
-    if (chunkData.mediaType === 'audio') {
-      chunk = new EncodedAudioChunk({
-        timestamp: chunkData.timestamp,
-        type: chunkData.chunkType,
-        data: chunkData.data,
-        duration: chunkData.duration
-      })
-    } else if (chunkData.mediaType === 'video') {
-      chunk = new EncodedVideoChunk({
-        timestamp: chunkData.timestamp,
-        type: chunkData.chunkType,
-        data: chunkData.data,
-        duration: chunkData.duration
-      })
-    }
-    self.postMessage({ type: chunkData.mediaType + 'chunk', clkms: Date.now(), captureClkms: chunkData.firstFrameClkms, seqId: chunkData.seqId, chunk, metadata: chunkData.metadata })
-
-    const reqLatencyMs = Date.now() - startTime
-    if (reqLatencyMs > (chunkData.duration / 1000)) {
-      sendMessageToMain(WORKER_PREFIX, 'warning', 'response: 200, Latency(ms): ' + reqLatencyMs + ', Frame dur(ms): ' + chunkData.duration / 1000 + '. mediaType: ' + chunkData.mediaType + ', seqId: ' + chunkData.seqId + ', ts: ' + chunkData.timestamp)
-    } else {
-      sendMessageToMain(WORKER_PREFIX, 'debug', 'response: 200, Latency(ms): ' + reqLatencyMs + ', Frame dur(ms): ' + chunkData.duration / 1000 + '. mediaType: ' + chunkData.mediaType + ', seqId:' + chunkData.seqId + ', ts: ' + chunkData.timestamp)
-    }
+async function readAndSendPayload(readerStream, mediaType, length) {
+  let isEOF = false
+  if (mediaType !== 'data') {
+    const data = await readMediaPackager(readerStream, length)
+    isEOF = data.isEOF
+    self.postMessage({ type: data.chunkData.mediaType + 'chunk', clkms: Date.now(), captureClkms: data.chunkData.firstFrameClkms, seqId: data.chunkData.seqId, chunk: data.chunk, metadata: data.chunkData.metadata })
   } else {
-    const packet = new RawPackager()
-    await packet.ReadBytes(readerStream)
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
-
-    self.postMessage({ type: 'data', chunk: packet.GetData().data })  
+    const packet = await readRAWPackager(readerStream, length)
+    self.postMessage({ type: 'data', chunk: packet.GetData().data })
+    isEOF = packet.IsEof()
   }
+  return isEOF
+} 
+
+async function readMediaPackager(readerStream, length) {
+  const packet = new LocPackager()
+  if (length != undefined) {
+    await packet.ReadLengthBytes(readerStream, length)
+  } else {
+    await packet.ReadBytesToEOF(readerStream)
+  }
+  
+  const chunkData = packet.GetData()
+  if ((chunkData.chunkType === undefined) || (chunkData.mediaType === undefined)) {
+    throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
+  }
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-LOC: ${packet.GetDataStr()})`)
+  
+  let chunk
+  if (chunkData.mediaType === 'audio') {
+    chunk = new EncodedAudioChunk({
+      timestamp: chunkData.timestamp,
+      type: chunkData.chunkType,
+      data: chunkData.data,
+      duration: chunkData.duration
+    })
+  } else if (chunkData.mediaType === 'video') {
+    chunk = new EncodedVideoChunk({
+      timestamp: chunkData.timestamp,
+      type: chunkData.chunkType,
+      data: chunkData.data,
+      duration: chunkData.duration
+    })
+  }
+
+  return {chunkData, chunk, isEOF: packet.IsEof()}
+}
+
+async function readRAWPackager(readerStream, length) {
+  const packet = new RawPackager()
+  if (length != undefined) {
+    await packet.ReadLengthBytes(readerStream, length)
+  } else {
+    await packet.ReadBytesToEOF(readerStream)
+  }
+
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
+
+  return packet
 }
 
 // MOQT
@@ -326,7 +389,9 @@ async function unSubscribeTracks(moqt) {
         }
         const subscribeDone = moqMsg.data
         sendMessageToMain(WORKER_PREFIX, 'info', `Received SubscribeDone for subscibeId: ${subscribeDone.subscribeId}: ${JSON.stringify(subscribeDone)}`)
-        // TODO When server works check same subscribeID subscribeDone.subscribeId == trackData.subscribeId 
+        if (subscribeDone.subscribeId != trackData.subscribeId) {
+          throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_DONE for subscribeId: ${trackData.subscribeId}, received: ${subscribeDone.subscribeId}`)
+        }
       }
       catch (err) {
         if (MOQT_DEV_MODE) {throw err}
@@ -339,4 +404,18 @@ async function unSubscribeTracks(moqt) {
       }
     }
   }
+}
+
+function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
+  let ret = undefined
+  for (const [trackType, trackData] of Object.entries(tracks)) {
+    if (trackData.trackAlias === trackAlias) {
+      if (subscribeId != undefined && trackData.subscribeId != subscribeId) {
+          break
+      }
+      ret = {type: trackType, data: trackData}
+      break
+    }
+  }
+  return ret
 }

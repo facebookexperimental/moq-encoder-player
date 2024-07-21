@@ -7,6 +7,13 @@ LICENSE file in the root directory of this source tree.
 
 'use strict'
 
+export class ReadStreamClosed extends Error {
+  constructor(message) {
+    super(message)
+    this.name = "ReadStreamClosed"
+  }
+}
+
 export function concatBuffer (arr) {
   let totalLength = 0
   arr.forEach(element => {
@@ -89,7 +96,7 @@ export async function buffReadFrombyobReader (reader, buffer, offset, size) {
       remainingSize = remainingSize - value.byteLength
     }
     if (done && remainingSize > 0) {
-      throw new Error('short buffer')
+      throw new ReadStreamClosed('short buffer')
     }
     eof = done
   }

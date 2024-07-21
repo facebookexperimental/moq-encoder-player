@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { numberToVarInt, varIntToNumber } from '../utils/varint.js'
+import { numberToVarInt, varIntToNumberOrThrow } from '../utils/varint.js'
 import { readUntilEof, buffRead, concatBuffer } from '../utils/buffer_utils.js'
 
 export class LocPackager {
@@ -20,6 +20,8 @@ export class LocPackager {
 
     this.metadata = null
     this.data = null
+
+    this.eof = false
 
     this.READ_BLOCK_SIZE = 1024
   }
@@ -41,8 +43,21 @@ export class LocPackager {
     this.data = data
   }
 
-  async ReadBytes (readerStream) {
-    const mediaTypeInt = await varIntToNumber(readerStream)
+  async ReadLengthBytes (readerStream, length) {
+    await this.readLOCHeader(readerStream)
+    const ret = await buffRead(readerStream, length)
+    this.data = ret.buff
+    this.eof = ret.eof
+  }
+
+  async ReadBytesToEOF (readerStream) {
+    await this.readLOCHeader(readerStream)
+    this.data = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
+    this.eof = true
+  }
+
+  async readLOCHeader (readerStream) {
+    const mediaTypeInt = await varIntToNumberOrThrow(readerStream)
     if (mediaTypeInt === 0) {
       this.mediaType = 'data'
     } else if (mediaTypeInt === 1) {
@@ -52,8 +67,7 @@ export class LocPackager {
     } else {
       throw new Error(`Mediatype ${mediaTypeInt} not supported`)
     }
-
-    const chunkTypeInt = await varIntToNumber(readerStream)
+    const chunkTypeInt = await varIntToNumberOrThrow(readerStream)
     if (chunkTypeInt === 0) {
       this.chunkType = 'delta'
     } else if (chunkTypeInt === 1) {
@@ -61,19 +75,20 @@ export class LocPackager {
     } else {
       throw new Error(`chunkType ${chunkTypeInt} not supported`)
     }
-
-    this.seqId = await varIntToNumber(readerStream)
-    this.timestamp = await varIntToNumber(readerStream)
-    this.duration = await varIntToNumber(readerStream)
-    this.firstFrameClkms = await varIntToNumber(readerStream)
-    const metadataSize = await varIntToNumber(readerStream)
+    this.seqId = await varIntToNumberOrThrow(readerStream)
+    this.timestamp = await varIntToNumberOrThrow(readerStream)
+    this.duration = await varIntToNumberOrThrow(readerStream)
+    this.firstFrameClkms = await varIntToNumberOrThrow(readerStream)
+    const metadataSize = await varIntToNumberOrThrow(readerStream)
     if (metadataSize > 0) {
       const ret = await buffRead(readerStream, metadataSize)
+      if (ret.eof) {
+        throw new Error(`Connection closed while receiving LOC header metadata`)
+      }
       this.metadata = ret.buff
     } else {
       this.metadata = null
     }
-    this.data = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
   }
 
   GetData () {
@@ -136,5 +151,9 @@ export class LocPackager {
       ret = concatBuffer([mediaTypeBytes, chunkTypeBytes, seqIdBytes, timestampBytes, durationBytes, firstFrameClkmsBytes, metadataSizeBytes, this.data])
     }
     return ret
+  }
+
+  IsEof() {
+    return this.eof
   }
 }
