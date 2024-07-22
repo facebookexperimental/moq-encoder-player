@@ -362,7 +362,7 @@ LICENSE file in the root directory of this source tree.
     const qsParams = new URLSearchParams(queryString);
 
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM} from "../utils/moqt.js"
+    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
 
     // START of encoder data -----------------
 
@@ -435,14 +435,16 @@ LICENSE file in the root directory of this source tree.
                 name: "-audio",
                 maxInFlightRequests: 100,
                 isHipri: true,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
             },
             "video": {
                 namespace: "vc",
                 name: "-video",
                 maxInFlightRequests: 50,
                 isHipri: false,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
             }
         },
     }
@@ -733,7 +735,23 @@ LICENSE file in the root directory of this source tree.
         optionObjStream.appendChild(document.createTextNode("Object per stream"));
         selectElement.appendChild(optionObjStream);
 
-        //TODO: Multi object streams
+        // Multi object streams (track per stream)
+        const optionObjPerTrack = document.createElement('option');
+        optionObjPerTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
+            optionObjPerTrack.selected = true;        
+        }
+        optionObjPerTrack.appendChild(document.createTextNode("Track per stream"));
+        selectElement.appendChild(optionObjPerTrack);
+
+        // Multi object streams (group per stream)
+        const optionObjPerGroup = document.createElement('option');
+        optionObjPerGroup.value = MOQ_MAPPING_GROUP_PER_STREAM;
+        if (moqMappingSelected == MOQ_MAPPING_GROUP_PER_STREAM) {
+            optionObjPerGroup.selected = true;        
+        }
+        optionObjPerGroup.appendChild(document.createTextNode("Group per stream"));
+        selectElement.appendChild(optionObjPerGroup);
 
         if (mediaType === "audio") {
             // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
