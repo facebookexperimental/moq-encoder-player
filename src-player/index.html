@@ -363,8 +363,6 @@ LICENSE file in the root directory of this source tree.
 
         createLatencyChecker();
 
-        await initializeAudioContext();
-
         createWorkers();
 
         muxerDownloaderWorker.addEventListener('message', function (e) {
@@ -507,10 +505,10 @@ LICENSE file in the root directory of this source tree.
         buffersInfo.renderer.video.lengthMs = -1;
     }
 
-    async function initializeAudioContext() {
+    async function initializeAudioContext(desiredSampleRate) {
         return new Promise((resolve, reject) => {
             if (audioCtx == null) {
-                audioCtx = new AudioContext({ latencyHint: "interactive" });
+                audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
                 audioCtx.transitioning = false;
                 // Add worklet
                 audioCtx.audioWorklet.addModule('../render/source_buffer_worklet.js')
@@ -618,7 +616,7 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('latencyAudioMs').value = `${totalLatencyMs.toFixed(0)} ms (System: ${systemAudioLatencyMs.toFixed(0)} ms)`;
     }
 
-    function processWorkerMessage(e) {
+    async function processWorkerMessage(e) {
         // LOGGING
         if ((e.data.type === "debug") && (VERBOSE === true)) {
             // logging debug
@@ -706,8 +704,12 @@ LICENSE file in the root directory of this source tree.
 
             updateDecoderUI('audio', timingInfo.decoder.currentAudioTs, buffersInfo.decoder.audio);
 
+            if (audioCtx == null && aFrame.sampleRate != undefined && aFrame.sampleRate > 0) {
+                // Initialize the audio when we know sampling freq used in the capture
+                await initializeAudioContext(aFrame.sampleRate);
+            } 
             // If audioSharedBuffer not initialized and is in start (render) state -> Initialize
-            if (audioSharedBuffer === null && audioCtx != null) {
+            if (audioCtx != null && sourceBufferAudioWorklet != null && audioSharedBuffer === null) {
                 buffersInfo.renderer.audio.sizeMs = Math.max(playerMaxBufferMs, playerBufferMs * 2, 100);
                 const bufferSizeSamples = Math.floor((buffersInfo.renderer.audio.sizeMs * aFrame.sampleRate) / 1000);
 
@@ -719,11 +721,13 @@ LICENSE file in the root directory of this source tree.
                 sourceBufferAudioWorklet.port.postMessage({ type: 'iniabuffer', config: { contextSampleFrequency: audioCtx.sampleRate, circularBufferSizeSamples: bufferSizeSamples, cicularAudioSharedBuffers: audioSharedBuffer.GetSharedBuffers(), sampleFrequency: aFrame.sampleRate } });
             }
 
-            // Uses compensated TS
-            audioSharedBuffer.Add(aFrame, timingInfo.decoder.currentAudioTs);
+            if (audioSharedBuffer != null) {
+                // Uses compensated TS
+                audioSharedBuffer.Add(aFrame, timingInfo.decoder.currentAudioTs);
 
-            if (animFrame === null) {
-                animFrame = requestAnimationFrame(audioTimestamps);
+                if (animFrame === null) {
+                    animFrame = requestAnimationFrame(audioTimestamps);
+                }
             }
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.frame;

@@ -281,7 +281,6 @@ Fig7: Player UI
 
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
 - Player: Do not use main thead for anything except reporting
-- Player: Accept different sampling frequency than the audio renderer
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - Accelerate playback if we are over latency budget
 - All:
