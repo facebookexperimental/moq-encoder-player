@@ -75,7 +75,7 @@ export class CicularAudioSharedBuffer {
       throw new Error(`Channels diffent than expected, expected ${this.sharedAudiobuffers.length}, passed: ${aFrame.numberOfChannels}`)
     }
     if (aFrame.sampleRate !== this.contextFrequency) {
-      throw new Error('Error sampling frequency received does NOT match local audio rendered, needs more work :-): sampleFrequency: ' + this.sampleFrequency + ', contextSampleFrequency: ' + this.contextSampleFrequency)
+      throw new Error('Error sampling frequency received does NOT match local audio renderer. sampleFrequency: ' + this.sampleFrequency + ', contextSampleFrequency: ' + this.contextSampleFrequency)
     }
 
     const samplesToAdd = aFrame.numberOfFrames
