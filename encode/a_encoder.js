@@ -49,7 +49,7 @@ function handleChunk (chunk, metadata) {
   }
 
   const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, metadata: serializeMetadata(insertMetadata) }
-  sendMessageToMain(WORKER_PREFIX, 'info', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength)
+  sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength)
 
   self.postMessage(msg)
 }

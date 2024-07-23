@@ -50,7 +50,11 @@ LICENSE file in the root directory of this source tree.
             <label>Selected latency:<select id="mainLatency"></select></label>
         </div>
         <div>
-            <button id="btnStart" type="button" style="padding: 1%; size: 10px;" >Start</button>
+            <form>
+                <div class="clear"></div>
+                <button id="btnStart" type="button" style="padding: 1%; size: 10px;">Start</button>
+                <button id="btnStop" type="button" style="padding: 1%; size: 10px;" disabled>Stop</button>
+            </form>
         </div>
     </div>
     <div class="boxed">
@@ -200,8 +204,8 @@ LICENSE file in the root directory of this source tree.
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
 
     // Main vars
-    const VERBOSE = true;
-
+    let VERBOSE = false
+    
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
     const AUDIO_PLAYING = 1;
@@ -524,9 +528,11 @@ LICENSE file in the root directory of this source tree.
     
     async function playerProcessWorkerMessage(e) {
         // LOGGING
-        if ((e.data.type === "debug") && (VERBOSE === true)) {
+        if (e.data.type === "debug") {
             // logging debug
-            console.debug(e.data.data);
+            if (VERBOSE === true) {
+                console.debug(e.data.data);
+            }
         } else if (e.data.type === "info") {
             // logging info
             console.log(e.data.data);
@@ -543,7 +549,8 @@ LICENSE file in the root directory of this source tree.
             const seqId = e.data.seqId;
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
-            if (wtVideoJitterBuffer != null) {
+            // Do not send frames to decode if audio is NOT up and working
+            if (wtVideoJitterBuffer != null && audioSharedBuffer != null) {
                 const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, seqId, extraData);
                 if (orderedVideoData !== undefined) {
                     if (timingInfo.muxer.currentVideoTs < 0) {
@@ -683,7 +690,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function playerUpdateListDroppedFrame(droppedFrameData) {
-        const list = document.getElementById('encoderDroppedFrames');
+        const list = document.getElementById('playerDroppedFrames');
 
         const clkms = droppedFrameData.clkms;
         const ts = droppedFrameData.ts;
@@ -753,7 +760,9 @@ LICENSE file in the root directory of this source tree.
                     }
                     retData.vFrame.close();
                 } else {
-                    console.debug("NO FRAME to paint");
+                    if (VERBOSE) {
+                        console.debug("NO FRAME to paint");
+                    }
                 }
 
                 playerUpdateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
@@ -815,8 +824,10 @@ LICENSE file in the root directory of this source tree.
         videoDecoderWorker.postMessage(stopMsg);
         audioDecoderWorker.postMessage(stopMsg);
 
-        await audioCtx.close();
-        audioCtx = null;
+        if (audioCtx != null) {
+            await audioCtx.close();
+            audioCtx = null;
+        }
         sourceBufferAudioWorklet = null;
         if (audioSharedBuffer != null) {
             audioSharedBuffer.Clear();
@@ -859,6 +870,11 @@ LICENSE file in the root directory of this source tree.
         if (title != undefined) {
             streamData.title = title
         }
+        const verbose_logging = qsParams.get('verbose')
+        if (verbose_logging != undefined && verbose_logging === "1") {
+            VERBOSE = true
+        }
+
         console.log("Data read from QS: " + JSON.stringify(streamData))
 
         fillOutLatencyOptionsUI()
@@ -881,13 +897,16 @@ LICENSE file in the root directory of this source tree.
         await playerStart()
 
         document.getElementById("btnStart").disabled = true
+        document.getElementById("btnStop").disabled = false
         document.getElementById("mainLatency").disabled = true
     }
 
     async function stop() {
         await playerStop()
+
         document.getElementById("btnStart").disabled = false
-        document.getElementById("mainLatency").disabled = true
+        document.getElementById("btnStop").disabled = true
+        document.getElementById("mainLatency").disabled = false
     }
 
     function showData(element) {
@@ -912,5 +931,6 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnPlayerShowStats').addEventListener("click", (event) => {showData("sectionPlayerStats");});
 
     document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
 
 </script>
