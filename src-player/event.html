@@ -490,6 +490,16 @@ LICENSE file in the root directory of this source tree.
 
     function fillOutLatencyOptionsUI() {
         const selectElement = document.getElementById('mainLatency')
+        const option100 = document.createElement('option');
+        option100.value = 100;
+        option100.appendChild(document.createTextNode("100ms"));
+        selectElement.appendChild(option100);
+
+        const option200 = document.createElement('option');
+        option200.value = 200;
+        option200.appendChild(document.createTextNode("200ms"));
+        selectElement.appendChild(option200);
+
         const option500 = document.createElement('option');
         option500.value = 500;
         option500.selected = true;        
