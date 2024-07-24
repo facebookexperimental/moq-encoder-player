@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-const MAX_ELEMENTS_RENDERER = 600
+const MAX_ELEMENTS_RENDERER = 60
 
 export class VideoRenderBuffer {
   constructor () {
@@ -42,25 +42,30 @@ export class VideoRenderBuffer {
 
   GetItemByTs (ts) {
     const ret = { vFrame: null, discarded: 0, totalDiscarded: this.totalDiscarded, queueSize: this.elementsList.length, queueLengthMs: this.totalLengthMs }
+    
+    if (this.elementsList.length <= 0 || ts < this.elementsList[0].timestamp) {
+      return ret
+    }
+    
     let exit = false
     let lastFrameInThePastIndex = 0
     while ((lastFrameInThePastIndex < this.elementsList.length) && (exit === false)) {
-      const vFrameFirstTimestamp = this.elementsList[lastFrameInThePastIndex].timestamp
-      if (vFrameFirstTimestamp > ts) {
+      if (this.elementsList[lastFrameInThePastIndex].timestamp >= ts) {
         exit = true
       } else {
         lastFrameInThePastIndex++
       }
     }
 
-    for (let n = 0; n < lastFrameInThePastIndex - 1; n++) {
+    // Remove items from 0..(lastFrameInThePastIndex-1)
+    for (let n = 0; n < (lastFrameInThePastIndex - 1); n++) {
       const vFrame = this.elementsList.shift()
       ret.discarded++
       this.totalLengthMs -= vFrame.duration / 1000
       vFrame.close()
     }
 
-    if (this.elementsList.length > 0 && lastFrameInThePastIndex > 0) {
+    if (this.elementsList.length > 0) {
       ret.vFrame = this.elementsList.shift()
       this.totalLengthMs -= ret.vFrame.duration / 1000
     }
@@ -69,6 +74,7 @@ export class VideoRenderBuffer {
     ret.totalDiscarded = this.totalDiscarded
     ret.queueSize = this.elementsList.length
     ret.queueLengthMs = this.totalLengthMs
+    
     return ret
   }
 

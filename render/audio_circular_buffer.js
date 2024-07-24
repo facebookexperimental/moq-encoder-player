@@ -14,6 +14,9 @@ const SharedStates = {
   IS_PLAYING: 3 // Indicates playback state
 }
 
+// Keep only last 30 audio frames in the TS index
+const MAX_ITEMS_IN_TS_INDEX = 30
+
 export class CicularAudioSharedBuffer {
   constructor () {
     this.sampleIndexToTS = null // In Us
@@ -88,6 +91,8 @@ export class CicularAudioSharedBuffer {
         this.onDropped({ clkms: Date.now(), mediaType: 'audio', ts: frameTimestamp, msg: 'Dropped PCM audio frame, ring buffer full' })
       }
     } else {
+      // This will always return recent TS. This is a cicular buffer, we are indexing with numsample in the buffer, so things will get messy if we do not ask for GetStats for more than buffer size. And this happens when tab loses focus
+      this._cleanUpIndex()
       this.sampleIndexToTS.push({ sampleIndex: end, ts: frameTimestamp })
       if (end + samplesToAdd <= this.size) {
         // All
@@ -174,6 +179,15 @@ export class CicularAudioSharedBuffer {
     Atomics.store(this.sharedStates, SharedStates.AUDIO_BUFF_END, -1)
     Atomics.store(this.sharedStates, SharedStates.AUDIO_INSERTED_SILENCE_MS, 0)
     Atomics.store(this.sharedStates, SharedStates.IS_PLAYING, 0)
+  }
+
+  _cleanUpIndex() {
+    if (this.sampleIndexToTS == null) {
+      return
+    }
+    while (this.sampleIndexToTS.length > MAX_ITEMS_IN_TS_INDEX) {
+      this.sampleIndexToTS.shift()
+    }
   }
 
   _getUsedSlots (start, end) {
