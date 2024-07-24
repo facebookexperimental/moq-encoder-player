@@ -185,6 +185,7 @@ async function moqReceiveStreamObjects (moqt) {
       }
     }
   }
+  sendMessageToMain(WORKER_PREFIX, 'info', `Exited receive objects loop`)
 }
 
 async function moqReceiveMultiObjectStream(multiObjectType, readerStream, mediaType) {

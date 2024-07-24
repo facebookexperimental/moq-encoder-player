@@ -239,9 +239,10 @@ LICENSE file in the root directory of this source tree.
 
     // We will start playback when this amount of data is in the audio rendered buffer
     let playerBufferMs = 100;
-
     // This + jitter is the max latency allowed
     let playerMaxBufferMs = 300;
+
+    // Logging refresh times
     let lastCompensatedAudioTS = 0
 
     // Current workers
@@ -768,7 +769,9 @@ LICENSE file in the root directory of this source tree.
                     }
                     retData.vFrame.close();
                 } else {
-                    console.debug(`NO FRAME to paint`);
+                    if (VERBOSE) {
+                        console.debug(`NO FRAME to paint`);
+                    }
                 }
                 if (retData.discarded > 0) {
                     console.debug(`Relevant queue data. retData: ${JSON.stringify(retData)} wcInterval: ${wcInterval}, compensatedAudioTS: ${compensatedAudioTS}, lastCompensatedAudioTS: ${lastCompensatedAudioTS}, diff: ${(compensatedAudioTS - lastCompensatedAudioTS) / 1000}ms`);

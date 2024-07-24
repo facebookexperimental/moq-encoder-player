@@ -25,6 +25,8 @@ let keepAlivesEveryMs = 0
 let keepAliveInterval = null
 let keepAliveNameSpace = ""
 
+let lastObjectSentMs = 0
+
 let tracks = {}
 // Example
 /* moqTracks: {
@@ -223,8 +225,10 @@ self.addEventListener('message', async function (e) {
 })
 
 async function sendKeepAlive(controlWriter) {
-  await moqSendAnnounce(controlWriter, keepAliveNameSpace, "")
-  sendMessageToMain(WORKER_PREFIX, 'info', `Sent keep alive (announce) for ns: ${keepAliveNameSpace}`)
+  if((Date.now() - lastObjectSentMs) > keepAlivesEveryMs) {
+    await moqSendAnnounce(controlWriter, keepAliveNameSpace, "")
+    sendMessageToMain(WORKER_PREFIX, 'info', `Sent keep alive (announce) for ns: ${keepAliveNameSpace}`)
+  }
 }
 
 async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
@@ -431,6 +435,7 @@ async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
     throw new Error(`Unexpected MOQ - QUIC mapping, received ${moqMapping} - ${MOQ_MAPPING_OBJECT_PER_STREAM}`)
   }
 
+  lastObjectSentMs = Date.now()
   if (p instanceof Promise) {
     p.finally(() => {
       if (moqt.multiObjectWritter[p.writteId] != undefined) {
@@ -481,6 +486,8 @@ async function moqCreatePublisherSession (moqt) {
       announcedNamespaces.push(trackData.namespace)
     }
   }
+
+  lastObjectSentMs = Date.now()
 }
 
 function checkTrackData () {
