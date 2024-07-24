@@ -287,6 +287,7 @@ Fig7: Player UI
 - Copy updates from event player to regular one
   - Import verbose from QS in regular player
   - Better TS logging and video renderer
+- Fix player audio latency (hidden now)
 - All:
   - Accept B frames (DTS)
 
