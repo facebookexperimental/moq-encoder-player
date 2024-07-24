@@ -283,6 +283,10 @@ Fig7: Player UI
 - Player: Do not use main thead for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - Accelerate playback if we are over latency budget
+- Fix dropped frames UI on VC player (not poperly separated between encoder & player, see TODO in the code)
+- Copy updates from event player to regular one
+  - Import verbose from QS in regular player
+  - Better TS logging and video renderer
 - All:
   - Accept B frames (DTS)
 

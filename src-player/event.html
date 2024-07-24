@@ -44,10 +44,15 @@ LICENSE file in the root directory of this source tree.
 
 <body style="background-color: lightcyan;">
     <h2 id="eventName">Event</h2>
+    <hr>
+    <p>Plase send feedback to: <a href= "mailto: jcenzano@meta.com">jcenzano@meta.com</a></p]>
+    <hr>
     <div class="boxed">
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
         <div style="text-align: right;" class="boxed"> 
             <label>Selected latency:<select id="mainLatency"></select></label>
+            <div class="clear"></div>
+            <small>When you press START the video and audio will appear after this selected latency (ex: it will take 3s if you select 3000ms)</small>
         </div>
         <div>
             <form>
@@ -237,6 +242,7 @@ LICENSE file in the root directory of this source tree.
 
     // This + jitter is the max latency allowed
     let playerMaxBufferMs = 300;
+    let lastCompensatedAudioTS = 0
 
     // Current workers
     let muxerDownloaderWorker = null;
@@ -291,7 +297,7 @@ LICENSE file in the root directory of this source tree.
 
     // Used to paint video frames
     let animFrame = null;
-
+   
     // Last render time
     let wcLastRender = 0;
     const RENDER_VIDEO_EVERY_MS = 10;
@@ -327,8 +333,11 @@ LICENSE file in the root directory of this source tree.
     function playerCreateJitterBuffers() {
         const jitterBufferMs = document.getElementById('mainLatency').value;
         // Jitter buffers
-        wtVideoJitterBuffer = new JitterBuffer(jitterBufferMs, playerJitterVideoDroppedCallback);
-        wtAudioJitterBuffer = new JitterBuffer(jitterBufferMs, playerJitterAudioDroppedCallback);
+        // Reduce video by 100ms (encoding time diff)
+        const videoJitterBufferMs = Math.max(jitterBufferMs - 100, 100)
+        const audioJitterBufferMs = jitterBufferMs
+        wtVideoJitterBuffer = new JitterBuffer(videoJitterBufferMs, playerJitterVideoDroppedCallback);
+        wtAudioJitterBuffer = new JitterBuffer(audioJitterBufferMs, playerJitterAudioDroppedCallback);
     }
     function playerClearJitterBuffers() {
         wtVideoJitterBuffer = null;
@@ -729,15 +738,14 @@ LICENSE file in the root directory of this source tree.
     function playerAudioTimestamps(wcTimestamp) {
         const wcInterval = wcTimestamp - wcLastRender;
 
-        if (audioSharedBuffer != null) {
-            playerUpdateAudioStats(audioSharedBuffer.GetStats());
-
-            playerUpdateAudioState();
-        }
-
         // Update every 10ms
         if ((audioCtx != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
             wcLastRender = wcTimestamp;
+
+            if (audioSharedBuffer != null) {
+                playerUpdateAudioStats(audioSharedBuffer.GetStats());
+                playerUpdateAudioState();
+            }
 
             if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTS >= 0) {
                 // Assuming audioTS in microseconds
@@ -760,12 +768,15 @@ LICENSE file in the root directory of this source tree.
                     }
                     retData.vFrame.close();
                 } else {
-                    if (VERBOSE) {
-                        console.debug("NO FRAME to paint");
-                    }
+                    console.debug(`NO FRAME to paint`);
+                }
+                if (retData.discarded > 0) {
+                    console.debug(`Relevant queue data. retData: ${JSON.stringify(retData)} wcInterval: ${wcInterval}, compensatedAudioTS: ${compensatedAudioTS}, lastCompensatedAudioTS: ${lastCompensatedAudioTS}, diff: ${(compensatedAudioTS - lastCompensatedAudioTS) / 1000}ms`);
                 }
 
                 playerUpdateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
+
+                lastCompensatedAudioTS = compensatedAudioTS
             }
         }
 
@@ -817,8 +828,9 @@ LICENSE file in the root directory of this source tree.
     async function playerStop() {
         if (animFrame != null) {
             cancelAnimationFrame(animFrame);
+            animFrame = null
         }
-
+        
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
         videoDecoderWorker.postMessage(stopMsg);
@@ -842,7 +854,6 @@ LICENSE file in the root directory of this source tree.
         currentVideoSize.height = -1;
 
         videoPlayerCtx = null;
-        animFrame = null;
 
         playerClearJitterBuffers();
         playerClearLatencyChecker();

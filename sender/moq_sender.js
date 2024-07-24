@@ -21,6 +21,10 @@ let workerState = StateEnum.Created
 
 let isSendingStats = true
 
+let keepAlivesEveryMs = 0
+let keepAliveInterval = null
+let keepAliveNameSpace = ""
+
 let tracks = {}
 // Example
 /* moqTracks: {
@@ -37,7 +41,7 @@ let tracks = {}
         isHipri: false,
         authInfo: "secret",
         moqMapping: "ObjStream",
-    }
+    },
 } */
 
 // Inflight req abort signal
@@ -62,6 +66,10 @@ self.addEventListener('message', async function (e) {
 
     // Abort and wait for all inflight requests
     try {
+      if (keepAliveInterval != null) {
+        clearInterval(keepAliveInterval);
+        keepAliveInterval = null
+      }
       //TODO JOC finish abort controller
       abortController.abort()
       await moqCloseWrttingStreams(moqt)
@@ -94,11 +102,15 @@ self.addEventListener('message', async function (e) {
     if ('moqTracks' in e.data.muxerSenderConfig) {
       tracks = e.data.muxerSenderConfig.moqTracks
     }
+    if ('keepAlivesEveryMs' in e.data.muxerSenderConfig) {
+      keepAlivesEveryMs = e.data.muxerSenderConfig.keepAlivesEveryMs
+    }
 
     if (urlHostPortEp === '') {
       sendMessageToMain(WORKER_PREFIX, 'error', 'Empty host port')
       return
     }
+
     const errTrackStr = checkTrackData()
     if (errTrackStr !== '') {
       sendMessageToMain(WORKER_PREFIX, 'error', errTrackStr)
@@ -145,6 +157,12 @@ self.addEventListener('message', async function (e) {
             sendMessageToMain(WORKER_PREFIX, 'info', `Exited receiving subscription loop in control stream. Err: ${JSON.stringify(err)}`)
           }
         })
+
+      if (keepAlivesEveryMs > 0) {
+        keepAliveNameSpace = Math.floor(Math.random() * 10000000) + "-keepAlive"
+        sendMessageToMain(WORKER_PREFIX, 'info', `Starting keep alive every ${keepAlivesEveryMs}ms, ns: ${keepAliveNameSpace}`)
+        keepAliveInterval = setInterval(sendKeepAlive, keepAlivesEveryMs, moqt.controlWriter);
+      }
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
       sendMessageToMain(WORKER_PREFIX, 'error', `Initializing MOQ. Err: ${JSON.stringify(err)}`)
@@ -203,6 +221,11 @@ self.addEventListener('message', async function (e) {
     self.postMessage({ type: 'sendstats', clkms: Date.now(), inFlightReq: getInflightRequestsReport(moqt) })
   }
 })
+
+async function sendKeepAlive(controlWriter) {
+  await moqSendAnnounce(controlWriter, keepAliveNameSpace, "")
+  sendMessageToMain(WORKER_PREFIX, 'info', `Sent keep alive (announce) for ns: ${keepAliveNameSpace}`)
+}
 
 async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
   sendMessageToMain(WORKER_PREFIX, 'info', 'Started subscription loop')
@@ -266,6 +289,9 @@ async function startLoopSubscriptionsLoop (controlReader, controlWriter) {
       const errReason = "Subscription Ended, received unSubscribe"
       await moqSendSubscribeDone(controlWriter, subscribe.subscribeId, errorCode, errReason, lastSent.group, lastSent.obj)
       sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_DONE for subscribeId: ${subscribe.subscribeId}, err: ${errorCode}(${errReason}), last: ${lastSent.group}/${lastSent.obj}`)
+    }
+    else if (moqMsg.type === MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.data.namespace === keepAliveNameSpace) {
+      // This is the keep alive answer
     }
     else {
       sendMessageToMain(WORKER_PREFIX, 'warning', `Unexpected message (type ${moqMsg.type} received, ignoring`)
