@@ -196,6 +196,8 @@ LICENSE file in the root directory of this source tree.
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { getBinaryFile } from "../utils/utils.js"
+    import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
+
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -304,6 +306,8 @@ LICENSE file in the root directory of this source tree.
     let latencyAudioChecker = null;
     let latencyVideoChecker = null;
     
+    // Used in case we use latency tracker
+    const overlayDecoder = new OverlayDecoder();
 
     // Read & parse QS data
     const queryString = window.location.search;
@@ -751,6 +755,14 @@ LICENSE file in the root directory of this source tree.
 
             updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
 
+            const decoded = overlayDecoder.Decode(vFrame)
+            if (decoded.confidence > 0.3) {
+                vFrame.clk = decoded.val
+            }
+            if (VERBOSE) {
+                console.debug(`[OVERLAY] overlay decoded. ts: ${vFrame.timestamp}, val: ${decoded.val} (conf: ${decoded.confidence})}`)
+            }
+               
             if (videoRendererBuffer != null && videoRendererBuffer.AddItem(vFrame) === false) {
                 console.warn("Dropped video frame because video renderer is full");
                 vFrame.close();
