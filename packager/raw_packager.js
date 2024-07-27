@@ -14,7 +14,6 @@ export class RawPackager {
     this.data = ''
 
     // Internal
-    this.mediaType = ''
     this.chunkType = ''
     this.seqId = -1
     this.eof = false
@@ -22,8 +21,7 @@ export class RawPackager {
     this.READ_BLOCK_SIZE = 1024
   }
 
-  SetData (mediaType, chunkType, seqId, data) {
-    this.mediaType = mediaType
+  SetData (chunkType, seqId, data) {
     this.chunkType = chunkType
     this.seqId = seqId
     this.data = data
@@ -45,7 +43,6 @@ export class RawPackager {
 
   GetData () {
     return {
-      mediaType: this.mediaType,
       seqId: this.seqId,
       chunkType: this.chunkType,
       data: this.data
@@ -53,7 +50,7 @@ export class RawPackager {
   }
 
   GetDataStr () {
-    return `${this.mediaType} - ${this.chunkType} - ${this.seqId} -  ${this.data}`
+    return `${this.chunkType} - ${this.seqId} -  ${this.data}`
   }
 
   ToBytes () {
