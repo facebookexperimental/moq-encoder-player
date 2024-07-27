@@ -205,8 +205,7 @@ LICENSE file in the root directory of this source tree.
     const AudioContext = window.AudioContext || window.webkitAudioContext;
 
     // Main vars
-    // TODO: import this from QS like event player
-    const VERBOSE = true;
+    const VERBOSE = false;
 
     const downloaderConfig = {
         urlHostPort: '',
@@ -330,8 +329,11 @@ LICENSE file in the root directory of this source tree.
         if (qsHost != undefined) {
             document.getElementById("wtServerUrl").value = qsHost;
         }
-        const now = new Date().toISOString();
-
+        const verbose_logging = qsParams.get('verbose')
+        if (verbose_logging != undefined && verbose_logging === "1") {
+            VERBOSE = true
+        }
+        
         updateFullTrackNameUI();
     }
 
@@ -623,9 +625,11 @@ LICENSE file in the root directory of this source tree.
 
     async function processWorkerMessage(e) {
         // LOGGING
-        if ((e.data.type === "debug") && (VERBOSE === true)) {
+        if (e.data.type === "debug") {
             // logging debug
-            console.debug(e.data.data);
+            if (VERBOSE === true) {
+                console.debug(e.data.data);
+            }
         } else if (e.data.type === "info") {
             // logging info
             console.log(e.data.data);
@@ -860,7 +864,9 @@ LICENSE file in the root directory of this source tree.
                     }
                     retData.vFrame.close();
                 } else {
-                    console.debug("NO FRAME to paint");
+                    if (VERBOSE) {
+                        console.debug("NO FRAME to paint");
+                    }
                 }
 
                 updateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
