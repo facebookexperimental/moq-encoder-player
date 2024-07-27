@@ -67,6 +67,8 @@ LICENSE file in the root directory of this source tree.
                         size="5"></label>
                 <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
                 <div class="clear"></div>
+                <label>Activate latency tracker (overlays data on video): <input type="checkbox" id="activateLatencyTracker"></label>
+                <div class="clear"></div>
                 <h3>Audio encoding params (opus)</h3>
                 <label>Input sources: <select id="audioSources"></select></label>                
                 <div class="clear"></div>
@@ -157,6 +159,7 @@ LICENSE file in the root directory of this source tree.
 <script type="module">
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
+    import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
 
     // Main vars
     let VERBOSE = false;
@@ -217,6 +220,9 @@ LICENSE file in the root directory of this source tree.
 
     const audioTimeChecker = new TimeBufferChecker("audio");
     const videoTimeChecker = new TimeBufferChecker("video");
+
+    // Used in case we use latency tracker
+    const overlayEncoder = new OverlayEncoder();
 
     const muxerSenderConfig = {
         urlHostPort: '',
@@ -708,8 +714,18 @@ LICENSE file in the root directory of this source tree.
             }
             currentVideoTs = vFrame.timestamp;
             videoTimeChecker.AddItem({ ts: currentVideoTs, compensatedTs: currentVideoTs + videoOffsetTS, estimatedDuration: estimatedDuration, clkms: e.data.clkms });
+            
+             // Modify pixels
+            let vNewFrame = vFrame
+            if (document.getElementById('activateLatencyTracker').checked) {
+                vNewFrame = overlayEncoder.Encode(vFrame, e.data.clkms)
+                if (VERBOSE) {
+                    console.debug(`[OVERLAY] Added overlay to frame ts ${vNewFrame.timestamp}, clk: ${e.data.clkms}`)
+                }
+            }
+            
             // Encode video frame
-            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame }, [vFrame]);
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vNewFrame }, [ vNewFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             let estimatedDuration = -1;
