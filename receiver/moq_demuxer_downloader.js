@@ -263,9 +263,9 @@ async function moqReceiveDatagramObjects (moqt) {
 async function readAndSendPayload(readerStream, mediaType, length) {
   let isEOF = false
   if (mediaType !== 'data') {
-    const data = await readMediaPackager(readerStream, length)
+    const data = await readMediaPackager(readerStream, mediaType, length)
     isEOF = data.isEOF
-    self.postMessage({ type: data.chunkData.mediaType + 'chunk', clkms: Date.now(), captureClkms: data.chunkData.firstFrameClkms, seqId: data.chunkData.seqId, chunk: data.chunk, metadata: data.chunkData.metadata })
+    self.postMessage({ type: mediaType + 'chunk', clkms: Date.now(), captureClkms: data.chunkData.firstFrameClkms, seqId: data.chunkData.seqId, chunk: data.chunk, metadata: data.chunkData.metadata })
   } else {
     const packet = await readRAWPackager(readerStream, length)
     self.postMessage({ type: 'data', chunk: packet.GetData().data })
@@ -274,7 +274,7 @@ async function readAndSendPayload(readerStream, mediaType, length) {
   return isEOF
 } 
 
-async function readMediaPackager(readerStream, length) {
+async function readMediaPackager(readerStream, mediaType, length) {
   const packet = new LocPackager()
   if (length != undefined) {
     await packet.ReadLengthBytes(readerStream, length)
@@ -283,20 +283,20 @@ async function readMediaPackager(readerStream, length) {
   }
   
   const chunkData = packet.GetData()
-  if ((chunkData.chunkType === undefined) || (chunkData.mediaType === undefined)) {
+  if (chunkData.chunkType === undefined) {
     throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
   }
   sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-LOC: ${packet.GetDataStr()})`)
   
   let chunk
-  if (chunkData.mediaType === 'audio') {
+  if (mediaType === 'audio') {
     chunk = new EncodedAudioChunk({
       timestamp: chunkData.timestamp,
       type: chunkData.chunkType,
       data: chunkData.data,
       duration: chunkData.duration
     })
-  } else if (chunkData.mediaType === 'video') {
+  } else if (mediaType === 'video') {
     chunk = new EncodedVideoChunk({
       timestamp: chunkData.timestamp,
       type: chunkData.chunkType,

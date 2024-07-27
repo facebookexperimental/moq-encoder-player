@@ -136,7 +136,8 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 - Implements a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/) that is used for `moq_sender.js` as media packager
 
 ![LOC packager format](./pics/loc-packager.png)
-Fig4: Main block diagra
+
+Fig4: LOC header structure
 
 ### sender/moq_sender.js
 

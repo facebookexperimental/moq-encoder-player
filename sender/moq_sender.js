@@ -319,7 +319,7 @@ async function createRequest (chunkData, subscribeId, trackAlias, moqMapping) {
   if (chunkData.mediaType === 'data') {
     // Simple
     packet = new RawPackager()
-    packet.SetData(chunkData.mediaType, 'key', chunkData.seqId, chunkData.chunk)
+    packet.SetData('key', chunkData.seqId, chunkData.chunk)
   } else {
     // Media LOC packager
     packet = new LocPackager()
@@ -327,15 +327,17 @@ async function createRequest (chunkData, subscribeId, trackAlias, moqMapping) {
     const chunkDataBuffer = new Uint8Array(chunkData.chunk.byteLength)
     chunkData.chunk.copyTo(chunkDataBuffer)
 
-    packet.SetData(chunkData.mediaType, chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
+    packet.SetData(chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
   }
-  return createSendPromise(packet, subscribeId, trackAlias, moqMapping)
+  const isHiPri = (chunkData.mediaType === 'audio')
+
+  return createSendPromise(packet, subscribeId, trackAlias, moqMapping, isHiPri)
 }
 
-async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
+async function createSendPromise (packet, subscribeId, trackAlias, moqMapping, isHiPri) {
   let isFirstObject = false
   if (moqt.wt === null) {
-    return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. For ${packet.GetData().mediaType} - ${packet.GetData().seqId}` }
+    return { dropped: true, message: `Dropped Object for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}, because transport is NOT open. SeqId: ${packet.GetData().seqId}` }
   }
   if (!(trackAlias in moqPublisherState)) {
     if (packet.GetData().chunkType === 'delta') {
@@ -345,7 +347,7 @@ async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
     isFirstObject = true
   }
 
-  const sendOrder = moqCalculateSendOrder(packet)
+  const sendOrder = moqCalculateSendOrder(packet, isHiPri)
   
   // Group sequence, Using it as a joining point
   if (packet.GetData().chunkType !== 'delta') {
@@ -372,7 +374,7 @@ async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
     moqPublisherState[trackAlias].currentObjectSeq++
   } else if (moqMapping === MOQ_MAPPING_OBJECT_PER_STREAM) {
     // Get stream writer
-    const writterId = createMultiObjectHash(packet.GetData().mediaType, 'obj', trackAlias, groupSeq, objSeq)
+    const writterId = createMultiObjectHash('obj', trackAlias, groupSeq, objSeq)
     const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
     const uniStreamWritter = uniStream.getWriter()
 
@@ -391,10 +393,10 @@ async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
     let writterId = undefined
     let lastWriteId = undefined
     if (moqMapping === MOQ_MAPPING_TRACK_PER_STREAM) {
-      writterId = createMultiObjectHash(packet.GetData().mediaType, 'track', trackAlias)
+      writterId = createMultiObjectHash('track', trackAlias)
     } else {
-      writterId = createMultiObjectHash(packet.GetData().mediaType, 'group', trackAlias, groupSeq)
-      lastWriteId = createMultiObjectHash(packet.GetData().mediaType, 'group', trackAlias, groupSeq - 1)
+      writterId = createMultiObjectHash('group', trackAlias, groupSeq)
+      lastWriteId = createMultiObjectHash('group', trackAlias, groupSeq - 1)
     }
     
     let uniStreamWritter = null
@@ -446,8 +448,8 @@ async function createSendPromise (packet, subscribeId, trackAlias, moqMapping) {
   }
 }
 
-function createMultiObjectHash(mediaType, mappingType, trackAlias, groupId, objId) {
-  return `${mediaType}-${mappingType}-${trackAlias}-${groupId}-${objId}`
+function createMultiObjectHash(mappingType, trackAlias, groupId, objId) {
+  return `${mappingType}-${trackAlias}-${groupId}-${objId}`
 }
 
 // MOQT
@@ -506,7 +508,7 @@ function moqResetState () {
   moqPublisherState = {}
 }
 
-function moqCalculateSendOrder (packet) {
+function moqCalculateSendOrder (packet, isHiPri) {
   // Prioritize:
   // Audio over video
   // New over old
@@ -516,8 +518,8 @@ function moqCalculateSendOrder (packet) {
     // Send now
     ret = Number.MAX_SAFE_INTEGER
   } else {
-    if (tracks[packet.GetData().mediaType].isHipri) {
-      ret = Math.floor(ret + Number.MAX_SAFE_INTEGER / 2)
+    if (isHiPri) {
+      ret += Math.floor(ret + Number.MAX_SAFE_INTEGER / 2)
     }
   }
   return ret
