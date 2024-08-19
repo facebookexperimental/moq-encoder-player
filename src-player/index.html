@@ -86,8 +86,7 @@ LICENSE file in the root directory of this source tree.
             </div>
             <div>
                 <label>Video latency via overlay (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
-            </div>
-        </div>
+            </div>        </div>
     </div>
     <div class="boxed">
         <h2>Receiver demuxer</h2>
@@ -197,9 +196,8 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
+     import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../utils/utils.js"
-    import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
-
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -208,7 +206,6 @@ LICENSE file in the root directory of this source tree.
     const AudioContext = window.AudioContext || window.webkitAudioContext;
 
     // Main vars
-    // TODO: import this from QS like event player
     const VERBOSE = false;
     let IS_LOCALHOST = false;
 
