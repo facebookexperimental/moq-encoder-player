@@ -79,14 +79,14 @@ LICENSE file in the root directory of this source tree.
             <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
             <div class="clear"></div>
             <div>
-                <label>Audio latency capture to renderer (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
+                <label>Audio latency capture to renderer - approx (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
             </div>
             <div>
-                <label>Video latency capture to renderer (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
+                <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
             </div>
             <div>
-                <label>Video latency via overlay (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
-            </div>        </div>
+                <label>Video latency via overlay - exact (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
+            </div>
     </div>
     <div class="boxed">
         <h2>Receiver demuxer</h2>
@@ -196,7 +196,7 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-     import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
+    import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../utils/utils.js"
 
     // Audio states (controls the player buffer)
@@ -633,7 +633,11 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateVideoLatencyOverlayUI(latencyMs) {
-        document.getElementById('latencyVideoOverlayMs').value = `${latencyMs.toFixed(0)} ms`;
+        if (Number.isInteger(latencyMs)) {
+            document.getElementById('latencyVideoOverlayMs').value = `${latencyMs} ms`;
+        } else {
+            document.getElementById('latencyVideoOverlayMs').value = "";
+        }
     }
 
     function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
@@ -766,8 +770,9 @@ LICENSE file in the root directory of this source tree.
 
             const decoded = overlayDecoder.Decode(vFrame)
             if (decoded.confidence > 0.3) {
-                vFrame.clk = decoded.val
-                updateVideoLatencyOverlayUI(vFrame.clk)
+                vFrame.overlayClk = decoded.val                
+            } else {
+                updateVideoLatencyOverlayUI()
             }
             if (VERBOSE) {
                 console.debug(`[OVERLAY] overlay decoded. ts: ${vFrame.timestamp}, val: ${decoded.val} (conf: ${decoded.confidence})}`)
@@ -873,6 +878,11 @@ LICENSE file in the root directory of this source tree.
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
+                    if ('overlayClk' in retData.vFrame) {
+                        const currentLatencyMs = (Date.now() - Number(retData.vFrame.overlayClk));
+                        updateVideoLatencyOverlayUI(currentLatencyMs);
+                    } 
+                    // Legacy                        
                     if (latencyVideoChecker != null) {
                         const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
                         if (frameClosestData.valid) {
@@ -880,6 +890,7 @@ LICENSE file in the root directory of this source tree.
                             updateVideoLatencyUI(currentLatencyMs);
                         }
                     }
+
                     retData.vFrame.close();
                 } else {
                     if (VERBOSE) {
@@ -904,7 +915,7 @@ LICENSE file in the root directory of this source tree.
 
     // Add listeners from HTML
     window.addEventListener("load", (event) => {initFromQS();});
-    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});

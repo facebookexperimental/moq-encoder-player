@@ -8,6 +8,7 @@ LICENSE file in the root directory of this source tree.
 const DEFAULT_START_LINE = 0
 const DEFAULT_NUM_LINES = 2
 const DEFAULT_BITS_TO_WRITE = 64
+const START_SEQ = "1010"
 
 export class OverlayEncoder {
     constructor () {
@@ -38,7 +39,9 @@ export class OverlayEncoder {
         const copyOptions = {layout: [{offset: 0, stride: vFrame.codedWidth}, {offset: vFrame.codedHeight * vFrame.codedWidth, stride: vFrame.codedWidth}]}
         vFrame.copyTo(mewFramepixelsData, copyOptions)
 
-        const data_str_pad = data.toString(2).padStart(this.bitsToWrite, '0')
+        const data_num_bytes_to_write = this.bitsToWrite - START_SEQ.length
+        const data_str_pad = START_SEQ + data.toString(2).padStart(data_num_bytes_to_write, '0')
+
         const pixelsPerBit = Math.floor(vFrame.codedWidth / this.bitsToWrite)
         // Y is stored at start for NV12
         for (let l = 0; l < this.numLines; l++) {

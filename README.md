@@ -239,7 +239,14 @@ Buffer that stores video decoded frames
 - Allows the retrieval of video decoded frames via timestamps
   - Automatically drops all video frames that older than the currently requested
 
-### Latency measurement
+### Lantency measurement based in video data
+We can activate the option "Activate latency tracker (overlays data on video)" in the encoder (CPU consuming), this options will add the epoch ms clock of the encoder in the video frame as soon as it is received from the camera. It replaces the first video lines with that clock information. It is also encoded in a way that is ressiliant to video pocessing / encoding / decoding operations (see `./overlay_processor/overlay_encoder.js` and `./overlay_processor/overlay_decoder.js` in the code)
+
+The player will decode that info from every frame and when it is about to show that frame it will calculate the latency by: `latency_ms = now_in_ms - frame_capture_in_ms`.
+
+Note: This assumes the clocks of the encoder and the decoder are in-sync. Always true if you use same computer to encode and decode
+
+### Legacy latency measurement
 
 - Every audio and video received chunk `timestamp` and `clkms` (wall clock) is added into `latencyAudioChecker` and `latencyVideoChecker` queue (instances of `TimeBufferChecker`)
 - The `renderer.currentAudioTS` (current audio sample rendered) is used to get the closest wall clock time from `audioTimeChecker`. From there we sync video.

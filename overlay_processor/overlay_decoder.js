@@ -8,8 +8,7 @@ LICENSE file in the root directory of this source tree.
 const DEFAULT_START_LINE = 0
 const DEFAULT_NUM_LINES = 1
 const DEFAULT_BITS_TO_READ = 64
-
-//const CALIBRATION_WORD = 0b0101
+const START_SEQ = "1010"
 
 export class OverlayDecoder {
     constructor () {
@@ -53,13 +52,19 @@ export class OverlayDecoder {
             let val = totalVal / (pixelsPerBit * this.numLines)
             if (val >= 128) {
                 bin_str += '1'
-                conf += Math.min(Math.abs(255 - val), 1)
             } else {
                 bin_str += '0'
-                conf += Math.min(Math.abs(0 - val), 1)
             }
         }
 
-        return { val: BigInt('0b' + bin_str), confidence: conf / this.bitsToRead}
+        let ret_conf = 0
+        if (bin_str.length >= START_SEQ.length && bin_str.substring(0,START_SEQ.length) == START_SEQ) {
+            ret_conf = 1
+            bin_str = bin_str.substring(START_SEQ.length).padStart(this.bitsToRead, '0')
+        } else {
+            ret_conf = conf / this.bitsToRead
+        }
+
+        return { val: BigInt('0b' + bin_str), confidence: ret_conf}
     }
 }

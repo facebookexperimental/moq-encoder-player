@@ -762,7 +762,7 @@ LICENSE file in the root directory of this source tree.
                     timingInfo.renderer.currentVideoTS = retData.vFrame.timestamp;
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
-
+                    
                     if (latencyVideoChecker != null) {
                         const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
                         if (frameClosestData.valid) {
@@ -954,7 +954,7 @@ LICENSE file in the root directory of this source tree.
     
     document.getElementById('btnPlayerShowStats').addEventListener("click", (event) => {showData("sectionPlayerStats");});
 
-    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
 
 </script>
