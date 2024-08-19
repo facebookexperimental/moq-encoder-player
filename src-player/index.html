@@ -84,7 +84,9 @@ LICENSE file in the root directory of this source tree.
             <div>
                 <label>Video latency capture to renderer (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
             </div>
-            
+            <div>
+                <label>Video latency via overlay (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
+            </div>
         </div>
     </div>
     <div class="boxed">
@@ -633,6 +635,10 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('latencyVideoMs').value = `${latencyMs.toFixed(0)} ms`;
     }
 
+    function updateVideoLatencyOverlayUI(latencyMs) {
+        document.getElementById('latencyVideoOverlayMs').value = `${latencyMs.toFixed(0)} ms`;
+    }
+
     function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
         document.getElementById('latencyAudioMs').value = `${totalLatencyMs.toFixed(0)} ms (System: ${systemAudioLatencyMs.toFixed(0)} ms)`;
     }
@@ -764,6 +770,7 @@ LICENSE file in the root directory of this source tree.
             const decoded = overlayDecoder.Decode(vFrame)
             if (decoded.confidence > 0.3) {
                 vFrame.clk = decoded.val
+                updateVideoLatencyOverlayUI(vFrame.clk)
             }
             if (VERBOSE) {
                 console.debug(`[OVERLAY] overlay decoded. ts: ${vFrame.timestamp}, val: ${decoded.val} (conf: ${decoded.confidence})}`)

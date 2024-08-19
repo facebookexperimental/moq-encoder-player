@@ -441,25 +441,25 @@ async function moqParseSubscribe (readerStream) {
     ret.startGroup = await varIntToNumberOrThrow(readerStream)
     if (ret.startGroup !== MOQ_LOCATION_MODE_NONE) {
       await varIntToNumberOrThrow(readerStream)
-      // TODO: Do not start sending until this position
+      throw new Error('Not supported startGroup')
     }
     // Start object
     ret.startObject = await varIntToNumberOrThrow(readerStream)
     if (ret.startObject !== MOQ_LOCATION_MODE_NONE) {
       await varIntToNumberOrThrow(readerStream)
-      // TODO: Do not start sending until this position
+      throw new Error('Not supported startObject')
     }
   }
   if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
     ret.endGroup = await varIntToNumberOrThrow(readerStream)
     if (ret.endGroup !== MOQ_LOCATION_MODE_NONE) {
       await varIntToNumberOrThrow(readerStream)
-      // TODO: Stop sending if NO subscribers after this position
+      throw new Error('Not supported endGroup')
     }
     ret.endObject = await varIntToNumberOrThrow(readerStream)
     if (ret.endObject !== MOQ_LOCATION_MODE_NONE) {
       await varIntToNumberOrThrow(readerStream)
-      // TODO: Stop sending if NO subscribers after this position
+      throw new Error('Not supported endObject')
     }    
   }
 
