@@ -2,3 +2,4 @@
 node_modules/
 eslint.*
 package*.json
+certs/

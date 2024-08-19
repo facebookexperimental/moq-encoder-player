@@ -23,6 +23,7 @@ let urlHostPortEp = ''
 let isSendingStats = false
 let currentSubscribeId = 0
 let currentTrackAlias = 0
+let certificateHash = null
 let tracks = {} // We add subscribeId and trackAlias
 // Example
 /* moqTracks: {
@@ -92,6 +93,9 @@ self.addEventListener('message', async function (e) {
     if ('moqTracks' in e.data.downloaderConfig) {
       tracks = e.data.downloaderConfig.moqTracks
     }
+    if ('certificateHash' in e.data.downloaderConfig) {
+      certificateHash = e.data.downloaderConfig.certificateHash
+    }
 
     const errTrackStr = checkTrackData()
     if (errTrackStr !== '') {
@@ -108,7 +112,11 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      moqt.wt = new WebTransport(url.href)
+      let options = {}
+      if (certificateHash != undefined && certificateHash != null) {
+        options = { serverCertificateHashes: [{ algorithm: 'sha-256', value: certificateHash}]}
+      }
+      moqt.wt = new WebTransport(url.href, options)
       moqt.wt.closed
         .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'WT closed transport session')

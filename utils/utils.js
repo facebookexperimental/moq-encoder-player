@@ -70,6 +70,15 @@ export function deSerializeMetadata (metadata) {
   return data.decoderConfig
 }
 
+export async function getBinaryFile(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+      throw new Error(`Response status: ${response.status}`);
+  }
+
+  return await response.arrayBuffer()
+}
+
 function base64ToArrayBuffer (base64) {
   const binaryString = atob(base64)
   const len = binaryString.length

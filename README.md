@@ -5,7 +5,9 @@ This project is provides a minimal implementation (inside the browser) of a live
 ![Main block diagram](./pics/basic-block-diagram.png)
 Fig1: Main block diagram
 
-For the server/relay side we have used [moq-go-server](https://github.com/facebookexperimental/moq-go-server).
+For the server/relay side we have used [moxygen](https://github.com/facebookexperimental/moxygen).
+
+Note: You need to be careful and check that protocol versions implemented by this code and moxygen matches
 
 ## Packager
 
@@ -245,9 +247,16 @@ Buffer that stores video decoded frames
 
 Note: Encoder and Player clock have to be in sync for this metric to be accurate. If you use same computer as encoder & player then metric should be pretty accurate
 
-## Testing
+## Local testing (localhost)
 
-- Follow the installation instructions of [moq-go-server](https://github.com/facebookexperimental/moq-go-server).
+- Create key, certificate, and certificate fingerprint by running following script
+```
+./create_self_signed_certs.sh
+```
+Note: The trick here is that this script will create a self signed certificate for localhost with EDCSA and validity of 10 days (<15), this is the type Chrome will accept.
+
+- Follow the installation instructions of  [moxygen](https://github.com/facebookexperimental/moxygen).
+    - Remember to use key and certificate created on the previous step to run moxygen
 
 - Clone this repo
 
@@ -256,6 +265,7 @@ git clone git@github.com:facebookexperimental/moq-encoder-player.git
 ```
 
 - Install phyton (see this [guide](https://realpython.com/installing-python/))
+
 - Run local webserver by calling:
 
 ```bash
@@ -264,9 +274,9 @@ git clone git@github.com:facebookexperimental/moq-encoder-player.git
 
 Note: You need to use this script to **run the player** because it adds some needed headers (more info [here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer#security_requirements))
 
-- Load encoder webpage, url: `http://localhost:8080/src-encoder/`
+- Load encoder webpage, url: `http://localhost:8080/src-encoder/?local`
   - Click "start"
-- Load player webpage, url: `http://localhost:8080/src-player/`
+- Load player webpage, url: `http://localhost:8080/src-player/?local`
   - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
   - Click "start"
 
@@ -277,6 +287,8 @@ Fig6: Encoder UI
 
 ![Player UI](./pics/player-page-ui.png)
 Fig7: Player UI
+
+Note: This is an experimentation code, we plan the evolve it quick, so those screenshots could be a bit outdated
 
 ## TODO
 

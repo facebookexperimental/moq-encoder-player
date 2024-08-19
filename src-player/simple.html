@@ -57,14 +57,18 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
+    import { getBinaryFile } from "../utils/utils.js"
+    
     // Main vars
     const VERBOSE = true;
+    let IS_LOCALHOST = false;
 
     const downloaderConfig = {      
         urlHostPort: '',
         urlPath: '',
 
         isSendingStats: false,
+        certificateHash: null,
 
         moqTracks: {
             "data": {
@@ -86,10 +90,14 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
     
-    function initUI() {
+    function initFromQS() {
         const qsHost = qsParams.get('host')
         if (qsHost != undefined) {
             document.getElementById("wtServerUrl").value = qsHost;
+        }
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
         }
     }
 
@@ -104,6 +112,10 @@ LICENSE file in the root directory of this source tree.
         });
         
         // Ini downloaderConfig
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+        }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         downloaderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;
@@ -162,7 +174,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     // Add listeners from HTML
-    window.addEventListener("load", (event) => {initUI();});
+    window.addEventListener("load", (event) => {initFromQS();});
     document.getElementById('btnStart').addEventListener("click", (event) => {start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
 </script>

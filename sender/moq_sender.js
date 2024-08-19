@@ -24,6 +24,7 @@ let isSendingStats = true
 let keepAlivesEveryMs = 0
 let keepAliveInterval = null
 let keepAliveNameSpace = ""
+let certificateHash = null
 
 let lastObjectSentMs = 0
 
@@ -107,6 +108,9 @@ self.addEventListener('message', async function (e) {
     if ('keepAlivesEveryMs' in e.data.muxerSenderConfig) {
       keepAlivesEveryMs = e.data.muxerSenderConfig.keepAlivesEveryMs
     }
+    if ('certificateHash' in e.data.muxerSenderConfig) {
+      certificateHash = e.data.muxerSenderConfig.certificateHash
+    }
 
     if (urlHostPortEp === '') {
       sendMessageToMain(WORKER_PREFIX, 'error', 'Empty host port')
@@ -130,7 +134,13 @@ self.addEventListener('message', async function (e) {
       url.protocol = 'https'
 
       // Ini WT
-      moqt.wt = new WebTransport(url.href)
+      let options = {}
+      if (certificateHash != undefined && certificateHash != null) {
+        options = { serverCertificateHashes: [{ algorithm: 'sha-256', value: certificateHash}]}
+      }
+      sendMessageToMain(WORKER_PREFIX, 'info', `WT initiating with options ${JSON.stringify(options)}`)
+
+      moqt.wt = new WebTransport(url.href, options)
       moqt.wt.closed
         .then(() => {
           sendMessageToMain(WORKER_PREFIX, 'info', 'WT closed transport session')

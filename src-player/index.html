@@ -195,6 +195,7 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
+    import { getBinaryFile } from "../utils/utils.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -205,10 +206,13 @@ LICENSE file in the root directory of this source tree.
     // Main vars
     // TODO: import this from QS like event player
     const VERBOSE = true;
+    let IS_LOCALHOST = false;
 
     const downloaderConfig = {
         urlHostPort: '',
         urlPath: '',
+
+        certificateHash: null,
 
         moqTracks: {
             "audio": {
@@ -321,10 +325,14 @@ LICENSE file in the root directory of this source tree.
         updateFullTrackNameUI();
     });
 
-    function initUI() {
+    function initFromQS() {
         const qsHost = qsParams.get('host')
         if (qsHost != undefined) {
             document.getElementById("wtServerUrl").value = qsHost;
+        }
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
         }
         const now = new Date().toISOString();
 
@@ -377,6 +385,10 @@ LICENSE file in the root directory of this source tree.
         });
 
         // Ini downloaderConfig
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+        }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         
@@ -867,7 +879,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     // Add listeners from HTML
-    window.addEventListener("load", (event) => {initUI();});
+    window.addEventListener("load", (event) => {initFromQS();});
     document.getElementById('btnStart').addEventListener("click", (event) => {start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});

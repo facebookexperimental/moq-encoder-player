@@ -71,9 +71,11 @@ LICENSE file in the root directory of this source tree.
 </body>
 <script type="module">
     import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
+    import { getBinaryFile } from "../utils/utils.js"
 
     // Main vars
     const VERBOSE = true;
+    let IS_LOCALHOST = false;
 
     let msgSeqId = 0;
 
@@ -84,6 +86,8 @@ LICENSE file in the root directory of this source tree.
         urlPath: '',
 
         keepAlivesEveryMs: 5000,
+
+        certificateHash: null,
 
         isSendingStats: false,
 
@@ -118,7 +122,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initUI() {
-        initHostUI();
+        initFromQS();
         initMOQQuicMappingModeUI(document.getElementById("moqQuicMapping"), MOQ_MAPPING_OBJECT_PER_STREAM)
     }
 
@@ -160,10 +164,14 @@ LICENSE file in the root directory of this source tree.
         selectElement.appendChild(optionObjPerGroup);
     }
 
-    function initHostUI() {
+    function initFromQS() {
         const qsHost = qsParams.get('host')
         if (qsHost != undefined) {
             document.getElementById("wtServerUrl").value = qsHost;
+        }
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
         }
     }
 
@@ -204,7 +212,7 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function start() {
+    async function start() {
         document.getElementById("btnStart").disabled = true
         document.getElementById("btnStop").disabled = false
         document.getElementById("btnSend").disabled = false
@@ -216,6 +224,10 @@ LICENSE file in the root directory of this source tree.
         });
 
         // Transport
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
+            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+        }
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         muxerSenderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;

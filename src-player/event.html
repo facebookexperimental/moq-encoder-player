@@ -194,6 +194,10 @@ LICENSE file in the root directory of this source tree.
 
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM} from "../utils/moqt.js"
+    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
+    import { JitterBuffer } from "../utils/jitter_buffer.js"
+    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
+    import { getBinaryFile } from "../utils/utils.js"
 
     const streamData = {
         title: "unknown",
@@ -204,12 +208,9 @@ LICENSE file in the root directory of this source tree.
         authinfo: "",
     }
 
-    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
-    import { JitterBuffer } from "../utils/jitter_buffer.js"
-    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-
     // Main vars
     let VERBOSE = false
+    let IS_LOCALHOST = false;
     
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -220,6 +221,8 @@ LICENSE file in the root directory of this source tree.
     const downloaderConfig = {
         urlHostPort: '',
         urlPath: '',
+
+        certificateHash: null,
 
         moqTracks: {
             "audio": {
@@ -814,6 +817,10 @@ LICENSE file in the root directory of this source tree.
         });
 
         // Ini downloaderConfig
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+        }
         // Get url data
         downloaderConfig.urlHostPort = streamData.host
         
@@ -863,7 +870,7 @@ LICENSE file in the root directory of this source tree.
         playerClearVideoRendererBuffer();
     }
 
-    async function initUI() {
+    async function initFromQS() {
         const qsHost = qsParams.get('host')
         if (qsHost != undefined) {
             streamData.host = qsHost
@@ -888,7 +895,10 @@ LICENSE file in the root directory of this source tree.
         if (verbose_logging != undefined && verbose_logging === "1") {
             VERBOSE = true
         }
-
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
+        }
         console.log("Data read from QS: " + JSON.stringify(streamData))
 
         fillOutLatencyOptionsUI()
@@ -940,7 +950,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     // Add listeners from HTML
-    window.addEventListener("load", (event) => {initUI();});
+    window.addEventListener("load", (event) => {initFromQS();});
     
     document.getElementById('btnPlayerShowStats').addEventListener("click", (event) => {showData("sectionPlayerStats");});
 
