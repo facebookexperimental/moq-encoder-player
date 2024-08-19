@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 const DEFAULT_START_LINE = 0
-const DEFAULT_NUM_LINES = 1
+const DEFAULT_NUM_LINES = 2
 const DEFAULT_BITS_TO_READ = 64
 const START_SEQ = "1010"
 
@@ -39,7 +39,6 @@ export class OverlayDecoder {
         // Y is stored at start for I420
         const pixelsPerBit = vFrame.displayWidth / this.bitsToRead
         let bin_str = ""
-        let conf = 0
 
         for (let b = 0; b < this.bitsToRead; b++) {
             let totalVal = 0
@@ -61,8 +60,6 @@ export class OverlayDecoder {
         if (bin_str.length >= START_SEQ.length && bin_str.substring(0,START_SEQ.length) == START_SEQ) {
             ret_conf = 1
             bin_str = bin_str.substring(START_SEQ.length).padStart(this.bitsToRead, '0')
-        } else {
-            ret_conf = conf / this.bitsToRead
         }
 
         return { val: BigInt('0b' + bin_str), confidence: ret_conf}
