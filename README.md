@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-This project is provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-03](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/03/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
+This project is provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-04](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/04/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
 ![Main block diagram](./pics/basic-block-diagram.png)
 Fig1: Main block diagram
