@@ -161,6 +161,7 @@ LICENSE file in the root directory of this source tree.
     import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
+    import { AudioMarkerEncoder } from "../audio_marker/audio_marker_encoder.js"
 
     // Main vars
     let VERBOSE = false;
@@ -225,6 +226,9 @@ LICENSE file in the root directory of this source tree.
 
     // Used in case we use latency tracker
     const overlayEncoder = new OverlayEncoder();
+
+    // Used in case of tagging audio frames
+    const audioMarkerEncoder = new AudioMarkerEncoder()
 
     const muxerSenderConfig = {
         urlHostPort: '',
@@ -751,8 +755,12 @@ LICENSE file in the root directory of this source tree.
             }
             currentAudioTs = aFrame.timestamp;
             audioTimeChecker.AddItem({ ts: currentAudioTs, compensatedTs: currentAudioTs + audioOffsetTS, estimatedDuration: estimatedDuration, clkms: e.data.clkms });
+
+            // TODO: JOC
+            const aNewFrame = audioMarkerEncoder.Encode(aFrame, Date.now())
+
             // Encode audio frame
-            aEncoderWorker.postMessage({ type: "aframe", aframe: aFrame });
+            aEncoderWorker.postMessage({ type: "aframe", aframe: aNewFrame });
 
             // DROPPED
         } else if (e.data.type === "dropped") {
