@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, deSerializeMetadata } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum, deSerializeMetadata, compareArrayBuffer } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
@@ -16,6 +16,8 @@ const MAX_QUEUED_CHUNKS_DEFAULT = 60
 let workerState = StateEnum.Created
 
 let videoDecoder = null
+
+let lastMetadataUsed = null
 
 let waitForKeyFrame = true
 let discardedDelta = 0
@@ -36,6 +38,17 @@ function setWaitForKeyframe (a) {
 
 function isWaitingForKeyframe () {
   return waitForKeyFrame
+}
+
+function getAndOverrideInitDataValues(metadata) {
+  // Override values
+  const config = deSerializeMetadata(metadata)
+  config.optimizeForLatency = true
+  // In my test @2022/11 with hardware accel could NOT get real time decoding,
+  // switching to soft decoding fixed everything (h264)
+  config.hardwareAcceleration = 'prefer-software'
+
+  return config
 }
 
 self.addEventListener('message', async function (e) {
@@ -62,8 +75,13 @@ self.addEventListener('message', async function (e) {
   } else if (type === 'videochunk') {
     if (e.data.metadata !== undefined && e.data.metadata != null) {
       sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`)
-      if (videoDecoder != null) {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received init, but VideoDecoder already initialized`)
+      if (videoDecoder != null) {        
+        if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, e.data.metadata)) {
+          const config = getAndOverrideInitDataValues(e.data.metadata)
+          sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${e.data.seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(config)}`)          
+          videoDecoder.configure(config)
+        }
+        lastMetadataUsed = e.data.metadata        
       } else {
         // Initialize video decoder
         // eslint-disable-next-line no-undef
@@ -81,19 +99,15 @@ self.addEventListener('message', async function (e) {
             ptsQueue.removeUntil(videoDecoder.decodeQueueSize)
           }
         })
-
-        // Override values
-        const config = deSerializeMetadata(e.data.metadata)
-        config.optimizeForLatency = true
-        // In my test @2022/11 with hardware accel could NOT get real time decoding,
-        // switching to soft decoding fixed everything (h264)
-        config.hardwareAcceleration = 'prefer-software'
+        
+        const config = getAndOverrideInitDataValues(e.data.metadata)
         videoDecoder.configure(config)
+        lastMetadataUsed = e.data.metadata
 
         workerState = StateEnum.Running
         setWaitForKeyframe(true)
 
-        sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${e.data.seqId} Initialized and configured`)
+        sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${e.data.seqId} Initialized and configured. Config: ${JSON.stringify(config)}`)
       }
     } else {
       sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`)
