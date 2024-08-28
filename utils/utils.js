@@ -79,6 +79,20 @@ export async function getBinaryFile(url) {
   return await response.arrayBuffer()
 }
 
+export function compareArrayBuffer(a, b) {
+  if (a.byteLength !== b.byteLength) {
+    return false
+  }
+  const av = new Int8Array(a)
+  const bv = new Int8Array(b)
+  for (let i = 0; i < a.byteLength; i++) {    
+    if (av[i] !== bv[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function base64ToArrayBuffer (base64) {
   const binaryString = atob(base64)
   const len = binaryString.length
