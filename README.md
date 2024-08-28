@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-This project is provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-04](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/04/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
+This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-04](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/04/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
 It is NOT optimized for performance / production at all since the 1st goal is experimenting / learning.
 
@@ -55,7 +55,7 @@ const audioEncoderConfig = {
             numberOfChannels: 1, // To fill later
             bitrate: 32000,
             opus: { // See https://www.w3.org/TR/webcodecs-opus-codec-registration/
-                frameDuration: 10000 // In ns. Lower latency than default = 20000
+                frameDuration: 10000 // In us. Lower latency than default = 20000
             }
         },
         encoderMaxQueueSize: 10,
@@ -108,7 +108,7 @@ Stores the frames timestamps and the wall clock generation time from the raw gen
 
 ### capture/v_capture.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that waits for the next RGB or YUV video frame from capture device,  augments it adding wallclock, and sends it via post message to video encoder
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that waits for the next RGB or YUV video frame from capture device, augments it adding wallclock, and sends it via post message to video encoder
 
 ### capture/a_capture.js
 
@@ -169,13 +169,13 @@ To keep the audio and video in-sync the following strategy is applied:
 - Every time we sent new audio samples to audio renderer the video renderer `video_render_buffer` (who contains YUV/RGB frames + timestamps) gets called and:
   - Returns / paints the oldest closest (or equal) frame to current audio ts (`timingInfo.renderer.currentAudioTS`)
   - Discards (frees) all frames older current ts (except the returned one)
-- It is worth saying that `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync. To workaround that problem we calculate all the audio GAPs duration `timestampOffset` (by last playedTS - newTS, ideally = 0 if NO gaps), and we compensate the issued PTS by that.
+- It is worth saying that `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync. To work around that problem we calculate all the audio GAPs duration `timestampOffset` (by last playedTS - newTS, ideally = 0 if NO gaps), and we compensate the issued PTS by that.
 
 ### receiver/moq_demuxer_downloader.js
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `loc_packager.js`) from the server / relay following MOQT and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
 
-- Opens webtransport session
+- Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
 - Waits for incoming unidirectional (Server -> Player) QUIC streams
 - For every received chunk (QUIC stream) we:
@@ -200,7 +200,7 @@ Since we do not have any guarantee that QUIC streams are delivered in order we n
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) when it receives and audio chunk it decodes it and it sends the audio PCM samples to the audio renderer.
 `AudioDecoder` does NOT track timestamps on decoded data, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync.
-To workaround that problem we calculate all the audio GAPs duration `timestampOffset` and we publish that to allow other elements in the pipeline to have accurate idea of live head position
+To work around that problem we calculate all the audio GAPs duration `timestampOffset` and we publish that to allow other elements in the pipeline to have accurate idea of live head position
 
 - Receives audio chunk
   - If discontinuity detected (reported by jitter_buffer.js) then calculate lost time by:
@@ -241,8 +241,8 @@ Buffer that stores video decoded frames
 - Allows the retrieval of video decoded frames via timestamps
   - Automatically drops all video frames that older than the currently requested
 
-### Lantency measurement based in video data
-We can activate the option "Activate latency tracker (overlays data on video)" in the encoder (CPU consuming), this options will add the epoch ms clock of the encoder in the video frame as soon as it is received from the camera. It replaces the first video lines with that clock information. It is also encoded in a way that is ressiliant to video pocessing / encoding / decoding operations (see `./overlay_processor/overlay_encoder.js` and `./overlay_processor/overlay_decoder.js` in the code)
+### Latency measurement based in video data
+We can activate the option "Activate latency tracker (overlays data on video)" in the encoder (CPU consuming), this options will add the epoch ms clock of the encoder in the video frame as soon as it is received from the camera. It replaces the first video lines with that clock information. It is also encoded in a way that is resilient to video processing / encoding / decoding operations (see `./overlay_processor/overlay_encoder.js` and `./overlay_processor/overlay_decoder.js` in the code)
 
 The player will decode that info from every frame and when it is about to show that frame it will calculate the latency by: `latency_ms = now_in_ms - frame_capture_in_ms`.
 
@@ -273,21 +273,21 @@ Note: The trick here is that this script will create a self signed certificate f
 git clone git@github.com:facebookexperimental/moq-encoder-player.git
 ```
 
-- Install phyton (see this [guide](https://realpython.com/installing-python/))
+- Install Python (see this [guide](https://realpython.com/installing-python/))
 
 - Run local webserver by calling:
 
 ```bash
-./start-http-server-cross-origin-isolated.py 
+./start-http-server-cross-origin-isolated.py
 ```
 
 Note: You need to use this script to **run the player** because it adds some needed headers (more info [here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer#security_requirements))
 
-- Load encoder webpage, url: `http://localhost:8080/src-encoder/?local`
-  - Click "start"
-- Load player webpage, url: `http://localhost:8080/src-player/?local`
+- Load encoder webpage, url: http://localhost:8080/src-encoder/?local
+  - Click "Start"
+- Load player webpage, url: http://localhost:8080/src-player/?local
   - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
-  - Click "start"
+  - Click "Start"
 
 ENJOY YOUR POCing!!! :-)
 
@@ -302,14 +302,14 @@ Note: This is an experimentation code, we plan the evolve it quick, so those scr
 ## TODO
 
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
-- Player: Do not use main thead for anything except reporting
+- Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - Accelerate playback if we are over latency budget
-- Fix dropped frames UI on VC player (not poperly separated between encoder & player, see TODO in the code)
+- Fix dropped frames UI on VC player (not properly separated between encoder & player, see TODO in the code)
 - Copy updates from event player to regular one
   - Better TS logging and video renderer
 X - Fix player audio latency
-  - Added new accurate metric based on embeeded video data
+  - Added new accurate metric based on embedded video data
 - All:
   - Accept B frames (DTS)
 
