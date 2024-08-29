@@ -371,24 +371,42 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function getMedia(screen, constraints) {
+        if (screen) {
+            return navigator.mediaDevices.getDisplayMedia(constraints);
+        } else {
+            return navigator.mediaDevices.getUserMedia(constraints);
+        }
+    }
+
     function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
         enableUI("processingUpdate");
-        const audioConstraints = { };
-        if (newAudioDeviceId != "") {
-            audioConstraints.deviceId = { exact: newAudioDeviceId };
+
+        const shareScreen = newVideoDeviceId === 'screen';
+        const constraints = { };
+        if (!shareScreen) {
+            const audioConstraints = { };
+            if (newAudioDeviceId != "") {
+                audioConstraints.deviceId = { exact: newAudioDeviceId };
+            }
+            const videoConstraints = { };
+            if (newVideoDeviceId != "") {
+                videoConstraints.deviceId = { exact: newVideoDeviceId };
+            }
+            if (newHeight > 0) {
+                videoConstraints.height = {min: newHeight, ideal: newHeight};
+            }
+            if (newWidth > 0) {
+                videoConstraints.width = {min: newWidth, ideal: newWidth};
+            }
+            constraints.audio = audioConstraints;
+            constraints.video = videoConstraints;
         }
-        const videoConstraints = { };
-        if (newVideoDeviceId != "") {
-            videoConstraints.deviceId = { exact: newVideoDeviceId };
-        }
-        if (newHeight > 0) {
-            videoConstraints.height = {min: newHeight, ideal: newHeight};
-        }
-        if (newWidth > 0) {
-            videoConstraints.width = {min: newWidth, ideal: newWidth};
+        else {
+            constraints.video = true;
+            constraints.audio = true;
         }
 
-        const constraints = {audio: audioConstraints, video: videoConstraints};
         // Remove old stream
         if (document.getElementById('vPreview').srcObject != undefined && document.getElementById('vPreview').srcObject != null) {
             const mediaStream = document.getElementById('vPreview').srcObject;
@@ -404,7 +422,7 @@ LICENSE file in the root directory of this source tree.
         }
 
         // Start new stream
-        navigator.mediaDevices.getUserMedia(constraints)
+        getMedia(shareScreen, constraints)
         .then(mediaStream => {                    
             // Connect the stream to the preview video element.
             document.getElementById('vPreview').srcObject = mediaStream;      
@@ -553,32 +571,38 @@ LICENSE file in the root directory of this source tree.
         updateFullTrackNameUI();
     }
 
+    function addVideoSource(select, deviceId, label, count) {
+        const option = document.createElement('option');
+        option.value = deviceId;
+        if (count === 1) option.selected = true;
+        const textNode = document.createTextNode(label);
+        option.appendChild(textNode);
+        select.appendChild(option);
+        console.log(`Video input device added: ${label}(${option.value})`);
+    }
+
     async function populateVideoSourcesUI() {
         const select = document.getElementById('videoSources');
         select.innerHTML = '';
         let count = 0;
-        // This does NOT work if you run chrome locally (test mode)
+        // This requires HTTPS or should be served from localhost
         await navigator.mediaDevices
             .enumerateDevices()
             .then(devices => {
                 devices.forEach(mediaDevice => {
                     if (mediaDevice.kind === 'videoinput') {
                         if (mediaDevice.deviceId != "") {
-                            const option = document.createElement('option');
-                            option.value = mediaDevice.deviceId;
                             count++;
-                            if (count == 1) option.selected = true;
                             const label = mediaDevice.label || `Camera ${count}`;
-                            const textNode = document.createTextNode(label);
-                            option.appendChild(textNode);
-                            select.appendChild(option);
-                            console.log(`Video input device added: ${label}(${option.value})`);
+                            addVideoSource(select, mediaDevice.deviceId, label, count);
                         }
                     }
                 })
             }).catch(err => {
                 console.error(`Showing video sources. Err: ${err.name}-${err.message}`);
             });
+
+        addVideoSource(select, 'screen', 'Screen', ++count);
     }
 
     async function populateAudioSourcesUI() {
