@@ -382,28 +382,27 @@ LICENSE file in the root directory of this source tree.
     function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
         enableUI("processingUpdate");
 
-        const shareScreen = newVideoDeviceId === 'screen';
+        const shareScreen = (newVideoDeviceId === 'screen');
         const constraints = { };
+        const videoConstraints = { };
+        if (!shareScreen && newVideoDeviceId != "") {
+            videoConstraints.deviceId = { exact: newVideoDeviceId };
+        }
+        if (newHeight > 0) {
+            videoConstraints.height = {ideal: newHeight};
+        }
+        if (newWidth > 0) {
+            videoConstraints.width = {ideal: newWidth};
+        }
+        constraints.video = videoConstraints;
         if (!shareScreen) {
             const audioConstraints = { };
             if (newAudioDeviceId != "") {
                 audioConstraints.deviceId = { exact: newAudioDeviceId };
             }
-            const videoConstraints = { };
-            if (newVideoDeviceId != "") {
-                videoConstraints.deviceId = { exact: newVideoDeviceId };
-            }
-            if (newHeight > 0) {
-                videoConstraints.height = {min: newHeight, ideal: newHeight};
-            }
-            if (newWidth > 0) {
-                videoConstraints.width = {min: newWidth, ideal: newWidth};
-            }
             constraints.audio = audioConstraints;
-            constraints.video = videoConstraints;
         }
         else {
-            constraints.video = true;
             constraints.audio = true;
         }
 
