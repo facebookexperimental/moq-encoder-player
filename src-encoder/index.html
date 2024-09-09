@@ -321,7 +321,7 @@ LICENSE file in the root directory of this source tree.
         await populateVideoSourcesUI();
         await populateAudioSourcesUI();
 
-        // Ini preview
+        // Init preview
         const currentVideoDeviceIdIndex = document.getElementById('videoSources').selectedIndex;
         let currentVideoDeviceId = ""
         if (currentVideoDeviceIdIndex > 0) {
@@ -371,24 +371,41 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function getMedia(screen, constraints) {
+        if (screen) {
+            return navigator.mediaDevices.getDisplayMedia(constraints);
+        } else {
+            return navigator.mediaDevices.getUserMedia(constraints);
+        }
+    }
+
     function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
         enableUI("processingUpdate");
-        const audioConstraints = { };
-        if (newAudioDeviceId != "") {
-            audioConstraints.deviceId = { exact: newAudioDeviceId };
-        }
+
+        const shareScreen = (newVideoDeviceId === 'screen');
+        const constraints = { };
         const videoConstraints = { };
-        if (newVideoDeviceId != "") {
+        if (!shareScreen && newVideoDeviceId != "") {
             videoConstraints.deviceId = { exact: newVideoDeviceId };
         }
         if (newHeight > 0) {
-            videoConstraints.height = {min: newHeight, ideal: newHeight};
+            videoConstraints.height = {ideal: newHeight};
         }
         if (newWidth > 0) {
-            videoConstraints.width = {min: newWidth, ideal: newWidth};
+            videoConstraints.width = {ideal: newWidth};
+        }
+        constraints.video = videoConstraints;
+        if (!shareScreen) {
+            const audioConstraints = { };
+            if (newAudioDeviceId != "") {
+                audioConstraints.deviceId = { exact: newAudioDeviceId };
+            }
+            constraints.audio = audioConstraints;
+        }
+        else {
+            constraints.audio = true;
         }
 
-        const constraints = {audio: audioConstraints, video: videoConstraints};
         // Remove old stream
         if (document.getElementById('vPreview').srcObject != undefined && document.getElementById('vPreview').srcObject != null) {
             const mediaStream = document.getElementById('vPreview').srcObject;
@@ -404,7 +421,7 @@ LICENSE file in the root directory of this source tree.
         }
 
         // Start new stream
-        navigator.mediaDevices.getUserMedia(constraints)
+        getMedia(shareScreen, constraints)
         .then(mediaStream => {                    
             // Connect the stream to the preview video element.
             document.getElementById('vPreview').srcObject = mediaStream;      
@@ -474,12 +491,11 @@ LICENSE file in the root directory of this source tree.
     function initEncodingOptionsUI() {
         const op = document.getElementById("videoEncodingOptions");
 
-        addEncodingOptionUI(op, 320, 180, 15, 12); //1.2
-        addEncodingOptionUI(op, 320, 180, 30, 13); //1.3
+        addEncodingOptionUI(op, 320, 180, 15, 12); // 1.2
+        addEncodingOptionUI(op, 320, 180, 30, 13); // 1.3
         addEncodingOptionUI(op, 854, 480, 15, 30); // 3
-        addEncodingOptionUI(op, 854, 480, 30, 31, true); //3.1
-        addEncodingOptionUI(op, 1280, 720, 15, 31); //3.1
-        addEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
+        addEncodingOptionUI(op, 854, 480, 30, 31, true); // 3.1
+        addEncodingOptionUI(op, 1280, 720, 15, 31); // 3.1
         addEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
         addEncodingOptionUI(op, 1920, 1080, 15, 40); // 4
         addEncodingOptionUI(op, 1920, 1080, 30, 40); // 4
@@ -553,32 +569,38 @@ LICENSE file in the root directory of this source tree.
         updateFullTrackNameUI();
     }
 
+    function addVideoSource(select, deviceId, label, count) {
+        const option = document.createElement('option');
+        option.value = deviceId;
+        if (count === 1) option.selected = true;
+        const textNode = document.createTextNode(label);
+        option.appendChild(textNode);
+        select.appendChild(option);
+        console.log(`Video input device added: ${label}(${option.value})`);
+    }
+
     async function populateVideoSourcesUI() {
         const select = document.getElementById('videoSources');
         select.innerHTML = '';
         let count = 0;
-        // This does NOT work if you run chrome locally (test mode)
+        // This requires HTTPS or should be served from localhost
         await navigator.mediaDevices
             .enumerateDevices()
             .then(devices => {
                 devices.forEach(mediaDevice => {
                     if (mediaDevice.kind === 'videoinput') {
                         if (mediaDevice.deviceId != "") {
-                            const option = document.createElement('option');
-                            option.value = mediaDevice.deviceId;
                             count++;
-                            if (count == 1) option.selected = true;
                             const label = mediaDevice.label || `Camera ${count}`;
-                            const textNode = document.createTextNode(label);
-                            option.appendChild(textNode);
-                            select.appendChild(option);
-                            console.log(`Video input device added: ${label}(${option.value})`);
+                            addVideoSource(select, mediaDevice.deviceId, label, count);
                         }
                     }
                 })
             }).catch(err => {
                 console.error(`Showing video sources. Err: ${err.name}-${err.message}`);
             });
+
+        addVideoSource(select, 'screen', 'Screen', ++count);
     }
 
     async function populateAudioSourcesUI() {
