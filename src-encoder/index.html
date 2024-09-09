@@ -60,7 +60,8 @@ LICENSE file in the root directory of this source tree.
                 <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>  
                 <div class="clear"></div>
                 <h3>Video encoding params (h264)</h3>
-                <label>Input sources: <select id="videoSources"></select></label>                
+                <label>Input sources: <select id="videoSources"></select></label>      
+                (If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery )          
                 <div class="clear"></div>
                 <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
                 <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
@@ -340,6 +341,14 @@ LICENSE file in the root directory of this source tree.
         restartPreviewUI(currentVideoDeviceId, currentAudioDeviceId, currentVideoEncodingOptions.w, currentVideoEncodingOptions.h);
     }
 
+    function isSelectedVideoSourceScreen() {
+        const currentVideoDeviceIdIndex = document.getElementById('videoSources').selectedIndex;
+        if (currentVideoDeviceIdIndex > 0 && document.getElementById("videoSources").options[currentVideoDeviceIdIndex].value == "screen") {
+            return true;
+        }
+        return false;
+    }
+
     function updatePreviewVideoSettingsUI(newWidth, newHeight) {               
         if (document.getElementById('vPreview').srcObject == undefined && document.getElementById('vPreview').srcObject == null) {
             console.error("Preview NOT active yet, we can NOT update video settings"); 
@@ -379,32 +388,16 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function refreshEnableAudioSourceUI() {
+        if (isSelectedVideoSourceScreen()) {
+            document.getElementById('audioSources').disabled = true;
+        } else {
+            document.getElementById('audioSources').disabled = true;
+        }
+    }
+
     function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
         enableUI("processingUpdate");
-
-        const shareScreen = (newVideoDeviceId === 'screen');
-        const constraints = { };
-        const videoConstraints = { };
-        if (!shareScreen && newVideoDeviceId != "") {
-            videoConstraints.deviceId = { exact: newVideoDeviceId };
-        }
-        if (newHeight > 0) {
-            videoConstraints.height = {ideal: newHeight};
-        }
-        if (newWidth > 0) {
-            videoConstraints.width = {ideal: newWidth};
-        }
-        constraints.video = videoConstraints;
-        if (!shareScreen) {
-            const audioConstraints = { };
-            if (newAudioDeviceId != "") {
-                audioConstraints.deviceId = { exact: newAudioDeviceId };
-            }
-            constraints.audio = audioConstraints;
-        }
-        else {
-            constraints.audio = true;
-        }
 
         // Remove old stream
         if (document.getElementById('vPreview').srcObject != undefined && document.getElementById('vPreview').srcObject != null) {
@@ -420,6 +413,32 @@ LICENSE file in the root directory of this source tree.
             document.getElementById('vPreview').srcObject = null;
         }
 
+        const shareScreen = (newVideoDeviceId === 'screen');
+        const constraints = { };
+        const videoConstraints = { };
+        const audioConstraints = { };
+        if (shareScreen) {
+            constraints.audio = true;
+        } else {
+            if (newVideoDeviceId != "") {
+                videoConstraints.deviceId = { exact: newVideoDeviceId };
+            }
+            if (newAudioDeviceId != "") {
+                audioConstraints.deviceId = { exact: newAudioDeviceId };
+            }
+        }
+        refreshEnableAudioSourceUI();
+
+        if (newHeight > 0) {
+            videoConstraints.height = {ideal: newHeight};
+        }
+        if (newWidth > 0) {
+            videoConstraints.width = {ideal: newWidth};
+        }
+
+        constraints.video = videoConstraints;
+        constraints.audio = audioConstraints;
+                
         // Start new stream
         getMedia(shareScreen, constraints)
         .then(mediaStream => {                    
@@ -429,12 +448,25 @@ LICENSE file in the root directory of this source tree.
             return mediaStream;
         })
         .then(mediaStream => {
+            let videoNumTracks = 0;
+            let audioNumTracks = 0;
             document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
-                console.info(`Started preview: ${newVideoDeviceId}, audio: ${newAudioDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
+                console.info(`Started preview: video: ${newVideoDeviceId}, audio: ${newAudioDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
+                if (track.kind == 'video') {
+                    videoNumTracks++;
+                }
+                else if (track.kind == 'audio') {
+                    audioNumTracks++
+                }
             });
+            if (videoNumTracks != 1 || audioNumTracks != 1) {
+                throw new Error(`"We need just 1 video track and 1 audio track for this to work we got: videoTracks: ${videoNumTracks} and audioTracks: ${audioNumTracks}`);
+            }
         })
         .catch(err => {
-            console.error(`Started video preview. Err: ${err}`);
+            const msg = `Started video preview. Err: ${err}`
+            console.error(msg);
+            alert(msg);
         })
         .finally(() => {
             enableUI("readyToPublish");
@@ -569,16 +601,17 @@ LICENSE file in the root directory of this source tree.
         updateFullTrackNameUI();
     }
 
-    function addVideoSource(select, deviceId, label, count) {
+    function addMediaSource(select, deviceId, label, count, isVideo) {
         const option = document.createElement('option');
         option.value = deviceId;
         if (count === 1) option.selected = true;
         const textNode = document.createTextNode(label);
         option.appendChild(textNode);
         select.appendChild(option);
-        console.log(`Video input device added: ${label}(${option.value})`);
+        const mediaType = (isVideo) ? "Video" : "Audio";
+        console.log(`${mediaType} input device added: ${label}(${option.value})`);
     }
-
+    
     async function populateVideoSourcesUI() {
         const select = document.getElementById('videoSources');
         select.innerHTML = '';
@@ -592,7 +625,7 @@ LICENSE file in the root directory of this source tree.
                         if (mediaDevice.deviceId != "") {
                             count++;
                             const label = mediaDevice.label || `Camera ${count}`;
-                            addVideoSource(select, mediaDevice.deviceId, label, count);
+                            addMediaSource(select, mediaDevice.deviceId, label, count, true);
                         }
                     }
                 })
@@ -600,7 +633,7 @@ LICENSE file in the root directory of this source tree.
                 console.error(`Showing video sources. Err: ${err.name}-${err.message}`);
             });
 
-        addVideoSource(select, 'screen', 'Screen', ++count);
+        addMediaSource(select, 'screen', 'Screen', ++count, true);
     }
 
     async function populateAudioSourcesUI() {
@@ -614,15 +647,9 @@ LICENSE file in the root directory of this source tree.
                 devices.forEach(mediaDevice => {
                     if (mediaDevice.kind === 'audioinput') {
                         if (mediaDevice.deviceId != "") {
-                            const option = document.createElement('option');
-                            option.value = mediaDevice.deviceId;
                             count++;
-                            if (count == 1) option.selected = true;
                             const label = mediaDevice.label || `Microphone ${count}`;
-                            const textNode = document.createTextNode(label);
-                            option.appendChild(textNode);
-                            select.appendChild(option);
-                            console.log(`Audio input device added: ${label}(${option.value})`);
+                            addMediaSource(select, mediaDevice.deviceId, label, count, false);
                         }
                     }
                 })
@@ -671,7 +698,7 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("btnStop").disabled = true
             document.getElementById("videoEncodingOptions").disabled = false
             document.getElementById("videoSources").disabled = false
-            document.getElementById("audioSources").disabled = false
+            document.getElementById("audioSources").disabled = isSelectedVideoSourceScreen();
         } else if (mode == "publishing") {
             document.getElementById("btnStart").disabled = true
             document.getElementById("btnStop").disabled = false
