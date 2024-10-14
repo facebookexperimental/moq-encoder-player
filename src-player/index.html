@@ -57,7 +57,7 @@ LICENSE file in the root directory of this source tree.
                 <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
                 <label>(it waits until audio buffers this amount to start playback)</label>
                 <div class="clear"></div>
-                <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="300"></label>
+                <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
                 <label>(this + jitter is the max latency allowed)</label>                
                 <div class="clear"></div>
                 <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
@@ -686,7 +686,7 @@ LICENSE file in the root directory of this source tree.
 
                         timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                         updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco });
+                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
                     }
                 }
                 updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
