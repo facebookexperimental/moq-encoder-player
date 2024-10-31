@@ -7,6 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum, deSerializeMetadata, compareArrayBuffer } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
+import { ParseAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
+import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
 
@@ -51,6 +53,20 @@ function getAndOverrideInitDataValues(metadata) {
   return config
 }
 
+function configureDecoder(seqId, metadata) {
+  if (videoDecoder == null) {
+    sendMessageToMain(WORKER_PREFIX, 'warn', `SeqId: ${seqId} Could NOT initialize decoder, decoder was null at this time`)
+    return
+  }
+  const config = getAndOverrideInitDataValues(metadata)
+
+  // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
+  const avcDecoderConfigurationRecordInfo = ParseAVCDecoderConfigurationRecord(config.description);
+
+  sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(config)}, avcDecoderConfigurationRecord: ${JSON.stringify(avcDecoderConfigurationRecordInfo)}`)
+  videoDecoder.configure(config)
+}
+
 self.addEventListener('message', async function (e) {
   if (workerState === StateEnum.Created) {
     workerState = StateEnum.Instantiated
@@ -77,9 +93,7 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`)
       if (videoDecoder != null) {        
         if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, e.data.metadata)) {
-          const config = getAndOverrideInitDataValues(e.data.metadata)
-          sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${e.data.seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(config)}`)          
-          videoDecoder.configure(config)
+          configureDecoder(e.data.seqId, e.data.metadata)
         }
         lastMetadataUsed = e.data.metadata        
       } else {
@@ -100,14 +114,11 @@ self.addEventListener('message', async function (e) {
           }
         })
         
-        const config = getAndOverrideInitDataValues(e.data.metadata)
-        videoDecoder.configure(config)
+        configureDecoder(e.data.seqId, e.data.metadata)
         lastMetadataUsed = e.data.metadata
 
         workerState = StateEnum.Running
         setWaitForKeyframe(true)
-
-        sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${e.data.seqId} Initialized and configured. Config: ${JSON.stringify(config)}`)
       }
     } else {
       sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`)
@@ -144,6 +155,15 @@ self.addEventListener('message', async function (e) {
 
       ptsQueue.removeUntil(videoDecoder.decodeQueueSize)
       ptsQueue.addToPtsQueue(e.data.chunk.timestamp, e.data.chunk.duration)
+
+      // This is verbose and slow
+      if ("verbose" in e.data && e.data.verbose === true) {
+        // Assumes it is h264 AVCC with 4 bytes of size length
+        const chunkDataBuffer = new Uint8Array(e.data.chunk.byteLength)
+        e.data.chunk.copyTo(chunkDataBuffer);
+        const chunkNALUInfo = ParseH264NALs(chunkDataBuffer, DEFAULT_AVCC_HEADER_LENGTH);
+        sendMessageToMain(WORKER_PREFIX, 'info', `New chunk SeqId: ${e.data.seqId}, NALUS: ${JSON.stringify(chunkNALUInfo)}`)
+      }
       videoDecoder.decode(e.data.chunk)
 
       const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfo()
