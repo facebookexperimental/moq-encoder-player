@@ -740,7 +740,7 @@ LICENSE file in the root directory of this source tree.
     function processWorkerMessage(e) {
         // LOGGING
         if (e.data.type === "debug") {
-            if (VERBOSE === true) {
+            if (VERBOSE) {
                 // logging debug
                 console.debug(e.data.data);
             }            
