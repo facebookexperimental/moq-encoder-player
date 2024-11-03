@@ -26,50 +26,6 @@ export function sendMessageToMain (prefix, type, data) {
     self.postMessage({ type, data })
 }
 
-export function serializeMetadata (metadata) {
-  let ret
-  if (isMetadataValid(metadata)) {
-    const newData = {}
-    // Copy all enumerable own properties
-    newData.decoderConfig = Object.assign({}, metadata.decoderConfig)
-    // Description is buffer
-    if ('description' in metadata.decoderConfig) {
-      newData.decoderConfig.descriptionInBase64 = arrayBufferToBase64(metadata.decoderConfig.description)
-      delete newData.description
-    }
-    // Encode
-    const encoder = new TextEncoder()
-    ret = encoder.encode(JSON.stringify(newData))
-  }
-  return ret
-}
-
-export function isMetadataValid (metadata) {
-  return metadata !== undefined && 'decoderConfig' in metadata
-}
-
-function arrayBufferToBase64 (buffer) {
-  let binary = ''
-  const bytes = new Uint8Array(buffer)
-  const len = bytes.byteLength
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i])
-  }
-  return btoa(binary)
-}
-
-export function deSerializeMetadata (metadata) {
-  const decoder = new TextDecoder()
-  const str = decoder.decode(metadata)
-  const data = JSON.parse(str)
-
-  if (('decoderConfig' in data) && ('descriptionInBase64' in data.decoderConfig)) {
-    data.decoderConfig.description = base64ToArrayBuffer(data.decoderConfig.descriptionInBase64)
-    delete data.decoderConfig.descriptionInBase64
-  }
-  return data.decoderConfig
-}
-
 export async function getBinaryFile(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -93,12 +49,8 @@ export function compareArrayBuffer(a, b) {
   return true;
 }
 
-function base64ToArrayBuffer (base64) {
-  const binaryString = atob(base64)
-  const len = binaryString.length
-  const bytes = new Uint8Array(len)
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i)
-  }
-  return bytes.buffer
+export function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return [...new Uint8Array(buffer)]
+      .map(x => x.toString(16).padStart(2, '0'))
+      .join('');
 }

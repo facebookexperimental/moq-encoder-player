@@ -590,7 +590,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
             const seqId = e.data.seqId;
-            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
+            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels}
 
             if (wtAudioJitterBuffer != null) {
                 const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
@@ -612,7 +612,7 @@ LICENSE file in the root directory of this source tree.
                         timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
 
                         playerUpdateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, isDisco: orderedAudioData.isDisco });
+                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco });
                     }
                 }
                 playerUpdateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
@@ -911,10 +911,6 @@ LICENSE file in the root directory of this source tree.
             r = "0" + r;
         }
         return r;
-    }
-
-    function getCodecString(codec, profile, level) {
-        return codec + "." + profile.toString(16).toUpperCase().padStart(2, '0') + "00" + level.toString(16).toUpperCase().padStart(2, '0');
     }
 
     async function start() {

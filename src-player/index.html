@@ -206,7 +206,7 @@ LICENSE file in the root directory of this source tree.
     const AudioContext = window.AudioContext || window.webkitAudioContext;
 
     // Main vars
-    const VERBOSE = false;
+    let VERBOSE = false;
     let IS_LOCALHOST = false;
 
     const downloaderConfig = {
@@ -694,7 +694,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
             const seqId = e.data.seqId;
-            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
+            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels}
 
             if (wtAudioJitterBuffer != null) {
                 const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
@@ -716,7 +716,7 @@ LICENSE file in the root directory of this source tree.
                         timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
 
                         updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, isDisco: orderedAudioData.isDisco });
+                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco });
                     }
                 }
                 updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());

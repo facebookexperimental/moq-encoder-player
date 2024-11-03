@@ -25,7 +25,11 @@ export function concatBuffer (arr) {
   let pos = 0
   arr.forEach(element => {
     if (element !== undefined) {
-      retBuffer.set(element, pos)
+      let element8b = element
+      if (!(element instanceof Uint8Array)) {
+        element8b = new Uint8Array(element)
+      }
+      retBuffer.set(element8b, pos)
       pos += element.byteLength
     }
   })

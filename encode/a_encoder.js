@@ -5,11 +5,11 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, isMetadataValid, serializeMetadata } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum } from '../utils/utils.js'
 
 const WORKER_PREFIX = '[AUDIO-ENC]'
 
-const INSERT_METADATA_EVERY_AUDIO_FRAMES = 20
+const WEBCODECS_TIMEBASE = 1000000
 
 let frameDeliveredCounter = 0
 let chunkDeliveredCounter = 0
@@ -18,8 +18,8 @@ let workerState = StateEnum.Created
 // Default values
 let encoderMaxQueueSize = 5
 
-// Last received metadata
-let lastAudioMetadata
+// Last audioData SampleFreq
+let lastEncoderConfig = null
 
 // Encoder
 const initAudioEncoder = {
@@ -35,20 +35,8 @@ const initAudioEncoder = {
 
 let aEncoder = null
 
-function handleChunk (chunk, metadata) {
-  // Save last metadata and insert it if it is new
-  let insertMetadata
-  if (isMetadataValid(metadata)) {
-    lastAudioMetadata = metadata
-    insertMetadata = lastAudioMetadata
-  } else {
-    // Inject last received metadata every few secs following video IDR behavior
-    if (chunkDeliveredCounter % INSERT_METADATA_EVERY_AUDIO_FRAMES === 0) {
-      insertMetadata = lastAudioMetadata
-    }
-  }
-
-  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, metadata: serializeMetadata(insertMetadata) }
+function handleChunk (chunk) {
+  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, timebase: WEBCODECS_TIMEBASE, sampleFreq: lastEncoderConfig.sampleRate, numChannels: lastEncoderConfig.numberOfChannels}
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength)
 
   self.postMessage(msg)
@@ -72,7 +60,6 @@ self.addEventListener('message', async function (e) {
 
     aEncoder.close()
 
-    lastAudioMetadata = undefined
     return
   }
   if (type === 'aencoderini') {
@@ -81,7 +68,9 @@ self.addEventListener('message', async function (e) {
     // eslint-disable-next-line no-undef
     aEncoder = new AudioEncoder(initAudioEncoder)
 
+    // We do NOT accept changing audio encoding settings mid-stream
     aEncoder.configure(encoderConfig)
+    lastEncoderConfig = encoderConfig
     if ('encoderMaxQueueSize' in e.data) {
       encoderMaxQueueSize = e.data.encoderMaxQueueSize
     }

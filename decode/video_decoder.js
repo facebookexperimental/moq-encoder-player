@@ -5,9 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, deSerializeMetadata, compareArrayBuffer } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum, compareArrayBuffer } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
-import { ParseAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
+import { ParseAVCDecoderConfigurationRecord, GetCodecStringFromAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
 import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
@@ -34,8 +34,8 @@ function processVideoFrame (vFrame) {
   self.postMessage({ type: 'vframe', frame: vFrame, queueSize: ptsQueue.getPtsQueueLengthInfo().size, queueLengthMs: ptsQueue.getPtsQueueLengthInfo().lengthMs }, [vFrame])
 }
 
-function setWaitForKeyframe (a) {
-  waitForKeyFrame = a
+function setWaitForKeyframe (value) {
+  waitForKeyFrame = value
 }
 
 function isWaitingForKeyframe () {
@@ -43,14 +43,18 @@ function isWaitingForKeyframe () {
 }
 
 function getAndOverrideInitDataValues(metadata) {
+  // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
+  const avcDecoderConfigurationRecordInfo = ParseAVCDecoderConfigurationRecord(metadata);
+
   // Override values
-  const config = deSerializeMetadata(metadata)
+  // We can get the width and height from SPS inside AVCDecoderConfigurationRecord but that is complex and NOT necessary
+  const config = {codec: GetCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecordInfo) , description: metadata};
   config.optimizeForLatency = true
   // In my test @2022/11 with hardware accel could NOT get real time decoding,
   // switching to soft decoding fixed everything (h264)
   config.hardwareAcceleration = 'prefer-software'
 
-  return config
+  return {config, avcDecoderConfigurationRecordInfo};
 }
 
 function configureDecoder(seqId, metadata) {
@@ -58,13 +62,10 @@ function configureDecoder(seqId, metadata) {
     sendMessageToMain(WORKER_PREFIX, 'warn', `SeqId: ${seqId} Could NOT initialize decoder, decoder was null at this time`)
     return
   }
-  const config = getAndOverrideInitDataValues(metadata)
+  const ret = getAndOverrideInitDataValues(metadata)
 
-  // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
-  const avcDecoderConfigurationRecordInfo = ParseAVCDecoderConfigurationRecord(config.description);
-
-  sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(config)}, avcDecoderConfigurationRecord: ${JSON.stringify(avcDecoderConfigurationRecordInfo)}`)
-  videoDecoder.configure(config)
+  sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`)
+  videoDecoder.configure(ret.config)
 }
 
 self.addEventListener('message', async function (e) {
@@ -121,7 +122,7 @@ self.addEventListener('message', async function (e) {
         setWaitForKeyframe(true)
       }
     } else {
-      sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}`)
     }
 
     if (workerState !== StateEnum.Running) {

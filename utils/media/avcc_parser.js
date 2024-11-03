@@ -5,7 +5,11 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+'use strict';
+
 export const DEFAULT_AVCC_HEADER_LENGTH = 4;
+
+const NAL_TYPE_SLICE_IDR = 0x5;
 
 export function BitReaderHelper(buf, bitPos, numBits) {
   let ret = 0;
@@ -76,4 +80,19 @@ export function ParseH264NALs(dataBytes, avccHeaderLengthSize) {
   }
 
   return h264AvccStreamData;
+}
+
+export function ContainsNALUSliceIDR(dataBytes, avccHeaderLengthSize) {
+  if (dataBytes == undefined || dataBytes == null) {
+    return false;
+  }
+  const nals = ParseH264NALs(dataBytes, avccHeaderLengthSize);
+    let i = 0
+    while (i < nals.length) {
+      if (nals[i].nalType === NAL_TYPE_SLICE_IDR) {
+        return true;
+      }
+      i++;
+    }
+    return false;
 }
