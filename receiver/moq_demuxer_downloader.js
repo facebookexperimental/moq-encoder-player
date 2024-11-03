@@ -294,8 +294,8 @@ async function readAndSendPayload(readerStream, length) {
       duration: chunkData.duration
     })
   } else if (chunkData.type == MIPayloadTypeEnum.RAWData) {
-    // TODO: TEst
     appMediaType = "data"
+    chunk = chunkData.data
   }
 
   self.postMessage({ type: appMediaType, clkms: Date.now(), captureClkms: chunkData.wallclock, seqId: chunkData.seqId, chunk, metadata: chunkData.metadata, sampleFreq: chunkData.sampleFreq , numChannels: chunkData.numChannels })

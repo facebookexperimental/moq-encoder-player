@@ -243,7 +243,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function send() {
-        const data = document.getElementById('objPayload').value;
+        const data = new TextEncoder("utf-8").encode(document.getElementById('objPayload').value);
         const moqMapping = document.getElementById('moqQuicMapping').value;
         muxerSenderWorker.postMessage({ type: "data", chunk: data, seqId: msgSeqId++, moqMapping: moqMapping});
     }

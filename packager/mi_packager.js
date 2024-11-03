@@ -194,7 +194,8 @@ export class MIPackager {
       ret = concatBuffer([typeBytes, seqIdBytes, ptsBytes, timebaseBytes, sampleFreqBytes, numChannelsBytes, durationBytes, wallclockBytes, this.data])
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
       const typeBytes = numberToVarInt(MI_RAW)
-      ret = concatBuffer([typeBytes, this.data])
+      const seqIdBytes = numberToVarInt(this.seqId)
+      ret = concatBuffer([typeBytes, seqIdBytes, this.data])
     } else {
       throw new Error(`Payload type ${this.type} not supported`)
     }
