@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
 import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_GROUP, moqParseObjectFromTrackPerStreamHeader, moqParseObjectFromGroupPerStreamHeader} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
@@ -38,6 +38,10 @@ let tracks = {} // We add subscribeId and trackAlias
       authInfo: "secret"
   }
 } */
+
+// Timebases
+let systemVideoTimebase = 1000000 // WebCodecs default = 1us
+let systemAudioTimebase = 1000000 // WebCodecs default = 1us
 
 // MOQT data
 const moqt = moqCreate()
@@ -95,6 +99,12 @@ self.addEventListener('message', async function (e) {
     }
     if ('certificateHash' in e.data.downloaderConfig) {
       certificateHash = e.data.downloaderConfig.certificateHash
+    }
+    if ('systemVideoTimebase' in e.data.downloaderConfig) {
+      systemVideoTimebase = e.data.downloaderConfig.systemVideoTimebase
+    }
+    if ('systemAudioTimebase' in e.data.downloaderConfig) {
+      systemAudioTimebase = e.data.downloaderConfig.systemAudioTimebase
     }
 
     const errTrackStr = checkTrackData()
@@ -277,8 +287,9 @@ async function readAndSendPayload(readerStream, length) {
   let appMediaType
   if (chunkData.type == MIPayloadTypeEnum.AudioOpusWCP) {
     appMediaType = "audiochunk"
+    const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemAudioTimebase);
     chunk = new EncodedAudioChunk({
-      timestamp: chunkData.pts,
+      timestamp: timestamp,
       type: "key",
       data: chunkData.data,
       duration: chunkData.duration
@@ -287,8 +298,9 @@ async function readAndSendPayload(readerStream, length) {
     appMediaType = "videochunk"
     // Find NALU SliceIDR to specify if this is key or delta  
     const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH)
+    const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemVideoTimebase);
     chunk = new EncodedVideoChunk({
-      timestamp: chunkData.pts,
+      timestamp: timestamp,
       type: isIdr ? "key": "delta",
       data: chunkData.data,
       duration: chunkData.duration

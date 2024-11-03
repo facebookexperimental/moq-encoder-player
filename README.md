@@ -316,8 +316,4 @@ X - Fix player audio latency
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
-
-
-# TODO
- - Use timebase to compare ts between tracks
  
