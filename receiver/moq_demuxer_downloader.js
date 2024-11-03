@@ -296,7 +296,8 @@ async function readAndSendPayload(readerStream, length) {
     })
   } else if (chunkData.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
     appMediaType = "videochunk"
-    // Find NALU SliceIDR to specify if this is key or delta  
+    // Find NALU SliceIDR to specify if this is key or delta
+    // We could infer if this is IDR from MOQT, identifying if this is start of group, but this method is less error prone
     const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH)
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemVideoTimebase);
     chunk = new EncodedVideoChunk({
