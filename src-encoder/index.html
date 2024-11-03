@@ -162,6 +162,7 @@ LICENSE file in the root directory of this source tree.
     import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
+    import { GetCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
 
     // Main vars
     let VERBOSE = false;
@@ -739,7 +740,7 @@ LICENSE file in the root directory of this source tree.
     function processWorkerMessage(e) {
         // LOGGING
         if (e.data.type === "debug") {
-            if (VERBOSE === true) {
+            if (VERBOSE) {
                 // logging debug
                 console.debug(e.data.data);
             }            
@@ -813,18 +814,21 @@ LICENSE file in the root directory of this source tree.
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;
             const itemTsClk = videoTimeChecker.GetItemByTs(chunk.timestamp);
+            const timebase = e.data.timebase;
             if (!itemTsClk.valid) {
                 console.warn(`Not found clock time <-> TS for that video frame, this should not happen.  ts: ${chunk.timestamp}, id:${seqId}`);
             } else {
                 updateEncodedVideoTSUI(chunk.timestamp, itemTsClk.compensatedTs);          
                 updateEncodingVideoLatencyUI(Date.now()  - itemTsClk.clkms);
             }
-            muxerSenderWorker.postMessage({ type: "video", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, estimatedDuration: itemTsClk.estimatedDuration, seqId: seqId, chunk: chunk, metadata: metadata });
+            muxerSenderWorker.postMessage({ type: "video", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, estimatedDuration: itemTsClk.estimatedDuration, seqId: seqId, chunk: chunk, metadata, timebase });
         } else if (e.data.type === "achunk") {
             const chunk = e.data.chunk;
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;            
-
+            const timebase = e.data.timebase;
+            const sampleFreq = e.data.sampleFreq;
+            const numChannels = e.data.numChannels;
             const itemTsClk = audioTimeChecker.GetItemByTs(chunk.timestamp);
             if (!itemTsClk.valid) {
                 console.info(`Not found clock time <-> TS for audio frame, this could happen. ts: ${chunk.timestamp}, id:${seqId}`);
@@ -832,7 +836,7 @@ LICENSE file in the root directory of this source tree.
                 updateEncodedAudioTSUI(chunk.timestamp, itemTsClk.compensatedTs);
                 updateEncodingAudioLatencyUI(Date.now()  - itemTsClk.clkms);                
             }
-            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata });
+            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
             updateUploadStats(currentAudioTs, currentVideoTs, e.data.inFlightReq);
@@ -899,10 +903,6 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function getCodecString(codec, profile, level) {
-        return codec + "." + profile.toString(16).toUpperCase().padStart(2, '0') + "00" + level.toString(16).toUpperCase().padStart(2, '0');
-    }
-
     async function start() {
         currentAudioTs = undefined;
         currentVideoTs = undefined;
@@ -919,7 +919,7 @@ LICENSE file in the root directory of this source tree.
         videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
         videoEncoderConfig.encoderConfig.height = videoOptionsSelectedElementData.h;
         videoEncoderConfig.encoderConfig.framerate = videoOptionsSelectedElementData.fps;
-        videoEncoderConfig.encoderConfig.codec = getCodecString("avc1", 66, videoOptionsSelectedElementData.level);
+        videoEncoderConfig.encoderConfig.codec = GetCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
         videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
         videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
 

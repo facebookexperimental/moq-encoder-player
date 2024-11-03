@@ -5,9 +5,12 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, serializeMetadata } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum } from '../utils/utils.js'
+import { ParseAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
 
 const WORKER_PREFIX = '[VIDEO-ENC]'
+
+const WEBCODECS_TIMEBASE = 1000000
 
 let frameDeliveredCounter = 0
 let chunkDeliveredCounter = 0
@@ -34,9 +37,12 @@ const initVideoEncoder = {
 let vEncoder = null
 
 function handleChunk (chunk, metadata) {
-  const msg = { type: 'vchunk', seqId: chunkDeliveredCounter++, chunk, metadata: serializeMetadata(metadata) }
+  // decoderConfig in h264 is AVCDecoderConfigurationRecord
+  const frame_metadata = (metadata != undefined && metadata.decoderConfig != undefined && "description" in metadata.decoderConfig) ? metadata.decoderConfig.description : undefined;
+  const msg = { type: 'vchunk', seqId: chunkDeliveredCounter++, chunk, metadata: frame_metadata, timebase: WEBCODECS_TIMEBASE}
 
-  sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength)
+  // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Chunk created. sId: ${msg.seqId}, pts: ${chunk.timestamp}, dur: ${chunk.duration}, type: ${chunk.type}, size: ${chunk.byteLength}, metadata_size:${(frame_metadata != undefined) ? frame_metadata.byteLength : 0}, avcDecoderConfigurationRecord: ${(frame_metadata != undefined) ? JSON.stringify(ParseAVCDecoderConfigurationRecord(frame_metadata)) : "-"}`)
 
   self.postMessage(msg)
 }
@@ -74,7 +80,7 @@ self.addEventListener('message', async function (e) {
     if ('keyframeEvery' in e.data) {
       keyframeEvery = e.data.keyframeEvery
     }
-    sendMessageToMain(WORKER_PREFIX, 'info', 'Encoder initialized')
+    sendMessageToMain(WORKER_PREFIX, 'info', `Encoder initialized: ${JSON.stringify(encoderConfig)}`);
 
     workerState = StateEnum.Running
     return
@@ -96,8 +102,8 @@ self.addEventListener('message', async function (e) {
     const frameNum = frameDeliveredCounter++
     const insertKeyframe = (frameNum % keyframeEvery) === 0 || (insertNextKeyframe === true)
     vEncoder.encode(vFrame, { keyFrame: insertKeyframe })
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Encoded frame: ${frameNum}, key: ${insertKeyframe}`)
     vFrame.close()
-    sendMessageToMain(WORKER_PREFIX, 'debug', 'Encoded frame: ' + frameNum + ', key: ' + insertKeyframe)
     insertNextKeyframe = false
     frameDeliveredCounter++
   }

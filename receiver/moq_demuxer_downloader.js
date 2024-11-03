@@ -5,10 +5,10 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum } from '../utils/utils.js'
+import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
 import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_GROUP, moqParseObjectFromTrackPerStreamHeader, moqParseObjectFromGroupPerStreamHeader} from '../utils/moqt.js'
-import { LocPackager } from '../packager/loc_packager.js'
-import { RawPackager } from '../packager/raw_packager.js'
+import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
+import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
 const WORKER_PREFIX = '[MOQ-DOWNLOADER]'
 
@@ -38,6 +38,10 @@ let tracks = {} // We add subscribeId and trackAlias
       authInfo: "secret"
   }
 } */
+
+// Timebases
+let systemVideoTimebase = 1000000 // WebCodecs default = 1us
+let systemAudioTimebase = 1000000 // WebCodecs default = 1us
 
 // MOQT data
 const moqt = moqCreate()
@@ -95,6 +99,12 @@ self.addEventListener('message', async function (e) {
     }
     if ('certificateHash' in e.data.downloaderConfig) {
       certificateHash = e.data.downloaderConfig.certificateHash
+    }
+    if ('systemVideoTimebase' in e.data.downloaderConfig) {
+      systemVideoTimebase = e.data.downloaderConfig.systemVideoTimebase
+    }
+    if ('systemAudioTimebase' in e.data.downloaderConfig) {
+      systemAudioTimebase = e.data.downloaderConfig.systemAudioTimebase
     }
 
     const errTrackStr = checkTrackData()
@@ -177,26 +187,21 @@ async function moqReceiveStreamObjects (moqt) {
       const moqObjHeader = await moqParseObjectHeader(stream.value)
       sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
 
-      const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
-      if (trackInfo === undefined) {
-        throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
-      }
-
       // Once stream per track started no other forward types will be read
       if (moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_TRACK || moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_GROUP) {
         // NO await on purpose!
-        moqReceiveMultiObjectStream(moqObjHeader.type, stream.value, trackInfo.type)
+        moqReceiveMultiObjectStream(moqObjHeader.type, stream.value)
       } else if (moqObjHeader.type === MOQ_MESSAGE_OBJECT_STREAM) {
         reportStats()
 
-        await readAndSendPayload(stream.value, trackInfo.type)
+        await readAndSendPayload(stream.value)
       }
     }
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Exited receive objects loop`)
 }
 
-async function moqReceiveMultiObjectStream(multiObjectType, readerStream, mediaType) {
+async function moqReceiveMultiObjectStream(multiObjectType, readerStream) {
   let isEOF = false
   let moqHeader = {} 
   let multiObjectTypeStr = "unknown"
@@ -215,7 +220,7 @@ async function moqReceiveMultiObjectStream(multiObjectType, readerStream, mediaT
       sendMessageToMain(WORKER_PREFIX, 'debug', `Received ${multiObjectTypeStr} header ${JSON.stringify(moqHeader)}`)
 
       // TODO exit the loop on status End of group
-      isEOF = await readAndSendPayload(readerStream, mediaType, moqHeader.payloadLength)
+      isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
     } catch(err) {
       // Error we receive when I have a reader and the stream closes
       if (err instanceof WebTransportError && err.message.includes("The session is closed")) {
@@ -252,81 +257,62 @@ async function moqReceiveDatagramObjects (moqt) {
 
     const moqObjHeader = await moqParseObjectHeader(readableStream)
     sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
-   
-    const trackInfo = getTrackInfoFromTrackAlias(moqObjHeader.trackAlias, moqObjHeader.subscribeId)
-    if (trackInfo === undefined) {
-      throw new Error(`Unexpected trackAlias/subscriptionId ${moqObjHeader.trackAlias}/${moqObjHeader.subscribeId}. Expecting ${JSON.stringify(tracks)}`)
-    }
 
     if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
       throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
     }
-    await readAndSendPayload(readableStream, trackInfo.type)
+    await readAndSendPayload(readableStream)
     }
   }
 
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from datagrams loop')
 }
 
-async function readAndSendPayload(readerStream, mediaType, length) {
-  let isEOF = false
-  if (mediaType !== 'data') {
-    const data = await readMediaPackager(readerStream, mediaType, length)
-    isEOF = data.isEOF
-    self.postMessage({ type: mediaType + 'chunk', clkms: Date.now(), captureClkms: data.chunkData.firstFrameClkms, seqId: data.chunkData.seqId, chunk: data.chunk, metadata: data.chunkData.metadata })
-  } else {
-    const packet = await readRAWPackager(readerStream, length)
-    self.postMessage({ type: 'data', chunk: packet.GetData().data })
-    isEOF = packet.IsEof()
-  }
-  return isEOF
-} 
-
-async function readMediaPackager(readerStream, mediaType, length) {
-  const packet = new LocPackager()
+async function readAndSendPayload(readerStream, length) {
+  const packet = new MIPackager()
   if (length != undefined) {
     await packet.ReadLengthBytes(readerStream, length)
   } else {
     await packet.ReadBytesToEOF(readerStream)
   }
-  
+  const isEOF = packet.IsEof();
+
   const chunkData = packet.GetData()
-  if (chunkData.chunkType === undefined) {
+  if (chunkData.type === undefined) {
     throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
   }
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-LOC: ${packet.GetDataStr()})`)
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-MI: ${packet.GetDataStr()})`)
   
   let chunk
-  if (mediaType === 'audio') {
+  let appMediaType
+  if (chunkData.type == MIPayloadTypeEnum.AudioOpusWCP) {
+    appMediaType = "audiochunk"
+    const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemAudioTimebase);
     chunk = new EncodedAudioChunk({
-      timestamp: chunkData.timestamp,
-      type: chunkData.chunkType,
+      timestamp: timestamp,
+      type: "key",
       data: chunkData.data,
       duration: chunkData.duration
     })
-  } else if (mediaType === 'video') {
+  } else if (chunkData.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
+    appMediaType = "videochunk"
+    // Find NALU SliceIDR to specify if this is key or delta  
+    const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH)
+    const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemVideoTimebase);
     chunk = new EncodedVideoChunk({
-      timestamp: chunkData.timestamp,
-      type: chunkData.chunkType,
+      timestamp: timestamp,
+      type: isIdr ? "key": "delta",
       data: chunkData.data,
       duration: chunkData.duration
     })
+  } else if (chunkData.type == MIPayloadTypeEnum.RAWData) {
+    appMediaType = "data"
+    chunk = chunkData.data
   }
 
-  return {chunkData, chunk, isEOF: packet.IsEof()}
-}
+  self.postMessage({ type: appMediaType, clkms: Date.now(), captureClkms: chunkData.wallclock, seqId: chunkData.seqId, chunk, metadata: chunkData.metadata, sampleFreq: chunkData.sampleFreq , numChannels: chunkData.numChannels })
 
-async function readRAWPackager(readerStream, length) {
-  const packet = new RawPackager()
-  if (length != undefined) {
-    await packet.ReadLengthBytes(readerStream, length)
-  } else {
-    await packet.ReadBytesToEOF(readerStream)
-  }
-
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-RAW stream per obj: ${packet.GetDataStr()})`)
-
-  return packet
+  return isEOF;
 }
 
 // MOQT
@@ -413,18 +399,4 @@ async function unSubscribeTracks(moqt) {
       }
     }
   }
-}
-
-function getTrackInfoFromTrackAlias (trackAlias, subscribeId) {
-  let ret = undefined
-  for (const [trackType, trackData] of Object.entries(tracks)) {
-    if (trackData.trackAlias === trackAlias) {
-      if (subscribeId != undefined && trackData.subscribeId != subscribeId) {
-          break
-      }
-      ret = {type: trackType, data: trackData}
-      break
-    }
-  }
-  return ret
 }

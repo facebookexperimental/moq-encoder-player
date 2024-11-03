@@ -13,7 +13,7 @@ Note: You need to be careful and check that protocol versions implemented by thi
 
 ## Packager
 
-It uses a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/) as media packager.
+It uses [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 ## Encoder
 
@@ -135,17 +135,13 @@ Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a c
 
 Note: `opus.frameDuration` setting helps keeping encoding latency low
 
-### packager/loc_packager.js
+### packager/mi_packager.js
 
-- Implements a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/) that is used for `moq_sender.js` as media packager
-
-![LOC packager format](./pics/loc-packager.png)
-
-Fig4: LOC header structure
+- Implements [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 ### sender/moq_sender.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `loc_packager.js`) to the server / relay following MOQT and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.js`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 - Opens a WebTransport session against the relay
 - Implements MOQT publisher handshake for 2 tracks (opening control stream and announcing track namespace)
@@ -173,13 +169,13 @@ To keep the audio and video in-sync the following strategy is applied:
 
 ### receiver/moq_demuxer_downloader.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `loc_packager.js`) from the server / relay following MOQT and a variation of [LOC](https://datatracker.ietf.org/doc/draft-mzanaty-moq-loc/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `mi_packager.js`) from the server / relay following MOQT and [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
 - Waits for incoming unidirectional (Server -> Player) QUIC streams
 - For every received chunk (QUIC stream) we:
-  - Demuxed it (see `loc_packager.js`)
+  - Demuxed it (see `mi_packager.js`)
   - Video: Create `EncodedVideoChunk`
     - Could be enhanced by init metadata, wallclock, and seqId
   - Audio: Create `EncodedAudioChunk`
@@ -316,3 +312,4 @@ X - Fix player audio latency
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
+ 

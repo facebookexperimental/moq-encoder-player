@@ -7,8 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
 import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendObjectPerStreamToWriter, moqSendObjectPerDatagramToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, moqSendTrackPerStreamHeader, moqSendTrackPerStreamToWriter, MOQ_MAPPING_GROUP_PER_STREAM, moqSendGroupPerStreamHeader, moqSendGroupPerStreamToWriter} from '../utils/moqt.js'
-import { LocPackager } from '../packager/loc_packager.js'
-import { RawPackager } from '../packager/raw_packager.js'
+import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 
 const WORKER_PREFIX = '[MOQ-SENDER]'
 
@@ -204,7 +203,7 @@ self.addEventListener('message', async function (e) {
   const compensatedTs = (e.data.compensatedTs === undefined || e.data.compensatedTs < 0) ? 0 : e.data.compensatedTs
   const estimatedDuration = (e.data.estimatedDuration === undefined || e.data.estimatedDuration < 0) ? e.data.chunk.duration : e.data.estimatedDuration
   const seqId = (e.data.seqId === undefined) ? 0 : e.data.seqId
-  const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata }
+  const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata, timebase: e.data.timebase, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels}
   const moqMapping = (e.data.moqMapping === undefined) ? tracks[type].moqMapping : e.data.moqMapping
 
   let i = 0
@@ -217,7 +216,7 @@ self.addEventListener('message', async function (e) {
       if (val !== undefined && val.dropped === true) {
         sendMessageToMain(WORKER_PREFIX, 'dropped', { clkms: Date.now(), seqId, mediaType: type, ts: chunkData.timestamp, msg: val.message })
       } else {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `SENT CHUNK ${type} - seqId: ${seqId} for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}`)
+        sendMessageToMain(WORKER_PREFIX, 'debug', `SENT CHUNK ${type} - seqId: ${seqId}, metadataSize: ${(chunkData.metadata != undefined) ? chunkData.metadata.byteLength : 0} for subscribeId: ${subscribeId}, trackAlias: ${trackAlias}`)
       }
     })
     .catch(err => {
@@ -325,22 +324,29 @@ async function sendChunkToTransport (chunkData, subscribeId, trackAlias, numInfl
 
 async function createRequest (chunkData, subscribeId, trackAlias, moqMapping) {
   let packet = null
+  let isHiPri = false
 
-  if (chunkData.mediaType === 'data') {
-    // Simple
-    packet = new RawPackager()
-    packet.SetData('key', chunkData.seqId, chunkData.chunk)
-  } else {
-    // Media LOC packager
-    packet = new LocPackager()
-    // actual bytes of encoded data
+  // Media MI packager
+  packet = new MIPackager()
+  if (chunkData.mediaType === "video") {
     const chunkDataBuffer = new Uint8Array(chunkData.chunk.byteLength)
     chunkData.chunk.copyTo(chunkDataBuffer)
-
-    packet.SetData(chunkData.compensatedTs, chunkData.estimatedDuration, chunkData.chunk.type, chunkData.seqId, chunkData.firstFrameClkms, chunkData.metadata, chunkDataBuffer)
+    
+    // Assuming NO B-Frames (pts === dts)
+    const avcDecoderConfigurationRecord = ("metadata" in chunkData && chunkData.metadata != undefined && chunkData.metadata != null) ? chunkData.metadata : undefined;
+    
+    packet.SetData(MIPayloadTypeEnum.VideoH264AVCCWCP, chunkData.seqId, chunkData.compensatedTs, chunkData.timebase, chunkData.estimatedDuration, chunkData.firstFrameClkms, chunkDataBuffer, chunkData.compensatedTs, avcDecoderConfigurationRecord, undefined, undefined, chunkData.chunk.type === "delta")
+  } else if (chunkData.mediaType == "audio") {
+    const chunkDataBuffer = new Uint8Array(chunkData.chunk.byteLength)
+    chunkData.chunk.copyTo(chunkDataBuffer)
+    
+    packet.SetData(MIPayloadTypeEnum.AudioOpusWCP, chunkData.seqId, chunkData.compensatedTs, chunkData.timebase, chunkData.estimatedDuration, chunkData.firstFrameClkms, chunkDataBuffer, undefined, undefined, chunkData.sampleFreq, chunkData.numChannels, chunkData.chunk.type === "delta")
+    isHiPri = true
+  } else if (chunkData.mediaType === 'data') {
+    packet.SetData(MIPayloadTypeEnum.RAWData, chunkData.seqId, undefined, undefined, undefined, undefined, chunkData.chunk, undefined, undefined, undefined, undefined, false);
+  } else {
+    throw new Error(`Not supported media type ${chunkData.mediaType}`)
   }
-  const isHiPri = (chunkData.mediaType === 'audio')
-
   return createSendPromise(packet, subscribeId, trackAlias, moqMapping, isHiPri)
 }
 

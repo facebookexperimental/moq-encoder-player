@@ -60,7 +60,7 @@ LICENSE file in the root directory of this source tree.
     import { getBinaryFile } from "../utils/utils.js"
     
     // Main vars
-    const VERBOSE = true;
+    let VERBOSE = true;
     let IS_LOCALHOST = false;
 
     const downloaderConfig = {      
@@ -138,7 +138,8 @@ LICENSE file in the root directory of this source tree.
         muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
     }
 
-    function addReceivedMessage(str) {
+    function addReceivedMessage(data) {
+        const str = new TextDecoder().decode(data);
         const list = document.getElementById('receivedMessages');
 
         const finalStr = new Date().toISOString() + ": " + str;
@@ -150,9 +151,11 @@ LICENSE file in the root directory of this source tree.
 
     function processWorkerMessage(e) {
         // LOGGING
-        if ((e.data.type === "debug") && (VERBOSE === true)) {
-            // logging debug
-            console.debug(e.data.data);
+        if (e.data.type === "debug") {
+            if (VERBOSE) {
+                // logging debug
+                console.debug(e.data.data);
+            }
         } else if (e.data.type === "info") {
             // logging info
             console.log(e.data.data);

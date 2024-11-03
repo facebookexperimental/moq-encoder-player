@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum, deSerializeMetadata} from '../utils/utils.js'
+import { sendMessageToMain, StateEnum} from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
 
 const WORKER_PREFIX = '[AUDIO-DECO]'
@@ -51,38 +51,35 @@ self.addEventListener('message', async function (e) {
     timestampOffset = 0
     lastChunkSentTimestamp = -1
   } else if (type === 'audiochunk') {
-    if (e.data.metadata !== undefined && e.data.metadata != null) {
-      sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`)
-      if (audioDecoder != null) {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received init, but AudioDecoder already initialized`)
-      } else {
-        // Initialize audio decoder
-        // eslint-disable-next-line no-undef
-        audioDecoder = new AudioDecoder({
-          output: frame => {
-            processAudioFrame(frame)
-          },
-          error: err => {
-            sendMessageToMain(WORKER_PREFIX, 'error', 'Audio decoder. err: ' + err.message)
-          }
-        })
-
-        audioDecoder.addEventListener('dequeue', () => {
-          if (audioDecoder != null) {
-            ptsQueue.removeUntil(audioDecoder.decodeQueueSize)
-          }
-        })
-
-        const config = deSerializeMetadata(e.data.metadata)
-        audioDecoder.configure(config)
-
-        workerState = StateEnum.Running
-
-        sendMessageToMain(WORKER_PREFIX, 'info', 'Initialized and configured')
-      }
+    if (audioDecoder != null) {
+      sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received init, but AudioDecoder already initialized`)
     } else {
-      sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`)
+      // Initialize audio decoder
+      // eslint-disable-next-line no-undef
+      audioDecoder = new AudioDecoder({
+        output: frame => {
+          processAudioFrame(frame)
+        },
+        error: err => {
+          sendMessageToMain(WORKER_PREFIX, 'error', 'Audio decoder. err: ' + err.message)
+        }
+      })
+
+      audioDecoder.addEventListener('dequeue', () => {
+        if (audioDecoder != null) {
+          ptsQueue.removeUntil(audioDecoder.decodeQueueSize)
+        }
+      })
+
+      const config = {codec: "opus", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels}
+      audioDecoder.configure(config)
+
+      workerState = StateEnum.Running
+  
+      sendMessageToMain(WORKER_PREFIX, 'info', `Initialized and configured: ${JSON.stringify(config)}`)
     }
+  
+    sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`);
 
     if (workerState !== StateEnum.Running) {
       sendMessageToMain(WORKER_PREFIX, 'warning', 'Received audio chunk, but NOT running state')
