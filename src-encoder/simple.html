@@ -50,7 +50,8 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Max inflight requests:<input id="maxInflightRequests" type="text" value="5"></label>
                 <div class="clear"></div>
-                <label>MOQ-QUIC mapping:<select id="moqQuicMapping"></select></label>  
+                <label>MOQ-QUIC mapping:<select id="moqQuicMapping"></select></label>
+                <label>Create new subgroup every:<input id="moqNewSubgroup" type="text" value="1"></label>
                 <div class="clear"></div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -70,7 +71,7 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM } from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
 
     // Main vars
@@ -98,7 +99,7 @@ LICENSE file in the root directory of this source tree.
                 maxInFlightRequests: 5,
                 isHipri: false,
                 authInfo: "secret",
-                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
             }
         },
     }
@@ -123,17 +124,17 @@ LICENSE file in the root directory of this source tree.
 
     function initUI() {
         initFromQS();
-        initMOQQuicMappingModeUI(document.getElementById("moqQuicMapping"), MOQ_MAPPING_OBJECT_PER_STREAM)
+        initMOQQuicMappingModeUI(document.getElementById("moqQuicMapping"), MOQ_MAPPING_SUBGROUP_PER_GROUP)
     }
 
     function initMOQQuicMappingModeUI(selectElement, moqMappingSelected) {
         // Object per stream
         const optionObjStream = document.createElement('option');
-        optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_STREAM || moqMappingSelected == undefined) {
+        optionObjStream.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+        if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
             optionObjStream.selected = true;        
         }
-        optionObjStream.appendChild(document.createTextNode("Object per stream"));
+        optionObjStream.appendChild(document.createTextNode("Subgroup per object (AKA: Stream per object)"));
         selectElement.appendChild(optionObjStream);
 
         // Object per datagram
@@ -142,26 +143,8 @@ LICENSE file in the root directory of this source tree.
         if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
             optionObjStream.selected = true;        
         }
-        optionObjDataGram.appendChild(document.createTextNode("Object per datagram"));
+        optionObjDataGram.appendChild(document.createTextNode("Datagram per object"));
         selectElement.appendChild(optionObjDataGram);
-
-        // Multi object streams (track per stream)
-        const optionObjPerTrack = document.createElement('option');
-        optionObjPerTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
-            optionObjPerTrack.selected = true;        
-        }
-        optionObjPerTrack.appendChild(document.createTextNode("Track per stream"));
-        selectElement.appendChild(optionObjPerTrack);
-
-        // Multi object streams (group per stream)
-        const optionObjPerGroup = document.createElement('option');
-        optionObjPerGroup.value = MOQ_MAPPING_GROUP_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_GROUP_PER_STREAM) {
-            optionObjPerGroup.selected = true;        
-        }
-        optionObjPerGroup.appendChild(document.createTextNode("Group per stream"));
-        selectElement.appendChild(optionObjPerGroup);
     }
 
     function initFromQS() {
@@ -236,8 +219,8 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         muxerSenderConfig.moqTracks["data"].maxInFlightRequests = Number(document.getElementById('maxInflightRequests').value);
         muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
-        muxerSenderConfig.moqTracks["data"].moqMapping = document.getElementById('moqQuicMapping').value;
-
+        muxerSenderConfig.moqTracks["data"].newSubgroupEvery = parseInt(document.getElementById('moqNewSubgroup').value);
+        
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
     }

@@ -106,3 +106,11 @@ export async function buffReadFrombyobReader (reader, buffer, offset, size) {
   }
   return {eof, buff: buffer}
 }
+
+export function getArrayBufferByteLength(arrayBuffer) {
+  let ret = 0;
+  arrayBuffer.forEach(element => {
+    ret += element.byteLength;
+  });
+  return ret;
+}

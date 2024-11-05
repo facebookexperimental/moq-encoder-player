@@ -159,7 +159,7 @@ LICENSE file in the root directory of this source tree.
 </body>
 <script type="module">
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_MAPPING_TRACK_PER_STREAM, MOQ_MAPPING_GROUP_PER_STREAM} from "../utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM} from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
     import { GetCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
@@ -243,7 +243,7 @@ LICENSE file in the root directory of this source tree.
                 maxInFlightRequests: 100,
                 isHipri: true,
                 authInfo: "secret",
-                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
             },
             "video": {
                 namespace: "vc",
@@ -251,7 +251,7 @@ LICENSE file in the root directory of this source tree.
                 maxInFlightRequests: 50,
                 isHipri: false,
                 authInfo: "secret",
-                moqMapping: MOQ_MAPPING_OBJECT_PER_STREAM,
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
             }
         },
     }
@@ -549,37 +549,19 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initMOQMappingModesUI(selectElement) {
-        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "video");
-        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_STREAM, "audio");
+        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "video");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "audio");
     }
 
     function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
-        // Object per stream
+        // Multi object streams (track per stream)
         const optionObjStream = document.createElement('option');
-        optionObjStream.value = MOQ_MAPPING_OBJECT_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_STREAM || moqMappingSelected == undefined) {
+        optionObjStream.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+        if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
             optionObjStream.selected = true;        
         }
-        optionObjStream.appendChild(document.createTextNode("Object per stream"));
+        optionObjStream.appendChild(document.createTextNode("Subgroup per group (AKA: GOP per stream)"));
         selectElement.appendChild(optionObjStream);
-
-        // Multi object streams (track per stream)
-        const optionObjPerTrack = document.createElement('option');
-        optionObjPerTrack.value = MOQ_MAPPING_TRACK_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_TRACK_PER_STREAM) {
-            optionObjPerTrack.selected = true;        
-        }
-        optionObjPerTrack.appendChild(document.createTextNode("Track per stream"));
-        selectElement.appendChild(optionObjPerTrack);
-
-        // Multi object streams (group per stream)
-        const optionObjPerGroup = document.createElement('option');
-        optionObjPerGroup.value = MOQ_MAPPING_GROUP_PER_STREAM;
-        if (moqMappingSelected == MOQ_MAPPING_GROUP_PER_STREAM) {
-            optionObjPerGroup.selected = true;        
-        }
-        optionObjPerGroup.appendChild(document.createTextNode("Group per stream"));
-        selectElement.appendChild(optionObjPerGroup);
 
         if (mediaType === "audio") {
             // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
@@ -589,7 +571,7 @@ LICENSE file in the root directory of this source tree.
             if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
                 optionObjStream.selected = true;        
             }
-            optionObjTrack.appendChild(document.createTextNode("Object per datagram"));
+            optionObjTrack.appendChild(document.createTextNode("Object per datagram (AKA: Frame per datagram)"));
             selectElement.appendChild(optionObjTrack);
         }
     }

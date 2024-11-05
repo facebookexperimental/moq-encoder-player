@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_PARAMETER_ROLE_PUBLISHER, MOQ_PARAMETER_ROLE_SUBSCRIBER, MOQ_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_STREAM, MOQ_MESSAGE_STREAM_HEADER_TRACK, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_GROUP, moqParseObjectFromTrackPerStreamHeader, moqParseObjectFromGroupPerStreamHeader} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_SETUP_PARAMETER_ROLE_PUBLISHER, MOQ_SETUP_PARAMETER_ROLE_SUBSCRIBER, MOQ_SETUP_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_SUBGROUP, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
@@ -184,45 +184,37 @@ async function moqReceiveStreamObjects (moqt) {
     if (!stream.done) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'New QUIC stream')
 
-      const moqObjHeader = await moqParseObjectHeader(stream.value)
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
+      const moqStreamsObjHeader = await moqParseObjectHeader(stream.value)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqStreamsObjHeader)}`)
 
-      // Once stream per track started no other forward types will be read
-      if (moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_TRACK || moqObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_GROUP) {
+      if (moqStreamsObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
         // NO await on purpose!
-        moqReceiveMultiObjectStream(moqObjHeader.type, stream.value)
-      } else if (moqObjHeader.type === MOQ_MESSAGE_OBJECT_STREAM) {
-        reportStats()
-
-        await readAndSendPayload(stream.value)
+        moqReceiveMultiObjectStream(stream.value)
+      } else {
+        sendMessageToMain(WORKER_PREFIX, 'error', `Unsupported stream type for sterams ${moqStreamsObjHeader.type}`)
       }
     }
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Exited receive objects loop`)
 }
 
-async function moqReceiveMultiObjectStream(multiObjectType, readerStream) {
+async function moqReceiveMultiObjectStream(readerStream) {
   let isEOF = false
   let moqHeader = {} 
-  let multiObjectTypeStr = "unknown"
   while (workerState !== StateEnum.Stopped && isEOF === false) {
     reportStats()
     try {
-      if (multiObjectType == MOQ_MESSAGE_STREAM_HEADER_GROUP) {
-        multiObjectTypeStr = "StreamPerGroup"
-        moqHeader = await moqParseObjectFromGroupPerStreamHeader(readerStream)
-      } else if (multiObjectType == MOQ_MESSAGE_STREAM_HEADER_TRACK) {
-        multiObjectTypeStr = "StreamPerTrack"
-        moqHeader = await moqParseObjectFromTrackPerStreamHeader(readerStream)
-      } else {
-        throw new Error(`Not supported multiobject type ${multiObjectType}`);
-      }
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received ${multiObjectTypeStr} header ${JSON.stringify(moqHeader)}`)
+      moqHeader = await moqParseObjectFromSubgroupHeader(readerStream)
+      
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqHeader)}`);
 
-      // TODO exit the loop on status End of group
-      isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
+      // Check if we received the end of the subgroup
+      isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
+      if (!isEOF && moqHeader.payloadLength > 0) {
+        isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
+      }
     } catch(err) {
-      // Error we receive when I have a reader and the stream closes
+      // We receive ERROR when we have a reader and the stream closes
       if (err instanceof WebTransportError && err.message.includes("The session is closed")) {
         isEOF = true
       } else {
@@ -230,7 +222,7 @@ async function moqReceiveMultiObjectStream(multiObjectType, readerStream) {
       }
     }
   }
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Exited from ${multiObjectTypeStr} reader loop`)
+  sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from subgroup reader loop')
 }
 
 async function moqReceiveDatagramObjects (moqt) {
@@ -248,20 +240,20 @@ async function moqReceiveDatagramObjects (moqt) {
       // Create a BYOT capable reader for the data by reading whole datagram      
       const readableStream = new ReadableStream({
         start(controller) {
-        controller.enqueue(stream.value);
-        controller.close();
-      },
-      type: "bytes",
-    });
-    reportStats()
+          controller.enqueue(stream.value);
+          controller.close();
+        },
+        type: "bytes",
+      });
+      reportStats()
 
-    const moqObjHeader = await moqParseObjectHeader(readableStream)
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
+      const moqObjHeader = await moqParseObjectHeader(readableStream)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
 
-    if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
-      throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
-    }
-    await readAndSendPayload(readableStream)
+      if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
+        throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
+      }
+      await readAndSendPayload(readableStream)
     }
   }
 
@@ -319,14 +311,14 @@ async function readAndSendPayload(readerStream, length) {
 // MOQT
 
 async function moqCreateSubscriberSession (moqt) {
-  await moqSendSetup(moqt.controlWriter, MOQ_PARAMETER_ROLE_SUBSCRIBER)
+  await moqSendSetup(moqt.controlWriter, MOQ_SETUP_PARAMETER_ROLE_SUBSCRIBER)
   const moqMsg = await moqParseMsg(moqt.controlReader)
   if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
     throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
   }
   const setupResponse = moqMsg.data
-  if (setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_PUBLISHER && setupResponse.parameters.role !== MOQ_PARAMETER_ROLE_BOTH) {
-    throw new Error(`role not supported. Supported ${MOQ_PARAMETER_ROLE_PUBLISHER} or ${MOQ_PARAMETER_ROLE_BOTH}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
+  if (setupResponse.parameters.role !== MOQ_SETUP_PARAMETER_ROLE_PUBLISHER && setupResponse.parameters.role !== MOQ_SETUP_PARAMETER_ROLE_BOTH) {
+    throw new Error(`role not supported. Supported ${MOQ_SETUP_PARAMETER_ROLE_PUBLISHER} or ${MOQ_SETUP_PARAMETER_ROLE_BOTH}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
   }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
@@ -334,7 +326,7 @@ async function moqCreateSubscriberSession (moqt) {
   let pending_subscribes = Object.entries(tracks)
   while (pending_subscribes.length > 0) {
     const [trackType, trackData] = pending_subscribes[0];
-    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
+    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, [trackData.namespace], trackData.name, trackData.authInfo)
     const moqMsg = await moqParseMsg(moqt.controlReader)
     if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
       throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)

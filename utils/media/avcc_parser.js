@@ -56,23 +56,27 @@ export function ParseH264NALs(dataBytes, avccHeaderLengthSize) {
   if (dataBytes == undefined || dataBytes == null) {
       return undefined
   }
+  let dataBytes8b = dataBytes
+  if (!(dataBytes instanceof Uint8Array)) {
+    dataBytes8b = new Uint8Array(dataBytes)
+  }
   const h264AvccStreamData = [];
 
   let nPos = 0;
-  while (nPos + avccHeaderLengthSize < dataBytes.byteLength) {
+  while (nPos + avccHeaderLengthSize < dataBytes8b.byteLength) {
     const naluSize = BitReaderHelper(
-      dataBytes.subarray(nPos, nPos + avccHeaderLengthSize),
+      dataBytes8b.subarray(nPos, nPos + avccHeaderLengthSize),
       0,
       avccHeaderLengthSize * 8,
     );
     nPos += avccHeaderLengthSize;
-    if (nPos + naluSize <= dataBytes.byteLength) {
-      const nalu = ParseNAL(dataBytes.subarray(nPos, nPos + naluSize));
+    if (nPos + naluSize <= dataBytes8b.byteLength) {
+      const nalu = ParseNAL(dataBytes8b.subarray(nPos, nPos + naluSize));
       h264AvccStreamData.push(nalu);
     } else {
       throw new Error(
         `NALU size indicates an offset bigger than data buffer. Buffer size ${
-          dataBytes.byteLength
+          dataBytes8b.byteLength
         }, requested: ${nPos + naluSize}`,
       );
     }
