@@ -10,6 +10,8 @@ import { readUntilEof, buffRead, concatBuffer } from '../utils/buffer_utils.js'
 
 'use strict'
 
+export const MI_PACKAGER_VERSION = "00"
+
 const MI_VIDEO_H264_AVCC = 0x0
 const MI_AUDIO_OPUS = 0x1
 const MI_RAW = 0x2

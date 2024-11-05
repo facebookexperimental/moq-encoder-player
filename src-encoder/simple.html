@@ -34,6 +34,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>Simple MOQ publisher</h1>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
     <div class="boxed">
         <div class="styleform">
             <form>
@@ -71,8 +72,9 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM } from "../utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION } from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
+    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
 
     // Main vars
     const VERBOSE = true;
@@ -122,7 +124,13 @@ LICENSE file in the root directory of this source tree.
         muxerSenderWorker = new Worker("../sender/moq_sender.js", { type: "module" } );
     }
 
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
+    }
+
     function initUI() {
+        initVersions();
         initFromQS();
         initMOQQuicMappingModeUI(document.getElementById("moqQuicMapping"), MOQ_MAPPING_SUBGROUP_PER_GROUP)
     }
