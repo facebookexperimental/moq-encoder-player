@@ -70,10 +70,12 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Activate latency tracker (overlays data on video): <input type="checkbox" id="activateLatencyTracker"></label>
                 <div class="clear"></div>
-                <h3>Audio encoding params (opus)</h3>
+                <h3>Audio encoding params</h3>
                 <label>Input sources: <select id="audioSources"></select></label>                
                 <div class="clear"></div>
-                <label>Bitrate (bps): <input id="audioEncodingBitrateBps" type="text" value="32000" size="8"></label>
+                <label>Codec: <select id="audioCodecOptions"></select></label>                
+                <div class="clear"></div>
+                <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
                 <div class="clear"></div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -162,7 +164,7 @@ LICENSE file in the root directory of this source tree.
     import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION} from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
-    import { GetCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
+    import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
     import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
 
     // Main vars
@@ -192,7 +194,7 @@ LICENSE file in the root directory of this source tree.
     // Audio encoder config
     const audioEncoderConfig = {
         encoderConfig: {
-            codec: 'opus', // AAC NOT implemented YET (it is in their roadmap)
+            codec: 'opus', // To fill later
             sampleRate: 48000, // To fill later
             numberOfChannels: 1, // To fill later
             bitrate: 32000,
@@ -322,6 +324,8 @@ LICENSE file in the root directory of this source tree.
         initStreamIDUI();
         initFromQS();
         initEncodingOptionsUI();
+        initAudioCodecOptionsUI();
+        initAudioBitrateOptionsUI(document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data.codec);
         await populateVideoSourcesUI();
         await populateAudioSourcesUI();
 
@@ -399,6 +403,19 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function getAudioTrackSettings() {
+        let ret = undefined
+
+        // Assuming 1 track
+        document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
+            if (track.kind == 'audio') {
+                ret = track.getSettings();
+            }
+        });
+
+        return ret;
+    }
+
     function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
         enableUI("processingUpdate");
 
@@ -454,11 +471,12 @@ LICENSE file in the root directory of this source tree.
             let videoNumTracks = 0;
             let audioNumTracks = 0;
             document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
-                console.info(`Started preview: video: ${newVideoDeviceId}, audio: ${newAudioDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
                 if (track.kind == 'video') {
+                    console.info(`Started preview: video: ${newVideoDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
                     videoNumTracks++;
                 }
                 else if (track.kind == 'audio') {
+                    console.info(`Started preview: Audio: ${newAudioDeviceId} - From track: ${JSON.stringify(track.getSettings())}`);
                     audioNumTracks++
                 }
             });
@@ -523,23 +541,66 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("encodedVADelayCompensatedTS").value = parseInt(document.getElementById("encodedVideoCompensatedTs").value) - parseInt(document.getElementById("encodedAudioCompensatedTs").value);
     }
 
+    function initAudioBitrateOptionsUI(selectedCodec) {
+        // Remove old elements
+        document.getElementById("audioEncodingBitrateBpsOptions").length = 0;
+        const op = document.getElementById("audioEncodingBitrateBpsOptions");
+        let isSelected = true;
+        if (selectedCodec == "opus") {
+            addAudioCodecBitrateOptionUI(op, "32000", 32000, isSelected);
+            isSelected = false;
+        }
+        // AAC supported 96000, 128000, 160000, 192000
+        addAudioCodecBitrateOptionUI(op, "96000", 96000, isSelected);
+        isSelected = false;
+        addAudioCodecBitrateOptionUI(op, "128000", 128000);
+        addAudioCodecBitrateOptionUI(op, "160000", 160000);
+        addAudioCodecBitrateOptionUI(op, "192000", 192000);
+    }
+
+    function addAudioCodecBitrateOptionUI(optionsElement, desc, bitrateBps, isSelected) {
+        const o = document.createElement("option")
+        o.text = desc
+        o.data = {bitrate: bitrateBps}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function initAudioCodecOptionsUI() {
+        const op = document.getElementById("audioCodecOptions");
+        addAudioCodecOptionUI(op, "Opus", "opus", true);
+        addAudioCodecOptionUI(op, "AAC-LC", "mp4a.40.02");
+    }
+
     function initEncodingOptionsUI() {
         const op = document.getElementById("videoEncodingOptions");
 
-        addEncodingOptionUI(op, 320, 180, 15, 12); // 1.2
-        addEncodingOptionUI(op, 320, 180, 30, 13); // 1.3
-        addEncodingOptionUI(op, 854, 480, 15, 30); // 3
-        addEncodingOptionUI(op, 854, 480, 30, 31, true); // 3.1
-        addEncodingOptionUI(op, 1280, 720, 15, 31); // 3.1
-        addEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
-        addEncodingOptionUI(op, 1920, 1080, 15, 40); // 4
-        addEncodingOptionUI(op, 1920, 1080, 30, 40); // 4
+        addVideoEncodingOptionUI(op, 320, 180, 15, 12); // 1.2
+        addVideoEncodingOptionUI(op, 320, 180, 30, 13); // 1.3
+        addVideoEncodingOptionUI(op, 854, 480, 15, 30); // 3
+        addVideoEncodingOptionUI(op, 854, 480, 30, 31, true); // 3.1
+        addVideoEncodingOptionUI(op, 1280, 720, 15, 31); // 3.1
+        addVideoEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
+        addVideoEncodingOptionUI(op, 1920, 1080, 15, 40); // 4
+        addVideoEncodingOptionUI(op, 1920, 1080, 30, 40); // 4
     }
 
-    function addEncodingOptionUI(optionsElement, width, height, fps, level, isSelected) {
+    function addVideoEncodingOptionUI(optionsElement, width, height, fps, level, isSelected) {
         const o = document.createElement("option")
         o.text = `${width}x${height}@${fps}`
         o.data = {w: width, h: height, fps: fps, level: level}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function addAudioCodecOptionUI(optionsElement, codecDesc, codecStr, isSelected) {
+        const o = document.createElement("option")
+        o.text = codecDesc
+        o.data = {codec: codecStr}
         if (isSelected) {
             o.selected = true
         }
@@ -680,6 +741,10 @@ LICENSE file in the root directory of this source tree.
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
         
         updatePreviewVideoSettingsUI(newData.w, newData.h);
+    }
+
+    function onAudioCodecChanged(newData) {
+        initAudioBitrateOptionsUI(newData.codec);
     }
 
     function enableUI(mode) {
@@ -908,12 +973,18 @@ LICENSE file in the root directory of this source tree.
         videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
         videoEncoderConfig.encoderConfig.height = videoOptionsSelectedElementData.h;
         videoEncoderConfig.encoderConfig.framerate = videoOptionsSelectedElementData.fps;
-        videoEncoderConfig.encoderConfig.codec = GetCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
+        videoEncoderConfig.encoderConfig.codec = GetVideoCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
         videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
         videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
 
         // Load audio encoding settings
-        audioEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('audioEncodingBitrateBps').value);
+        const audioOptionsSelectedElementData = document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data;
+        audioEncoderConfig.encoderConfig.codec = audioOptionsSelectedElementData.codec;
+        const sourceAudioSetting = getAudioTrackSettings();
+        audioEncoderConfig.encoderConfig.sampleRate = sourceAudioSetting.sampleRate; // Get from source
+        audioEncoderConfig.encoderConfig.numberOfChannels = sourceAudioSetting.channelCount; // Get from source
+        const audioBitrate = document.getElementById('audioEncodingBitrateBpsOptions').options[document.getElementById('audioEncodingBitrateBpsOptions').selectedIndex].data.bitrate;
+        audioEncoderConfig.encoderConfig.bitrate = audioBitrate;
 
         // Get a MediaStream from preview
         if (document.getElementById('vPreview').srcObject == undefined || document.getElementById('vPreview').srcObject == null) {
@@ -1000,4 +1071,6 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('audioSources').addEventListener("change", (event) => {onAudioSourceChanged(event.target.options[event.target.selectedIndex].value);});
 
     document.getElementById('videoEncodingOptions').addEventListener("change", (event) => {onVideoEncodingsSettingsChanged(event.target.options[event.target.selectedIndex].data);});
+
+    document.getElementById('audioCodecOptions').addEventListener("change", (event) => {onAudioCodecChanged(event.target.options[event.target.selectedIndex].data);});
 </script>

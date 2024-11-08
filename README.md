@@ -306,8 +306,6 @@ Note: This is an experimentation code, we plan the evolve it quick, so those scr
 - Fix dropped frames UI on VC player (not properly separated between encoder & player, see TODO in the code)
 - Copy updates from event player to regular one
   - Better TS logging and video renderer
-X - Fix player audio latency
-  - Added new accurate metric based on embedded video data
 - All:
   - Accept B frames (DTS)
 

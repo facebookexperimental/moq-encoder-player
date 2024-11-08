@@ -7,7 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum, compareArrayBuffer } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
-import { ParseAVCDecoderConfigurationRecord, GetCodecStringFromAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
+import { ParseAVCDecoderConfigurationRecord, GetVideoCodecStringFromAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
 import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
@@ -48,7 +48,7 @@ function getAndOverrideInitDataValues(metadata) {
 
   // Override values
   // We can get the width and height from SPS inside AVCDecoderConfigurationRecord but that is complex and NOT necessary
-  const config = {codec: GetCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecordInfo) , description: metadata};
+  const config = {codec: GetVideoCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecordInfo) , description: metadata};
   config.optimizeForLatency = true
   // In my test @2022/11 with hardware accel could NOT get real time decoding,
   // switching to soft decoding fixed everything (h264)

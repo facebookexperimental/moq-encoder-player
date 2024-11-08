@@ -114,9 +114,9 @@ export function ParseAVCDecoderConfigurationRecord(data) {
 }
 
 export function GetCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecord) {
-  return GetCodecStringFromProfileLevel("avc1", avcDecoderConfigurationRecord.avcProfileIndication, avcDecoderConfigurationRecord.AVCLevelIndication);
+  return GetVideoCodecStringFromProfileLevel("avc1", avcDecoderConfigurationRecord.avcProfileIndication, avcDecoderConfigurationRecord.AVCLevelIndication);
 }
 
-export function GetCodecStringFromProfileLevel(codec, profile, level) {
+export function GetVideoCodecStringFromProfileLevel(codec, profile, level) {
   return codec + "." + profile.toString(16).toUpperCase().padStart(2, '0') + "00" + level.toString(16).toUpperCase().padStart(2, '0');
 }
