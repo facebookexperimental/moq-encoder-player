@@ -45,6 +45,8 @@ LICENSE file in the root directory of this source tree.
 <body style="background-color: lightcyan;">
     <h2 id="eventName">Event</h2>
     <hr>
+    <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label>
+    <hr>
     <p>Plase send feedback to: <a href= "mailto: jcenzano@meta.com">jcenzano@meta.com</a></p]>
     <hr>
     <div class="boxed">
@@ -193,11 +195,12 @@ LICENSE file in the root directory of this source tree.
     const qsParams = new URLSearchParams(queryString);
 
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_OBJECT_PER_STREAM, MOQ_MAPPING_OBJECT_PER_DATAGRAM} from "../utils/moqt.js"
     import { VideoRenderBuffer } from "../render/video_render_buffer.js"
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { getBinaryFile } from "../utils/utils.js"
+    import { MOQ_CURRENT_VERSION } from "../utils/moqt.js"
+    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
 
     const streamData = {
         title: "unknown",
@@ -901,8 +904,14 @@ LICENSE file in the root directory of this source tree.
         }
         console.log("Data read from QS: " + JSON.stringify(streamData))
 
+        initVersions();
         fillOutLatencyOptionsUI()
         document.getElementById('eventName').innerText = streamData.title
+    }
+
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
     function numToStrWithPad(d, length) {

@@ -5,10 +5,12 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { numberToVarInt, varIntToNumberOrThrow } from '../utils/varint.js'
+import { numberToVarInt, varIntToNumberAndLengthOrThrow } from '../utils/varint.js'
 import { readUntilEof, buffRead, concatBuffer } from '../utils/buffer_utils.js'
 
 'use strict'
+
+export const MI_PACKAGER_VERSION = "00"
 
 const MI_VIDEO_H264_AVCC = 0x0
 const MI_AUDIO_OPUS = 0x1
@@ -69,8 +71,8 @@ export class MIPackager {
   }
 
   async ReadLengthBytes (readerStream, length) {
-    await this.reaMIHeader(readerStream)
-    const ret = await buffRead(readerStream, length)
+    const bytesRead = await this.reaMIHeader(readerStream)
+    const ret = await buffRead(readerStream, length - bytesRead)
     this.data = ret.buff
     this.eof = ret.eof
   }
@@ -82,45 +84,93 @@ export class MIPackager {
   }
 
   async reaMIHeader (readerStream) {
-    const intType = await varIntToNumberOrThrow(readerStream)
-    if (intType === MI_VIDEO_H264_AVCC) {
+    let bytesRead = 0;
+    let ret = await varIntToNumberAndLengthOrThrow(readerStream)
+    bytesRead += ret.byteLength;
+    if (ret.num === MI_VIDEO_H264_AVCC) {
       this.type = MIPayloadTypeEnum.VideoH264AVCCWCP
-    } else if (intType === MI_AUDIO_OPUS) {
+    } else if (ret.num === MI_AUDIO_OPUS) {
       this.type = MIPayloadTypeEnum.AudioOpusWCP
-    } else if (intType === MI_RAW) {
+    } else if (ret.num === MI_RAW) {
       this.type = MIPayloadTypeEnum.RAWData
     } else {
       throw new Error(`Payload type ${this.type} not supported`)
     }
 
     if (this.type === MIPayloadTypeEnum.VideoH264AVCCWCP) {
-      this.seqId = await varIntToNumberOrThrow(readerStream)
-      this.pts = await varIntToNumberOrThrow(readerStream)
-      this.dts = await varIntToNumberOrThrow(readerStream)
-      this.timebase = await varIntToNumberOrThrow(readerStream)
-      this.duration = await varIntToNumberOrThrow(readerStream)
-      this.wallclock = await varIntToNumberOrThrow(readerStream)
-      const metadataSize = await varIntToNumberOrThrow(readerStream)
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.seqId = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.pts = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.dts = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.timebase = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.duration = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.wallclock = ret.num;
+
+      // Metadata size
+      ret = await varIntToNumberAndLengthOrThrow(readerStream)
+      bytesRead += ret.byteLength;
+      const metadataSize = ret.num
       if (metadataSize > 0) {
-        const ret = await buffRead(readerStream, metadataSize)
+        ret = await buffRead(readerStream, metadataSize);
         if (ret.eof) {
           throw new Error(`Connection closed while receiving MI header metadata`)
         }
+        bytesRead += metadataSize;
         this.metadata = ret.buff;
       } else {
         this.metadata = null
       }
     } else if (this.type === MIPayloadTypeEnum.AudioOpusWCP) {
-      this.seqId = await varIntToNumberOrThrow(readerStream)
-      this.pts = await varIntToNumberOrThrow(readerStream)
-      this.timebase = await varIntToNumberOrThrow(readerStream)
-      this.sampleFreq = await varIntToNumberOrThrow(readerStream)
-      this.numChannels = await varIntToNumberOrThrow(readerStream)
-      this.duration = await varIntToNumberOrThrow(readerStream)
-      this.wallclock = await varIntToNumberOrThrow(readerStream)
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.seqId = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.pts = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.timebase = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.sampleFreq = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.numChannels = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.duration = ret.num;
+
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.wallclock = ret.num;
     } else if (this.type === MIPayloadTypeEnum.RAWData) {
-      this.seqId = await varIntToNumberOrThrow(readerStream)
+      ret = await varIntToNumberAndLengthOrThrow(readerStream);
+      bytesRead += ret.byteLength;
+      this.seqId = ret.num;
     }
+
+    return bytesRead;
   }
 
   GetData () {
@@ -168,34 +218,37 @@ export class MIPackager {
   ToBytes () {
     let ret = null
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
-      const typeBytes = numberToVarInt(MI_VIDEO_H264_AVCC)
-      const seqIdBytes = numberToVarInt(this.seqId)
-      const ptsBytes = numberToVarInt(this.pts)
-      const dtsBytes = numberToVarInt(this.dts)
-      const timebaseBytes = numberToVarInt(this.timebase)
-      const durationBytes = numberToVarInt(this.duration)
-      const wallclockBytes = numberToVarInt(this.wallclock)
-      const metadataSize = (this.metadata === undefined || this.metadata == null) ? 0 : this.metadata.byteLength
-      const metadataSizeBytes = numberToVarInt(metadataSize)
+      const msg = [];
+      msg.push(numberToVarInt(MI_VIDEO_H264_AVCC))
+      msg.push(numberToVarInt(this.seqId))
+      msg.push(numberToVarInt(this.pts))
+      msg.push(numberToVarInt(this.dts))
+      msg.push(numberToVarInt(this.timebase))
+      msg.push(numberToVarInt(this.duration))
+      msg.push(numberToVarInt(this.wallclock))
+      const metadataSize = (this.metadata == undefined || this.metadata == null) ? 0 : this.metadata.byteLength
+      msg.push(numberToVarInt(metadataSize))
       if (metadataSize > 0) {
-        ret = concatBuffer([typeBytes, seqIdBytes, ptsBytes, dtsBytes, timebaseBytes, durationBytes, wallclockBytes, metadataSizeBytes, this.metadata, this.data]);
+        ret = concatBuffer([...msg, this.metadata, this.data])
       } else {
-        ret = concatBuffer([typeBytes, seqIdBytes, ptsBytes, dtsBytes, timebaseBytes, durationBytes, wallclockBytes, metadataSizeBytes, this.data])
+        ret = concatBuffer([...msg, this.data])
       }
     } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
-      const typeBytes = numberToVarInt(MI_AUDIO_OPUS)
-      const seqIdBytes = numberToVarInt(this.seqId)
-      const ptsBytes = numberToVarInt(this.pts)
-      const timebaseBytes = numberToVarInt(this.timebase)
-      const sampleFreqBytes = numberToVarInt(this.sampleFreq)
-      const numChannelsBytes = numberToVarInt(this.numChannels)
-      const durationBytes = numberToVarInt(this.duration)
-      const wallclockBytes = numberToVarInt(this.wallclock)
-      ret = concatBuffer([typeBytes, seqIdBytes, ptsBytes, timebaseBytes, sampleFreqBytes, numChannelsBytes, durationBytes, wallclockBytes, this.data])
+      const msg = [];
+      msg.push(numberToVarInt(MI_AUDIO_OPUS))
+      msg.push(numberToVarInt(this.seqId))
+      msg.push(numberToVarInt(this.pts))
+      msg.push(numberToVarInt(this.timebase))
+      msg.push(numberToVarInt(this.sampleFreq))
+      msg.push(numberToVarInt(this.numChannels))
+      msg.push(numberToVarInt(this.duration))
+      msg.push(numberToVarInt(this.wallclock))
+      ret = concatBuffer([...msg, this.data])
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
-      const typeBytes = numberToVarInt(MI_RAW)
-      const seqIdBytes = numberToVarInt(this.seqId)
-      ret = concatBuffer([typeBytes, seqIdBytes, this.data])
+      const msg = [];
+      msg.push(numberToVarInt(MI_RAW))
+      msg.push(numberToVarInt(this.seqId))
+      ret = concatBuffer([...msg, this.data])
     } else {
       throw new Error(`Payload type ${this.type} not supported`)
     }
@@ -209,5 +262,15 @@ export class MIPackager {
 
   IsDelta() {
     return this.isDelta // Only valid from setData
+  }
+
+  getMediaType() {
+    if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
+      return "video";
+    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
+      return "audio";
+    } else {
+      return "data";
+    }
   }
 }

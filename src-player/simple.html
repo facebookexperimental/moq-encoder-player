@@ -34,6 +34,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>Simple MOQ subscriber</h1>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
     <div class="boxed">
         <div class="styleform">
             <form>
@@ -58,6 +59,8 @@ LICENSE file in the root directory of this source tree.
 </body>
 <script type="module">
     import { getBinaryFile } from "../utils/utils.js"
+    import { MOQ_CURRENT_VERSION } from "../utils/moqt.js"
+    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
     
     // Main vars
     let VERBOSE = true;
@@ -99,6 +102,12 @@ LICENSE file in the root directory of this source tree.
         if (local != undefined) {
             IS_LOCALHOST = true
         }
+        initVersions();
+    }
+
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
     async function start() {

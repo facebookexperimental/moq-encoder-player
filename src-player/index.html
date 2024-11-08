@@ -34,7 +34,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: PLAYER</h1>
-    <h2>server - Demux - Decode - Play</h2>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
     <label>(Encoder audio sampling frequency should be the same than audioContext (player) sampling frequency, this is
         almost guaranteed if you use same browser (computer) for encode and playback. The fix is simple but not done yet
         :-))</label>
@@ -61,9 +61,9 @@ LICENSE file in the root directory of this source tree.
                 <label>(this + jitter is the max latency allowed)</label>                
                 <div class="clear"></div>
                 <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
-                        value="200" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
+                        value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
                 <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
-                        value="100" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
+                        value="300" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
                 <div class="clear"></div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -198,6 +198,8 @@ LICENSE file in the root directory of this source tree.
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../utils/utils.js"
+    import { MOQ_CURRENT_VERSION} from "../utils/moqt.js"
+    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -344,6 +346,12 @@ LICENSE file in the root directory of this source tree.
         const now = new Date().toISOString();
 
         updateFullTrackNameUI();
+        initVersions();
+    }
+
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
     function updateFullTrackNameUI() {

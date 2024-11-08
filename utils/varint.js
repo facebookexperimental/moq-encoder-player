@@ -35,12 +35,21 @@ export async function varIntToNumberOrThrow (readableStream) {
   return ret.num
 }
 
+export async function varIntToNumberAndLengthOrThrow (readableStream) {
+  let ret = await varIntToNumber(readableStream)
+  if (ret.eof) {
+    throw new ReadStreamClosed(`Connection closed while reading data`)
+  }
+  return {num: ret.num, byteLength: ret.byteLength}
+}
+
 async function varIntToNumber (readableStream) {
-  const ret = {eof: false, num: undefined}
+  const ret = {eof: false, num: undefined, byteLength: 0}
   const reader = readableStream.getReader({ mode: 'byob' })
   try {
     let buff = new ArrayBuffer(8)
     let retData = await buffReadFrombyobReader(reader, buff, 0, 1)
+    ret.byteLength = ret.byteLength + 1;
     ret.eof = retData.eof
     if (!ret.eof) {
       buff = retData.buff
@@ -50,16 +59,19 @@ async function varIntToNumber (readableStream) {
         ret.num = new DataView(buff, 0, 1).getUint8() & 0x3f
       } else if (size === 1) {
         retData = await buffReadFrombyobReader(reader, buff, 1, 1)
+        ret.byteLength = ret.byteLength + 1;
         buff = retData.buff
         ret.eof = retData.eof
         ret.num = new DataView(buff, 0, 2).getUint16() & 0x3fff
       } else if (size === 2) {
         retData = await buffReadFrombyobReader(reader, buff, 1, 3)
+        ret.byteLength = ret.byteLength + 3;
         buff = retData.buff
         ret.eof = retData.eof
         ret.num = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
       } else if (size === 3) {
         retData = await buffReadFrombyobReader(reader, buff, 1, 7)
+        ret.byteLength = ret.byteLength + 7;
         buff = retData.buff
         ret.eof = retData.eof
         ret.num = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
