@@ -1,6 +1,8 @@
 # moq-encoder-player
 
-This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft-04](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/04/). The goal is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
+This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
+
+The goal if ths code is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
 It is NOT optimized for performance / production at all since the 1st goal is experimenting / learning.
 
@@ -312,7 +314,3 @@ X - Fix player audio latency
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
-
-## TODO
-- Add UI indication
-- Check crash on stop for moxygen
