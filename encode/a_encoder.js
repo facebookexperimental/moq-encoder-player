@@ -19,7 +19,7 @@ let workerState = StateEnum.Created
 let encoderMaxQueueSize = 5
 
 // Last audioData SampleFreq
-let lastEncoderConfig = null
+let lastEncoderConfig;
 
 // Encoder
 const initAudioEncoder = {
@@ -35,9 +35,10 @@ const initAudioEncoder = {
 
 let aEncoder = null
 
-function handleChunk (chunk) {
-  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, timebase: WEBCODECS_TIMEBASE, sampleFreq: lastEncoderConfig.sampleRate, numChannels: lastEncoderConfig.numberOfChannels}
-  sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength)
+function handleChunk (chunk, metadata) {
+  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, timebase: WEBCODECS_TIMEBASE, sampleFreq: lastEncoderConfig.sampleRate, numChannels: lastEncoderConfig.numberOfChannels, codec: lastEncoderConfig.codec}
+
+  sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength + ', metadata: ' + JSON.stringify(metadata));
 
   self.postMessage(msg)
 }
@@ -68,13 +69,13 @@ self.addEventListener('message', async function (e) {
     // eslint-disable-next-line no-undef
     aEncoder = new AudioEncoder(initAudioEncoder)
 
-    // We do NOT accept changing audio encoding settings mid-stream
+    // We do NOT accept changing audio encoding settings mid-stream for now
     aEncoder.configure(encoderConfig)
     lastEncoderConfig = encoderConfig
     if ('encoderMaxQueueSize' in e.data) {
       encoderMaxQueueSize = e.data.encoderMaxQueueSize
     }
-    sendMessageToMain(WORKER_PREFIX, 'info', 'Encoder initialized')
+    sendMessageToMain(WORKER_PREFIX, 'info', `Encoder initialized with config: ${JSON.stringify(lastEncoderConfig)}`)
     return
   }
   if (type !== 'aframe') {

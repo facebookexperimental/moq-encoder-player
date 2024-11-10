@@ -113,7 +113,7 @@ export function ParseAVCDecoderConfigurationRecord(data) {
   return avcVDCR;
 }
 
-export function GetCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecord) {
+export function GetVideoCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecord) {
   return GetVideoCodecStringFromProfileLevel("avc1", avcDecoderConfigurationRecord.avcProfileIndication, avcDecoderConfigurationRecord.AVCLevelIndication);
 }
 

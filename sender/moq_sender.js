@@ -203,7 +203,7 @@ self.addEventListener('message', async function (e) {
   const compensatedTs = (e.data.compensatedTs === undefined || e.data.compensatedTs < 0) ? 0 : e.data.compensatedTs
   const estimatedDuration = (e.data.estimatedDuration === undefined || e.data.estimatedDuration < 0) ? e.data.chunk.duration : e.data.estimatedDuration
   const seqId = (e.data.seqId === undefined) ? 0 : e.data.seqId
-  const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata, timebase: e.data.timebase, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, newSubgroupEvery: tracks[type].newSubgroupEvery}
+  const chunkData = { mediaType: type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, chunk: e.data.chunk, metadata: e.data.metadata, timebase: e.data.timebase, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, codec: e.data.codec, newSubgroupEvery: tracks[type].newSubgroupEvery}
   const moqMapping = (e.data.moqMapping === undefined) ? tracks[type].moqMapping : e.data.moqMapping
 
   let i = 0
@@ -338,8 +338,13 @@ async function createRequest (chunkData, trackAlias, moqMapping) {
   } else if (chunkData.mediaType == "audio") {
     const chunkDataBuffer = new Uint8Array(chunkData.chunk.byteLength)
     chunkData.chunk.copyTo(chunkDataBuffer)
-    
-    packet.SetData(MIPayloadTypeEnum.AudioOpusWCP, chunkData.seqId, chunkData.compensatedTs, chunkData.timebase, chunkData.estimatedDuration, chunkData.firstFrameClkms, chunkDataBuffer, undefined, undefined, chunkData.sampleFreq, chunkData.numChannels, chunkData.chunk.type === "delta")
+    let payloadType = MIPayloadTypeEnum.None;
+    if (chunkData.codec == "opus") {
+      payloadType = MIPayloadTypeEnum.AudioOpusWCP;
+    } else {
+      payloadType = MIPayloadTypeEnum.AudioAACMP4LCWCP;
+    }
+    packet.SetData(payloadType, chunkData.seqId, chunkData.compensatedTs, chunkData.timebase, chunkData.estimatedDuration, chunkData.firstFrameClkms, chunkDataBuffer, undefined, undefined, chunkData.sampleFreq, chunkData.numChannels, chunkData.chunk.type === "delta")
     isHiPri = true
   } else if (chunkData.mediaType === 'data') {
     let isDelta = false;

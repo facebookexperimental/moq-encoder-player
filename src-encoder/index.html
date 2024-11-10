@@ -198,9 +198,6 @@ LICENSE file in the root directory of this source tree.
             sampleRate: 48000, // To fill later
             numberOfChannels: 1, // To fill later
             bitrate: 32000,
-            opus: { // See https://www.w3.org/TR/webcodecs-opus-codec-registration/
-                frameDuration: 10000 // In ns. Lower latency than default = 20000
-            }
         },
         encoderMaxQueueSize: 10,
     };
@@ -883,6 +880,7 @@ LICENSE file in the root directory of this source tree.
             const timebase = e.data.timebase;
             const sampleFreq = e.data.sampleFreq;
             const numChannels = e.data.numChannels;
+            const codec = e.data.codec;
             const itemTsClk = audioTimeChecker.GetItemByTs(chunk.timestamp);
             if (!itemTsClk.valid) {
                 console.info(`Not found clock time <-> TS for audio frame, this could happen. ts: ${chunk.timestamp}, id:${seqId}`);
@@ -890,7 +888,7 @@ LICENSE file in the root directory of this source tree.
                 updateEncodedAudioTSUI(chunk.timestamp, itemTsClk.compensatedTs);
                 updateEncodingAudioLatencyUI(Date.now()  - itemTsClk.clkms);                
             }
-            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels});
+            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
             updateUploadStats(currentAudioTs, currentVideoTs, e.data.inFlightReq);
@@ -980,6 +978,13 @@ LICENSE file in the root directory of this source tree.
         // Load audio encoding settings
         const audioOptionsSelectedElementData = document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data;
         audioEncoderConfig.encoderConfig.codec = audioOptionsSelectedElementData.codec;
+        if (audioEncoderConfig.encoderConfig.codec != "opus") {
+            audioEncoderConfig.encoderConfig.aac = { format: "aac" }
+        } else {
+            audioEncoderConfig.encoderConfig.opus = { // See https://www.w3.org/TR/webcodecs-opus-codec-registration/
+                frameDuration: 10000 // In ns. Lower latency than default = 20000
+            }
+        }
         const sourceAudioSetting = getAudioTrackSettings();
         audioEncoderConfig.encoderConfig.sampleRate = sourceAudioSetting.sampleRate; // Get from source
         audioEncoderConfig.encoderConfig.numberOfChannels = sourceAudioSetting.channelCount; // Get from source

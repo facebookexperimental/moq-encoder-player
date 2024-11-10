@@ -5,8 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { sendMessageToMain, StateEnum} from '../utils/utils.js'
+import { sendMessageToMain, StateEnum } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
+import { MIPayloadTypeEnum} from '../packager/mi_packager.js'
 
 const WORKER_PREFIX = '[AUDIO-DECO]'
 
@@ -25,6 +26,30 @@ const ptsQueue = new TsQueue()
 
 function processAudioFrame (aFrame) {
   self.postMessage({ type: 'aframe', frame: aFrame, queueSize: ptsQueue.getPtsQueueLengthInfo().size, queueLengthMs: ptsQueue.getPtsQueueLengthInfo().lengthMs, timestampCompensationOffset: timestampOffset }, [aFrame])
+}
+
+function  initializeDecoder(config) {
+  // eslint-disable-next-line no-undef
+  audioDecoder = new AudioDecoder({
+    output: frame => {
+      processAudioFrame(frame)
+    },
+    error: err => {
+      sendMessageToMain(WORKER_PREFIX, 'error', 'Audio decoder. err: ' + err.message)
+    }
+  })
+
+  audioDecoder.addEventListener('dequeue', () => {
+    if (audioDecoder != null) {
+      ptsQueue.removeUntil(audioDecoder.decodeQueueSize)
+    }
+  })
+
+  audioDecoder.configure(config)
+
+  workerState = StateEnum.Running
+
+  sendMessageToMain(WORKER_PREFIX, 'info', `Initialized and configured: ${JSON.stringify(config)}`)
 }
 
 self.addEventListener('message', async function (e) {
@@ -54,29 +79,13 @@ self.addEventListener('message', async function (e) {
     if (audioDecoder != null) {
       sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received init, but AudioDecoder already initialized`)
     } else {
-      // Initialize audio decoder
-      // eslint-disable-next-line no-undef
-      audioDecoder = new AudioDecoder({
-        output: frame => {
-          processAudioFrame(frame)
-        },
-        error: err => {
-          sendMessageToMain(WORKER_PREFIX, 'error', 'Audio decoder. err: ' + err.message)
-        }
-      })
-
-      audioDecoder.addEventListener('dequeue', () => {
-        if (audioDecoder != null) {
-          ptsQueue.removeUntil(audioDecoder.decodeQueueSize)
-        }
-      })
-
-      const config = {codec: "opus", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels}
-      audioDecoder.configure(config)
-
-      workerState = StateEnum.Running
-  
-      sendMessageToMain(WORKER_PREFIX, 'info', `Initialized and configured: ${JSON.stringify(config)}`)
+      let config;
+      if (e.data.packagerType == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
+        config = {codec: "mp4a.40.02", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels};
+      } else if (e.data.packagerType === MIPayloadTypeEnum.AudioOpusWCP) {
+        config = {codec: "opus", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels}
+      }
+      initializeDecoder(config);
     }
   
     sendMessageToMain(WORKER_PREFIX, 'debug', `audio-${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`);
@@ -105,4 +114,4 @@ self.addEventListener('message', async function (e) {
   } else {
     sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received')
   }
-})
+});

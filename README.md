@@ -298,7 +298,6 @@ Fig7: Player UI
 Note: This is an experimentation code, we plan the evolve it quick, so those screenshots could be a bit outdated
 
 ## TODO
-
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer

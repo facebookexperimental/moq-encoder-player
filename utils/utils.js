@@ -36,8 +36,14 @@ export async function getBinaryFile(url) {
 }
 
 export function compareArrayBuffer(a, b) {
+  if (a == undefined && b == undefined) {
+    return true;
+  }
+  if (a == undefined || b == undefined) {
+    return false;
+  }
   if (a.byteLength !== b.byteLength) {
-    return false
+    return false;
   }
   const av = new Int8Array(a)
   const bv = new Int8Array(b)

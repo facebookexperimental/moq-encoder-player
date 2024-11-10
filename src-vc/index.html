@@ -474,7 +474,7 @@ LICENSE file in the root directory of this source tree.
     import { VideoRenderBuffer } from "../render/video_render_buffer.js"
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-    import { GetCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
+    import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -598,7 +598,7 @@ LICENSE file in the root directory of this source tree.
         videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
         videoEncoderConfig.encoderConfig.height = videoOptionsSelectedElementData.h;
         videoEncoderConfig.encoderConfig.framerate = videoOptionsSelectedElementData.fps;
-        videoEncoderConfig.encoderConfig.codec = GetCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
+        videoEncoderConfig.encoderConfig.codec = GetVideoCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
         videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
         videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
 
@@ -1392,7 +1392,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
             const seqId = e.data.seqId;
-            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels}
+            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
 
             if (wtAudioJitterBuffer != null) {
                 const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
@@ -1414,7 +1414,7 @@ LICENSE file in the root directory of this source tree.
                         timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
 
                         playerUpdateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco });
+                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType });
                     }
                 }
                 playerUpdateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
