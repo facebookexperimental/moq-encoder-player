@@ -277,7 +277,7 @@ async function readAndSendPayload(readerStream, length) {
   
   let chunk
   let appMediaType
-  if (chunkData.type == MIPayloadTypeEnum.AudioOpusWCP) {
+  if (chunkData.type == MIPayloadTypeEnum.AudioOpusWCP || chunkData.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
     appMediaType = "audiochunk"
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemAudioTimebase);
     chunk = new EncodedAudioChunk({
@@ -303,7 +303,7 @@ async function readAndSendPayload(readerStream, length) {
     chunk = chunkData.data
   }
 
-  self.postMessage({ type: appMediaType, clkms: Date.now(), captureClkms: chunkData.wallclock, seqId: chunkData.seqId, chunk, metadata: chunkData.metadata, sampleFreq: chunkData.sampleFreq , numChannels: chunkData.numChannels })
+  self.postMessage({ type: appMediaType, clkms: Date.now(), packagerType: chunkData.type, captureClkms: chunkData.wallclock, seqId: chunkData.seqId, chunk, metadata: chunkData.metadata, sampleFreq: chunkData.sampleFreq , numChannels: chunkData.numChannels })
 
   return isEOF;
 }

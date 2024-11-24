@@ -5,6 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+// Follows "draft-cenzano-moq-media-interop/": https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/
+
 import { numberToVarInt, varIntToNumberAndLengthOrThrow } from '../utils/varint.js'
 import { readUntilEof, buffRead, concatBuffer } from '../utils/buffer_utils.js'
 
@@ -12,24 +14,18 @@ import { readUntilEof, buffRead, concatBuffer } from '../utils/buffer_utils.js'
 
 export const MI_PACKAGER_VERSION = "00"
 
-const MI_VIDEO_H264_AVCC = 0x0
-const MI_AUDIO_OPUS = 0x1
-const MI_RAW = 0x2
-
 export class MIPayloadTypeEnum {
-  // Create new instances of the same class as static attributes
-  static None = new MIPayloadTypeEnum('None')
-  static VideoH264AVCCWCP = new MIPayloadTypeEnum('VideoH264AVCCWCP')
-  static AudioOpusWCP = new MIPayloadTypeEnum('AudioOpusWCP')
-  static RAWData = new MIPayloadTypeEnum('RAWData')
-  
-  constructor (name) {
-    this.name = name
-  }
+  static #_NONE = 0xff;
+  static #_VideoH264AVCCWCP = 0x0;
+  static #_AudioOpusWCP = 0x1;
+  static #_AudioAACMP4LCWCP = 0x3;
+  static #_RAW = 0x2;
 
-  toString() {
-    return this.name;
-  }
+  static get None() { return this.#_NONE; }
+  static get VideoH264AVCCWCP() { return this.#_VideoH264AVCCWCP; }
+  static get AudioOpusWCP() { return this.#_AudioOpusWCP; }
+  static get AudioAACMP4LCWCP() { return this.#_AudioAACMP4LCWCP; }
+  static get RAWData() { return this.#_RAW; }
 }
 
 export class MIPackager {
@@ -45,8 +41,8 @@ export class MIPackager {
     this.dts = undefined // VideoH264AVCCWCP
     this.metadata = null // VideoH264AVCCWCP
 
-    this.sampleFreq = undefined // AudioOpusWCP
-    this.numChannels = undefined // AudioOpusWCP
+    this.sampleFreq = undefined // AudioOpusWCP & AudioAACMP4LCWCP
+    this.numChannels = undefined // AudioOpusWCP & AudioAACMP4LCWCP
     
     this.isDelta = undefined // Internal (only use in set data)
     this.eof = false // Internal
@@ -87,13 +83,8 @@ export class MIPackager {
     let bytesRead = 0;
     let ret = await varIntToNumberAndLengthOrThrow(readerStream)
     bytesRead += ret.byteLength;
-    if (ret.num === MI_VIDEO_H264_AVCC) {
-      this.type = MIPayloadTypeEnum.VideoH264AVCCWCP
-    } else if (ret.num === MI_AUDIO_OPUS) {
-      this.type = MIPayloadTypeEnum.AudioOpusWCP
-    } else if (ret.num === MI_RAW) {
-      this.type = MIPayloadTypeEnum.RAWData
-    } else {
+    this.type = ret.num;
+    if (ret.num != MIPayloadTypeEnum.VideoH264AVCCWCP && ret.num === MIPayloadTypeEnum.AudioOpusWCP && ret.num === MIPayloadTypeEnum.AudioAACMP4LCWCP && ret.num === MIPayloadTypeEnum.RAWData) {
       throw new Error(`Payload type ${this.type} not supported`)
     }
 
@@ -136,7 +127,7 @@ export class MIPackager {
       } else {
         this.metadata = null
       }
-    } else if (this.type === MIPayloadTypeEnum.AudioOpusWCP) {
+    } else if (this.type === MIPayloadTypeEnum.AudioOpusWCP || this.type === MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       ret = await varIntToNumberAndLengthOrThrow(readerStream);
       bytesRead += ret.byteLength;
       this.seqId = ret.num;
@@ -186,7 +177,7 @@ export class MIPackager {
         metadata: this.metadata,
         data: this.data,
       }
-    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
+    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP || this.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       return {
         type: this.type,
         seqId: this.seqId,
@@ -219,7 +210,7 @@ export class MIPackager {
     let ret = null
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
       const msg = [];
-      msg.push(numberToVarInt(MI_VIDEO_H264_AVCC))
+      msg.push(numberToVarInt(this.type))
       msg.push(numberToVarInt(this.seqId))
       msg.push(numberToVarInt(this.pts))
       msg.push(numberToVarInt(this.dts))
@@ -233,9 +224,9 @@ export class MIPackager {
       } else {
         ret = concatBuffer([...msg, this.data])
       }
-    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
+    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP || this.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       const msg = [];
-      msg.push(numberToVarInt(MI_AUDIO_OPUS))
+      msg.push(numberToVarInt(this.type))
       msg.push(numberToVarInt(this.seqId))
       msg.push(numberToVarInt(this.pts))
       msg.push(numberToVarInt(this.timebase))
@@ -246,7 +237,7 @@ export class MIPackager {
       ret = concatBuffer([...msg, this.data])
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
       const msg = [];
-      msg.push(numberToVarInt(MI_RAW))
+      msg.push(numberToVarInt(this.type))
       msg.push(numberToVarInt(this.seqId))
       ret = concatBuffer([...msg, this.data])
     } else {
