@@ -200,14 +200,14 @@ LICENSE file in the root directory of this source tree.
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { MOQ_CURRENT_VERSION } from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
 
     const streamData = {
         title: "unknown",
 
         host: undefined,
         namespace: "",
-        trackBaseName: "", // Add "-video" and "-audio"
+        trackBaseName: "", // Add "video0" and "audio0"
         authinfo: "",
     }
 
@@ -231,13 +231,13 @@ LICENSE file in the root directory of this source tree.
             "audio": {
                 alias: 0,
                 namespace: "vc",
-                name: "-audio",
+                name: "audio0",
                 authInfo: "secret"
             },
             "video": {
                 alias: 1,
                 namespace: "vc",
-                name: "-video",
+                name: "video0",
                 authInfo: "secret"
             }
         },
@@ -828,11 +828,11 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.urlHostPort = streamData.host
         
         downloaderConfig.moqTracks["video"].namespace = streamData.namespace
-        downloaderConfig.moqTracks["video"].name = streamData.trackBaseName + "-video"
+        downloaderConfig.moqTracks["video"].name = MIgetTrackName(streamData.trackBaseName, false);
         downloaderConfig.moqTracks["video"].authInfo = streamData.authinfo
         
         downloaderConfig.moqTracks["audio"].namespace = streamData.namespace
-        downloaderConfig.moqTracks["audio"].name = streamData.trackBaseName + "-audio"
+        downloaderConfig.moqTracks["audio"].name = MIgetTrackName(streamData.trackBaseName, true);
         downloaderConfig.moqTracks["audio"].authInfo = streamData.authinfo
 
         muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig })

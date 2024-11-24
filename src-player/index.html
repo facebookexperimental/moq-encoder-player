@@ -199,7 +199,7 @@ LICENSE file in the root directory of this source tree.
     import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { MOQ_CURRENT_VERSION} from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName, MIgetFullTrackName} from "../packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -221,13 +221,13 @@ LICENSE file in the root directory of this source tree.
             "audio": {
                 alias: 0,
                 namespace: "vc",
-                name: "-audio",
+                name: "audio0",
                 authInfo: "secret"
             },
             "video": {
                 alias: 1,
                 namespace: "vc",
-                name: "-video",
+                name: "video0",
                 authInfo: "secret"
             }
         },
@@ -355,7 +355,10 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        document.getElementById("fullTrackNames").value = `${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-video`;
+        const audioFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, true);
+        const videoFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, false);
+        
+        document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
     async function updateJitterAudio() {
@@ -408,11 +411,11 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         
         downloaderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value;
-        downloaderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
+        downloaderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         
         downloaderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value;
-        downloaderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
+        downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig });

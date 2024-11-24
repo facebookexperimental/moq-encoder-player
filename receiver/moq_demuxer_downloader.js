@@ -29,12 +29,12 @@ let tracks = {} // We add subscribeId and trackAlias
 /* moqTracks: {
     "audio": {
       namespace: "vc",
-      name: "-audio",
+      name: "audio0",
       authInfo: "secret"
   },
   "video": {
       namespace: "vc",
-      name: "-video",
+      name: "video0",
       authInfo: "secret"
   }
 } */
@@ -185,9 +185,8 @@ async function moqReceiveStreamObjects (moqt) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'New QUIC stream')
 
       const moqStreamsObjHeader = await moqParseObjectHeader(stream.value)
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqStreamsObjHeader)}`)
-
       if (moqStreamsObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgrp ${JSON.stringify(moqStreamsObjHeader)}`)
         // NO await on purpose!
         moqReceiveMultiObjectStream(stream.value)
       } else {
@@ -206,7 +205,7 @@ async function moqReceiveMultiObjectStream(readerStream) {
     try {
       moqHeader = await moqParseObjectFromSubgroupHeader(readerStream)
       
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqHeader)}`);
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(moqHeader)}`);
 
       // Check if we received the end of the subgroup
       isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
@@ -248,7 +247,7 @@ async function moqReceiveDatagramObjects (moqt) {
       reportStats()
 
       const moqObjHeader = await moqParseObjectHeader(readableStream)
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header ${JSON.stringify(moqObjHeader)}`)
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received object datagram header ${JSON.stringify(moqObjHeader)}`)
 
       if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
@@ -280,11 +279,12 @@ async function readAndSendPayload(readerStream, length) {
   if (chunkData.type == MIPayloadTypeEnum.AudioOpusWCP || chunkData.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
     appMediaType = "audiochunk"
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemAudioTimebase);
+    const duration = convertTimestamp(chunkData.duration, chunkData.timebase, systemAudioTimebase);
     chunk = new EncodedAudioChunk({
       timestamp: timestamp,
       type: "key",
       data: chunkData.data,
-      duration: chunkData.duration
+      duration: duration
     })
   } else if (chunkData.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
     appMediaType = "videochunk"
@@ -292,11 +292,12 @@ async function readAndSendPayload(readerStream, length) {
     // We could infer if this is IDR from MOQT, identifying if this is start of group, but this method is less error prone
     const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH)
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemVideoTimebase);
+    const duration = convertTimestamp(chunkData.duration, chunkData.timebase, systemVideoTimebase);
     chunk = new EncodedVideoChunk({
       timestamp: timestamp,
       type: isIdr ? "key": "delta",
       data: chunkData.data,
-      duration: chunkData.duration
+      duration: duration
     })
   } else if (chunkData.type == MIPayloadTypeEnum.RAWData) {
     appMediaType = "data"

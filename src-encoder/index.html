@@ -45,7 +45,7 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label>
                 <div class="clear"></div>
-                <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
+                <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
                     Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
                 <div class="clear"></div>
                 <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
@@ -165,7 +165,7 @@ LICENSE file in the root directory of this source tree.
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
     import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
-    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
+    import { MI_PACKAGER_VERSION, MIgetFullTrackName, MIgetTrackName } from "../packager/mi_packager.js"
 
     // Main vars
     let VERBOSE = false;
@@ -239,7 +239,7 @@ LICENSE file in the root directory of this source tree.
         moqTracks: {
             "audio": {
                 namespace: "vc",
-                name: "-audio",
+                name: "audio0",
                 maxInFlightRequests: 100,
                 isHipri: true,
                 authInfo: "secret",
@@ -247,7 +247,7 @@ LICENSE file in the root directory of this source tree.
             },
             "video": {
                 namespace: "vc",
-                name: "-video",
+                name: "video0",
                 maxInFlightRequests: 50,
                 isHipri: false,
                 authInfo: "secret",
@@ -605,7 +605,10 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        document.getElementById("fullTrackNames").value = `${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("namespace").value}/${document.getElementById("trackName").value}-video`;
+        const audioFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, true);
+        const videoFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, false);
+        
+        document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
     function initVersions() {
@@ -625,10 +628,13 @@ LICENSE file in the root directory of this source tree.
         if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
             optionObjStream.selected = true;        
         }
-        optionObjStream.appendChild(document.createTextNode("Subgroup per group (AKA: GOP per stream)"));
-        selectElement.appendChild(optionObjStream);
+        if (mediaType === "video") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per GOP (AKA: GOP per stream)"));
+            selectElement.appendChild(optionObjStream);
+        } else if (mediaType === "audio") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per frame"));
+            selectElement.appendChild(optionObjStream);
 
-        if (mediaType === "audio") {
             // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
             // Stream per datagram
             const optionObjTrack = document.createElement('option');
@@ -1048,13 +1054,13 @@ LICENSE file in the root directory of this source tree.
         
         //Get max Inflight requests & auth info                
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value;
-        muxerSenderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
+        muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value;
-        muxerSenderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
+        muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;

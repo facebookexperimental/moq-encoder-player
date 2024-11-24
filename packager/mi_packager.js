@@ -203,7 +203,7 @@ export class MIPackager {
   GetDataStr () {
     const metadataSize = (this.metadata === undefined || this.metadata == null) ? 0 : this.metadata.byteLength
     const dataSize = (this.data === undefined || this.data == null) ? 0 : this.data.byteLength
-    return `Type: ${this.type} - seqId: ${this.seqId} - pts: ${this.pts} - duration: ${this.duration} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`
+    return `type: ${this.type} - seqId: ${this.seqId} - pts: ${this.pts} - duration: ${this.duration} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`
   }
 
   ToBytes () {
@@ -264,4 +264,18 @@ export class MIPackager {
       return "data";
     }
   }
+}
+
+export function MIgetFullTrackName(ns, trackPrefix, isAudio) {
+  return `${ns}/${MIgetTrackName(trackPrefix, isAudio)}`;
+}
+
+export function MIgetTrackName(trackPrefix, isAudio) {
+  let suffix = ""
+  if (isAudio) {
+    suffix = "audio0";
+  } else {
+    suffix = "video0";
+  }
+  return `${trackPrefix}${suffix}`;
 }

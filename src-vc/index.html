@@ -436,7 +436,7 @@ LICENSE file in the root directory of this source tree.
         moqTracks: {
             "audio": {
                 namespace: "vc",
-                name: "-audio",
+                name: "audio0",
                 maxInFlightRequests: 100,
                 isHipri: true,
                 authInfo: "secret",
@@ -444,7 +444,7 @@ LICENSE file in the root directory of this source tree.
             },
             "video": {
                 namespace: "vc",
-                name: "-video",
+                name: "video0",
                 maxInFlightRequests: 50,
                 isHipri: false,
                 authInfo: "secret",
@@ -475,6 +475,7 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../utils/jitter_buffer.js"
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
+    import { MIgetTrackName, MIgetFullTrackName} from "../packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -492,13 +493,13 @@ LICENSE file in the root directory of this source tree.
             "audio": {
                 alias: 0,
                 namespace: "vc",
-                name: "-audio",
+                name: "audio0",
                 authInfo: "secret"
             },
             "video": {
                 alias: 1,
                 namespace: "vc",
-                name: "-video",
+                name: "video0",
                 authInfo: "secret"
             }
         },
@@ -662,13 +663,13 @@ LICENSE file in the root directory of this source tree.
         
         //Get max Inflight requests & auth info                
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('meNamespace').value;
-        muxerSenderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
+        muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('meNamespace').value;
-        muxerSenderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
+        muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
@@ -1628,11 +1629,11 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         
         downloaderConfig.moqTracks["video"].namespace = document.getElementById('guestNamespace').value;
-        downloaderConfig.moqTracks["video"].name = document.getElementById('trackName').value + "-video";
+        downloaderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         
         downloaderConfig.moqTracks["audio"].namespace = document.getElementById('guestNamespace').value;
-        downloaderConfig.moqTracks["audio"].name = document.getElementById('trackName').value + "-audio";
+        downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig });
@@ -1792,8 +1793,13 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        document.getElementById("announceFullTrackNames").value = `${document.getElementById("meNamespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("meNamespace").value}/${document.getElementById("trackName").value}-video`;
-        document.getElementById("subscibeFullTrackNames").value = `${document.getElementById("guestNamespace").value}/${document.getElementById("trackName").value}-audio, ${document.getElementById("guestNamespace").value}/${document.getElementById("trackName").value}-video`;
+        const meAudioFullTrackName = MIgetFullTrackName(document.getElementById("meNamespace").value, document.getElementById("trackName").value, true);
+        const meVideoFullTrackName = MIgetFullTrackName(document.getElementById("meNamespace").value, document.getElementById("trackName").value, false);
+        document.getElementById("announceFullTrackNames").value = `${meAudioFullTrackName}, ${meVideoFullTrackName}`;
+
+        const guestAudioFullTrackName = MIgetFullTrackName(document.getElementById("meNamespace").value, document.getElementById("trackName").value, true);
+        const guestVideoFullTrackName = MIgetFullTrackName(document.getElementById("guestNamespace").value, document.getElementById("trackName").value, false);
+        document.getElementById("subscibeFullTrackNames").value = `${guestAudioFullTrackName}, ${guestVideoFullTrackName}`;
     }
 
     // ONLY for testing purposes
