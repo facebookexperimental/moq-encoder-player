@@ -55,8 +55,8 @@ export function compareArrayBuffer(a, b) {
   return true;
 }
 
-export function convertTimestamp(ts, originalTimebase, destTimeBase) {
-  return Math.round(ts * destTimeBase / originalTimebase);
+export function convertTimestamp(ts, originalTimescale, destTimeScale) {
+  return Math.round(ts * destTimeScale / originalTimescale);
 }
 
 export function buf2hex(buffer) { // buffer is an ArrayBuffer

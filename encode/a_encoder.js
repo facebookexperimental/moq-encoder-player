@@ -9,7 +9,7 @@ import { sendMessageToMain, StateEnum } from '../utils/utils.js'
 
 const WORKER_PREFIX = '[AUDIO-ENC]'
 
-const WEBCODECS_TIMEBASE = 1000000
+const WEBCODECS_TIMESCALE = 1000000  // 1us
 
 let frameDeliveredCounter = 0
 let chunkDeliveredCounter = 0
@@ -36,7 +36,7 @@ const initAudioEncoder = {
 let aEncoder = null
 
 function handleChunk (chunk, metadata) {
-  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, timebase: WEBCODECS_TIMEBASE, sampleFreq: lastEncoderConfig.sampleRate, numChannels: lastEncoderConfig.numberOfChannels, codec: lastEncoderConfig.codec}
+  const msg = { type: 'achunk', seqId: chunkDeliveredCounter++, chunk, timebase: WEBCODECS_TIMESCALE, sampleFreq: lastEncoderConfig.sampleRate, numChannels: lastEncoderConfig.numberOfChannels, codec: lastEncoderConfig.codec}
 
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Chunk created. sId: ' + msg.seqId + ', Timestamp: ' + chunk.timestamp + ', dur: ' + chunk.duration + ', type: ' + chunk.type + ', size: ' + chunk.byteLength + ', metadata: ' + JSON.stringify(metadata));
 

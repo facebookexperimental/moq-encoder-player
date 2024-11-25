@@ -10,7 +10,7 @@ import { ParseAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_c
 
 const WORKER_PREFIX = '[VIDEO-ENC]'
 
-const WEBCODECS_TIMEBASE = 1000000
+const WEBCODECS_TIMESCALE = 1000000
 
 let frameDeliveredCounter = 0
 let chunkDeliveredCounter = 0
@@ -39,7 +39,7 @@ let vEncoder = null
 function handleChunk (chunk, metadata) {
   // decoderConfig in h264 is AVCDecoderConfigurationRecord
   const frame_metadata = (metadata != undefined && metadata.decoderConfig != undefined && "description" in metadata.decoderConfig) ? metadata.decoderConfig.description : undefined;
-  const msg = { type: 'vchunk', seqId: chunkDeliveredCounter++, chunk, metadata: frame_metadata, timebase: WEBCODECS_TIMEBASE}
+  const msg = { type: 'vchunk', seqId: chunkDeliveredCounter++, chunk, metadata: frame_metadata, timebase: WEBCODECS_TIMESCALE}
 
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
   sendMessageToMain(WORKER_PREFIX, 'debug', `Chunk created. sId: ${msg.seqId}, pts: ${chunk.timestamp}, dur: ${chunk.duration}, type: ${chunk.type}, size: ${chunk.byteLength}, metadata_size:${(frame_metadata != undefined) ? frame_metadata.byteLength : 0}, avcDecoderConfigurationRecord: ${(frame_metadata != undefined) ? JSON.stringify(ParseAVCDecoderConfigurationRecord(frame_metadata)) : "-"}`)

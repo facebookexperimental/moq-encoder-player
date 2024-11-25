@@ -82,7 +82,7 @@ self.addEventListener('message', async function (e) {
       let config;
       if (e.data.packagerType == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
         config = {codec: "mp4a.40.02", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels};
-      } else if (e.data.packagerType === MIPayloadTypeEnum.AudioOpusWCP) {
+      } else if (e.data.packagerType == MIPayloadTypeEnum.AudioOpusWCP) {
         config = {codec: "opus", sampleRate: e.data.sampleFreq, numberOfChannels: e.data.numChannels}
       }
       initializeDecoder(config);
