@@ -383,7 +383,7 @@ LICENSE file in the root directory of this source tree.
             codec: 'avc1.42001e', // Baseline = 66, level 30 (see: https://en.wikipedia.org/wiki/Advanced_Video_Coding)
             width: 320,
             height: 180,
-            bitrate: 1_000_000, // 1 Mbps
+            bitrate: 500_000, // 500 Kbps
             framerate: 30,
             latencyMode: 'realtime', // Sends 1 chunk per frame
         },
@@ -394,7 +394,7 @@ LICENSE file in the root directory of this source tree.
     // Audio encoder config
     const audioEncoderConfig = {
         encoderConfig: {
-            codec: 'opus', // AAC NOT implemented YET (it is in their roadmap)
+            codec: 'opus',
             sampleRate: 48000, // To fill later
             numberOfChannels: 1, // To fill later
             bitrate: 32000,
@@ -744,10 +744,12 @@ LICENSE file in the root directory of this source tree.
         if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
             optionObjStream.selected = true;        
         }
-        optionObjStream.appendChild(document.createTextNode("Subgroup per group (AKA: GOP per stream)"));
-        selectElement.appendChild(optionObjStream);
-
-        if (mediaType === "audio") {
+        if (mediaType === "video") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per GOP (AKA: GOP per stream)"));
+            selectElement.appendChild(optionObjStream);
+        } else if (mediaType === "audio") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per frame"));
+            selectElement.appendChild(optionObjStream);
             // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
             // Stream per datagram
             const optionObjTrack = document.createElement('option');
@@ -842,6 +844,7 @@ LICENSE file in the root directory of this source tree.
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;            
             const timebase = e.data.timebase;
+            const codec = e.data.codec;
             const sampleFreq = e.data.sampleFreq;
             const numChannels = e.data.numChannels;
 
@@ -852,7 +855,7 @@ LICENSE file in the root directory of this source tree.
                 encoderUpdateEncodedAudioTSUI(chunk.timestamp, itemTsClk.compensatedTs);
                 encoderUpdateEncodingAudioLatencyUI(Date.now()  - itemTsClk.clkms);                
             }
-            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels });
+            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
             encoderUpdateUploadStats(currentAudioTs, currentVideoTs, e.data.inFlightReq);

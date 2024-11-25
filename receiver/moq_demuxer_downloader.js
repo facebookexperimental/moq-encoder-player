@@ -108,7 +108,7 @@ self.addEventListener('message', async function (e) {
     }
 
     const errTrackStr = checkTrackData()
-    if (errTrackStr !== '') {
+    if (errTrackStr != undefined) {
       sendMessageToMain(WORKER_PREFIX, 'error', errTrackStr)
       return
     }
@@ -361,7 +361,7 @@ function checkTrackData () {
       return 'Track malformed, needs to contain namespace, name, and authInfo'
     }
   }
-  return ''
+  return undefined;
 }
 
 async function unSubscribeTracks(moqt) {
