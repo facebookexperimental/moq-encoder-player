@@ -194,11 +194,12 @@ async function moqReceiveStreamObjects (moqt) {
       }
     }
   }
-  sendMessageToMain(WORKER_PREFIX, 'info', `Exited receive objects loop`)
+  sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receive objects loop')
 }
 
 async function moqReceiveMultiObjectStream(readerStream) {
   let isEOF = false
+  let numObjRead = 0
   let moqHeader = {} 
   while (workerState !== StateEnum.Stopped && isEOF === false) {
     reportStats()
@@ -211,10 +212,14 @@ async function moqReceiveMultiObjectStream(readerStream) {
       isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
       if (!isEOF && moqHeader.payloadLength > 0) {
         isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
       }
+      sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
+      numObjRead++
     } catch(err) {
       // We receive ERROR when we have a reader and the stream closes
-      if (err instanceof WebTransportError && err.message.includes("The session is closed")) {
+      // TODO: Objects with single subgroup/group does NOT send MOQ_OBJ_STATUS_END_OF_GROUP (Bug?), we need to remove numObjRead
+      if (numObjRead > 0 || err instanceof WebTransportError && err.message.includes("The session is closed")) {
         isEOF = true
       } else {
         throw err
