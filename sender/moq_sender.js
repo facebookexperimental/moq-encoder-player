@@ -594,7 +594,7 @@ function removeSubscriberFromTrack (subscribeId) {
   return null
 }
 
-function getListIfSubscribeIdPerTrack(trackData) {
+function getListOfSubscribeIdPerTrack(trackData) {
   const ret = []
   if ("subscribers" in trackData && trackData.subscribers.length > 0) {
     let i = 0
@@ -653,7 +653,7 @@ async function sendSubscribeDone(moqt) {
   const numberOfOpenedStreams = getAggretatedSubscriptions()
   
   for (const trackData of Object.values(tracks)) {
-    const subscribeIDs = getListIfSubscribeIdPerTrack(trackData)
+    const subscribeIDs = getListOfSubscribeIdPerTrack(trackData)
     for (const subscribeId of subscribeIDs) {
       try {
         await moqSendSubscribeDone(moqt.controlWriter, subscribeId, errorCode, errReason, numberOfOpenedStreams)
