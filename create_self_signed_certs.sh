@@ -6,9 +6,15 @@
 
 mkdir -p certs      
 
-openssl ecparam -name secp384r1 -genkey -out ./certs/certificate.key
+KEY_FILE="./certs/certificate.key"
+openssl ecparam -name secp384r1 -genkey -out $KEY_FILE
+echo "Created $KEY_FILE"
 
-openssl req -new -x509 -days 10 -subj '/CN=Test Certificate' -addext "subjectAltName = DNS:localhost" -key ./certs/certificate.key -sha384 -out ./certs/certificate.pem
+CERT_FILE="./certs/certificate.pem"
+openssl req -new -x509 -days 10 -subj '/CN=Test Certificate' -addext "subjectAltName = DNS:localhost" -key $KEY_FILE -sha384 -out $CERT_FILE
+echo "Created $CERT_FILE"
 
 # Compute fingerprint
-openssl x509 -in ./certs/certificate.pem -outform der | openssl dgst -sha256 -binary > ./certs/certificate_fingerprint.hex
+FINGUERPRINT_FILE="./certs/certificate_fingerprint.hex"
+openssl x509 -in $CERT_FILE -outform der | openssl dgst -sha256 -binary > $FINGUERPRINT_FILE
+echo "Created $FINGUERPRINT_FILE"
