@@ -15,7 +15,7 @@ Note: You need to be careful and check that protocol versions implemented by thi
 
 ## Packager
 
-It uses [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+It uses [draft-cenzano-moq-media-interop-01](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 ## Encoder
 
@@ -139,11 +139,11 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 
 ### packager/mi_packager.js
 
-- Implements [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+- Implements [draft-cenzano-moq-media-interop-01](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 ### sender/moq_sender.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.js`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.js`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop-01](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 - Opens a WebTransport session against the relay
 - Implements MOQT publisher handshake for 2 tracks (opening control stream and announcing track namespace)
@@ -171,7 +171,7 @@ To keep the audio and video in-sync the following strategy is applied:
 
 ### receiver/moq_demuxer_downloader.js
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `mi_packager.js`) from the server / relay following MOQT and [draft-cenzano-moq-media-interop-00](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `mi_packager.js`) from the server / relay following MOQT and [draft-cenzano-moq-media-interop-01](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
