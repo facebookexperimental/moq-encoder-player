@@ -94,6 +94,18 @@ export const MOQ_OBJ_STATUS_END_OF_GROUP = 0x3
 export const MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP = 0x4
 export const MOQ_OBJ_STATUS_END_OF_SUBGROUP = 0x5
 
+// Extension headers (Even types indicate value coded by a single varint. Odd types idicates value is byte buffer with prefixed varint to indicate lenght)
+export const MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE = 0x0A
+export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA = 0x0B
+export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA = 0x0D
+export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA = 0x0F
+export const MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA = 0x11
+export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA = 0x13
+
+//Audio AAC-LC in MPEG4 bitstream data header extension (Header extension type = 0x13)
+
+export const MOQ_EXT_HEADERS_SUPPORTED = [MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA]
+
 export function moqCreate () {
   return {
     wt: null,
@@ -569,7 +581,7 @@ function moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders) {
   const msg = []
 
   msg.push(numberToVarInt(objSeq)) // Object ID
-  if (extensionHeaders == undefined || extensionHeaders.lenght <= 0) {
+  if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
@@ -580,15 +592,18 @@ function moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders) {
   return concatBuffer(msg);
 }
 
-function moqCreateObjectSubgroupBytes (objSeq, data, extensionHeaders) {
+function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
   const msg = []
 
   msg.push(numberToVarInt(objSeq)); // Object ID
-  if (extensionHeaders == undefined || extensionHeaders.lenght <= 0) {
+  console.log(`JOC ${JSON.stringify(msg)} extensionHeaders (${extensionHeaders.length}): ${JSON.stringify(extensionHeaders)}`)
+  if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
+    console.log(`JOC1 ${JSON.stringify(msg)}`)
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
   }
+  console.log(`JOC2 ${JSON.stringify(msg)}`)
   if (data != undefined && data.byteLength > 0) {
     msg.push(numberToVarInt(data.byteLength)) // Data size
     msg.push(data)
@@ -596,6 +611,7 @@ function moqCreateObjectSubgroupBytes (objSeq, data, extensionHeaders) {
     msg.push(numberToVarInt(0)) // Data size
     msg.push(numberToVarInt(MOQ_OBJ_STATUS_NORMAL)) // Obj status
   }
+  console.log(`JOC10 ${JSON.stringify(msg)}`)
 
   return concatBuffer(msg);
 }
@@ -609,7 +625,7 @@ function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publishe
   msg.push(numberToVarInt(groupSeq))
   msg.push(numberToVarInt(objSeq))
   msg.push(new Uint8Array([publisherPriority]))
-  if (extensionHeaders == undefined || extensionHeaders.lenght <= 0) {
+  if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
@@ -727,18 +743,28 @@ function moqCreateExtensionHeaders(extensionHeaders) {
   msg.push(numberToVarInt(lenght));
   for (let i = 0; i < lenght; i++) {
     const extHeader = extensionHeaders[i]
-    if (extHeader.type % 2 != 0) {
-      if (typeof extHeader.type != 'number') {
-        throw new Error(`Trying to write an non number as header extension even`)
+    if (!('type' in extHeader) || (!('value' in extHeader))) {
+      throw new Error(`Malformed externsion header ${JSON.stringify(extHeader)}`)
+    }
+    if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeader.type)) {
+      throw new Error(`Unsupported externsion header ${JSON.stringify(extHeader)}`)
+    }
+    if (extHeader.type % 2 == 0) { // Even are followed by varint
+      if (typeof extHeader.value != 'number') {
+        throw new Error(`Trying to write an non number as header extension even. ${JSON.stringify(extHeader)}`)
       }
+      msg.push(numberToVarInt(extHeader.type));
       msg.push(numberToVarInt(extHeader.value));
-    } else {
-      if (typeof extHeader.type != 'string') {
-        throw new Error(`Trying to write an non string as header extension odd, only string is supported`)
+    } else { // Odd are followed by length and buffer
+      if (!(extHeader.value instanceof Uint8Array)) {
+        throw new Error(`Trying to write an non Uint8Array as header extension odd, only Uint8Array is supported. ${JSON.stringify(extHeader)}`)
       }
-      msg.push(moqCreateStringBytes(extHeader.value));
+      msg.push(numberToVarInt(extHeader.type));
+      msg.push(numberToVarInt(extHeader.value.byteLength));
+      msg.push(extHeader.value);
     }
   }
+  return concatBuffer(msg);
 }
 
 async function moqStringReadOrThrow (readerStream) {
@@ -830,12 +856,17 @@ async function moqReadParameters (readerStream) {
 async function moqReadExtensionHeaders(readerStream) {
   const ret = []
   const count = await varIntToNumberOrThrow(readerStream)
+  console.log(`JOC: count ${count}`)
   for (let i = 0; i < count; i++) {
     const extHeaderType = await varIntToNumberOrThrow(readerStream)
-    if (extHeaderType % 2 != 0) {
+    console.log(`JOC: count ${extHeaderType}`)
+    if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeaderType)) {
+      throw new Error(`Unsupported externsion header type ${extHeaderType}`)
+    }
+    if (extHeaderType % 2 == 0) { // Even are followed by varint
       const intValue = await varIntToNumberOrThrow(readerStream)
       ret.push({type: extHeaderType, value: intValue})
-    } else {
+    } else { // Odd are followed by length and buffer
       const size = await varIntToNumberOrThrow(readerStream)
       ret.push({type: extHeaderType, value: await buffRead(readerStream, size)})
     }

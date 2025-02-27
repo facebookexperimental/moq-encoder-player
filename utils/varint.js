@@ -27,6 +27,26 @@ export function numberToVarInt (v) {
   }
 }
 
+export function varIntToNumbeFromBuffer(buff) {
+  let ret = undefined
+  const size = (new DataView(buff, 0, 1).getUint8() & 0xc0) >> 6
+  if (size != buff.byteLength) {
+    throw new Error('Size of varint does NOT match')
+  }
+  if (size === 0) {
+    ret = new DataView(buff, 0, 1).getUint8() & 0x3f
+  } else if (size === 1) {
+    ret = new DataView(buff, 0, 2).getUint16() & 0x3fff
+  } else if (size === 2) {
+    ret = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
+  } else if (size === 3) {
+    ret = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
+  } else {
+    throw new Error('Impossible size for varint')
+  }
+  return ret
+}
+
 export async function varIntToNumberOrThrow (readableStream) {
   let ret = await varIntToNumber(readableStream)
   if (ret.eof) {
@@ -76,7 +96,7 @@ async function varIntToNumber (readableStream) {
         ret.eof = retData.eof
         ret.num = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
       } else {
-        throw new Error('impossible')
+        throw new Error('Impossible size for varint')
       }
     }
   } finally {

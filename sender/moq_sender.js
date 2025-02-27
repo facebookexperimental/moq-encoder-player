@@ -404,7 +404,7 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
 
     sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
 
-    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.ToBytes())
+    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders())
 
     datagramWriter.releaseLock()
 
@@ -422,7 +422,7 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
 
       sendMessageToMain(WORKER_PREFIX, 'debug', `Created new subgroup (stream) ${currentStreamWriterId} with sendOrder: ${sendOrder}`);
 
-      moqSendSubgroupHeader (currentUniStreamWritter, trackAlias, groupSeq, publisherPriority);
+      moqSendSubgroupHeader(currentUniStreamWritter, trackAlias, groupSeq, publisherPriority);
     }
 
     // Check and clean old streams
@@ -447,7 +447,7 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
     }
 
     // Send object to current stream
-    moqSendObjectSubgroupToWriter(currentUniStreamWritter, objSeq, packet.ToBytes())
+    moqSendObjectSubgroupToWriter(currentUniStreamWritter, objSeq, packet.PayloadToBytes(), packet.ExtensionHeaders())
     moqPublisherState[trackAlias].currentObjectSeq++;
   }
   else {

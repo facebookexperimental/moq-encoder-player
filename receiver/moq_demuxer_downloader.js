@@ -211,7 +211,7 @@ async function moqReceiveMultiObjectStream(readerStream) {
       // Check if we received the end of the subgroup
       isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
       if (!isEOF && moqHeader.payloadLength > 0) {
-        isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
+        isEOF = await readAndSendPayload(readerStream, moqHeader.extensionHeaders, moqHeader.payloadLength)
         sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
       }
       sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
@@ -257,20 +257,16 @@ async function moqReceiveDatagramObjects (moqt) {
       if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
       }
-      await readAndSendPayload(readableStream)
+      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders, moqObjHeader.payloadLength)
     }
   }
 
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from datagrams loop')
 }
 
-async function readAndSendPayload(readerStream, length) {
+async function readAndSendPayload(readerStream, extensionHeaders, length) {
   const packet = new MIPackager()
-  if (length != undefined) {
-    await packet.ReadLengthBytes(readerStream, length)
-  } else {
-    await packet.ReadBytesToEOF(readerStream)
-  }
+  await packet.ParseData(readerStream, extensionHeaders, length)
   const isEOF = packet.IsEof();
 
   const chunkData = packet.GetData()
