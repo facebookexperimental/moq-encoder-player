@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, MOQ_SETUP_PARAMETER_ROLE_PUBLISHER, MOQ_SETUP_PARAMETER_ROLE_SUBSCRIBER, MOQ_SETUP_PARAMETER_ROLE_BOTH, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_SUBGROUP, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_SUBGROUP, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
@@ -211,7 +211,7 @@ async function moqReceiveMultiObjectStream(readerStream) {
       // Check if we received the end of the subgroup
       isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
       if (!isEOF && moqHeader.payloadLength > 0) {
-        isEOF = await readAndSendPayload(readerStream, moqHeader.payloadLength)
+        isEOF = await readAndSendPayload(readerStream, moqHeader.extensionHeaders, moqHeader.payloadLength)
         sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
       }
       sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
@@ -257,20 +257,16 @@ async function moqReceiveDatagramObjects (moqt) {
       if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
       }
-      await readAndSendPayload(readableStream)
+      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders, moqObjHeader.payloadLength)
     }
   }
 
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from datagrams loop')
 }
 
-async function readAndSendPayload(readerStream, length) {
+async function readAndSendPayload(readerStream, extensionHeaders, length) {
   const packet = new MIPackager()
-  if (length != undefined) {
-    await packet.ReadLengthBytes(readerStream, length)
-  } else {
-    await packet.ReadBytesToEOF(readerStream)
-  }
+  await packet.ParseData(readerStream, extensionHeaders, length)
   const isEOF = packet.IsEof();
 
   const chunkData = packet.GetData()
@@ -317,15 +313,12 @@ async function readAndSendPayload(readerStream, length) {
 // MOQT
 
 async function moqCreateSubscriberSession (moqt) {
-  await moqSendSetup(moqt.controlWriter, MOQ_SETUP_PARAMETER_ROLE_SUBSCRIBER)
+  await moqSendSetup(moqt.controlWriter)
   const moqMsg = await moqParseMsg(moqt.controlReader)
   if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
     throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
   }
   const setupResponse = moqMsg.data
-  if (setupResponse.parameters.role !== MOQ_SETUP_PARAMETER_ROLE_PUBLISHER && setupResponse.parameters.role !== MOQ_SETUP_PARAMETER_ROLE_BOTH) {
-    throw new Error(`role not supported. Supported ${MOQ_SETUP_PARAMETER_ROLE_PUBLISHER} or ${MOQ_SETUP_PARAMETER_ROLE_BOTH}, got from server ${JSON.stringify(setupResponse.parameters.role)}`)
-  }
   sendMessageToMain(WORKER_PREFIX, 'info', `Received SETUP response: ${JSON.stringify(setupResponse)}`)
 
   // Send subscribe for tracks audio and video (loop until both done or error)

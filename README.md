@@ -311,3 +311,11 @@ Note: This is an experimentation code, we plan the evolve it quick, so those scr
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
+
+
+# TODOS: 
+- Read extensions for text
+- Read extensions for video
+- Read extensions for audio opus (datagrams & group)
+- Read extensions for audio AAC (datagrams & group)
+- simple encoder player 1st packet is not sent ot received
