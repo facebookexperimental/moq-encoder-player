@@ -27,20 +27,28 @@ export function numberToVarInt (v) {
   }
 }
 
-export function varIntToNumbeFromBuffer(buff) {
-  let ret = undefined
-  const size = (new DataView(buff, 0, 1).getUint8() & 0xc0) >> 6
-  if (size != buff.byteLength) {
-    throw new Error('Size of varint does NOT match')
+export function varIntToNumbeFromBuffer(buff, offset) {
+  let startOffset = 0
+  if (typeof offset === 'number') {
+    startOffset = offset
+  }
+  let ret = {num: undefined, byteLength: 0}    
+  const size = (new DataView(buff, startOffset, 1).getUint8() & 0xc0) >> 6
+  if (buff.byteLength < size + 1) {
+    throw new Error(`Size of varint does NOT match (size: ${size}, buff.byteLength: ${buff.byteLength})`)
   }
   if (size === 0) {
-    ret = new DataView(buff, 0, 1).getUint8() & 0x3f
+    ret.num = new DataView(buff, startOffset, 1).getUint8() & 0x3f
+    ret.byteLength = 1
   } else if (size === 1) {
-    ret = new DataView(buff, 0, 2).getUint16() & 0x3fff
+    ret.num = new DataView(buff, startOffset, 2).getUint16() & 0x3fff
+    ret.byteLength = 2
   } else if (size === 2) {
-    ret = new DataView(buff, 0, 4).getUint32() & 0x3fffffff
+    ret.num = new DataView(buff, startOffset, 4).getUint32() & 0x3fffffff
+    ret.byteLength = 4
   } else if (size === 3) {
-    ret = Number(new DataView(buff, 0, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
+    ret.num = Number(new DataView(buff, startOffset, 8).getBigUint64() & BigInt('0x3fffffffffffffff'))
+    ret.byteLength = 8
   } else {
     throw new Error('Impossible size for varint')
   }

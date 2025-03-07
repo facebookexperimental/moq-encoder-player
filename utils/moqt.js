@@ -17,7 +17,9 @@ export const MOQ_DRAFT04_VERSION = 0xff000004
 export const MOQ_DRAFT07exp2_VERSION = 0xff070002
 export const MOQ_DRAFT07_VERSION = 0xff000007
 export const MOQ_DRAFT08_VERSION_EXP9 = 0xff080009
-export const MOQ_CURRENT_VERSION = MOQ_DRAFT08_VERSION_EXP9
+export const MOQ_DRAFT08_VERSION = 0xff000008
+
+export const MOQ_CURRENT_VERSION = MOQ_DRAFT08_VERSION
 export const MOQ_SUPPORTED_VERSIONS = [MOQ_CURRENT_VERSION]
 
 // Setup params
@@ -596,14 +598,11 @@ function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
   const msg = []
 
   msg.push(numberToVarInt(objSeq)); // Object ID
-  console.log(`JOC ${JSON.stringify(msg)} extensionHeaders (${extensionHeaders.length}): ${JSON.stringify(extensionHeaders)}`)
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
-    console.log(`JOC1 ${JSON.stringify(msg)}`)
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
   }
-  console.log(`JOC2 ${JSON.stringify(msg)}`)
   if (data != undefined && data.byteLength > 0) {
     msg.push(numberToVarInt(data.byteLength)) // Data size
     msg.push(data)
@@ -611,8 +610,6 @@ function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
     msg.push(numberToVarInt(0)) // Data size
     msg.push(numberToVarInt(MOQ_OBJ_STATUS_NORMAL)) // Obj status
   }
-  console.log(`JOC10 ${JSON.stringify(msg)}`)
-
   return concatBuffer(msg);
 }
 
@@ -756,8 +753,8 @@ function moqCreateExtensionHeaders(extensionHeaders) {
       msg.push(numberToVarInt(extHeader.type));
       msg.push(numberToVarInt(extHeader.value));
     } else { // Odd are followed by length and buffer
-      if (!(extHeader.value instanceof Uint8Array)) {
-        throw new Error(`Trying to write an non Uint8Array as header extension odd, only Uint8Array is supported. ${JSON.stringify(extHeader)}`)
+      if (!(extHeader.value instanceof Uint8Array) && !(extHeader.value instanceof ArrayBuffer)) {
+        throw new Error(`Trying to write an non Uint8Array as header extension odd, only Uint8Array is supported. ${JSON.stringify(extHeader)} (${typeof extHeader.value})}`)
       }
       msg.push(numberToVarInt(extHeader.type));
       msg.push(numberToVarInt(extHeader.value.byteLength));
@@ -856,10 +853,8 @@ async function moqReadParameters (readerStream) {
 async function moqReadExtensionHeaders(readerStream) {
   const ret = []
   const count = await varIntToNumberOrThrow(readerStream)
-  console.log(`JOC: count ${count}`)
   for (let i = 0; i < count; i++) {
     const extHeaderType = await varIntToNumberOrThrow(readerStream)
-    console.log(`JOC: count ${extHeaderType}`)
     if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeaderType)) {
       throw new Error(`Unsupported externsion header type ${extHeaderType}`)
     }
@@ -868,7 +863,11 @@ async function moqReadExtensionHeaders(readerStream) {
       ret.push({type: extHeaderType, value: intValue})
     } else { // Odd are followed by length and buffer
       const size = await varIntToNumberOrThrow(readerStream)
-      ret.push({type: extHeaderType, value: await buffRead(readerStream, size)})
+      const buffRet = await buffRead(readerStream, size)
+      if (buffRet.eof) {
+        throw new ReadStreamClosed(`Connection closed while reading data`)
+      }
+      ret.push({ type: extHeaderType, value: buffRet.buff})      
     }
   }
   return ret
