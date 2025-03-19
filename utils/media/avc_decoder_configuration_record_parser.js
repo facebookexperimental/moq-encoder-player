@@ -7,7 +7,50 @@ LICENSE file in the root directory of this source tree.
 
 'use strict';
 
-import {DEFAULT_AVCC_HEADER_LENGTH, BitReaderHelper, GetUint16FromBufferBe } from "./avcc_parser.js"
+import { concatBuffer } from '../buffer_utils.js'
+
+import { DEFAULT_AVCC_HEADER_LENGTH, BitReaderHelper, GetUint16FromBufferBe } from "./avcc_parser.js"
+
+export function createAVCDecoderConfigurationRecord(spsData, ppsData, avccHeaderLengthSize) {
+  if (spsData == undefined || ppsData == undefined || spsData.byteLength < 4) {
+    return undefined
+  }
+
+  const ret = []
+
+  // Configuration record header (ISO/IEC 14496-15 AVC file format)
+  ret.push(new Uint8Array([1])) // configurationVersion 
+  ret.push(new Uint8Array([spsData[1]])) // AVCProfileIndication 
+  ret.push(new Uint8Array([spsData[2]])) // profile_compatibility 
+  ret.push(new Uint8Array([spsData[3]])) // AVCLevelIndication 
+  ret.push(new Uint8Array([0xFC | (avccHeaderLengthSize - 1)])) // 6 bits reserved (111111 = 0xFC) + 2 bits NAL length size - 1 
+  ret.push(new Uint8Array([0xE0 | 1])) // 3 bits reserved (111 = 0xE0) + 5 bits number of SPS NALUs
+
+  // Write SPS
+  const viewSPSLength = new Uint8Array(2)
+  const viewSPSLengthView = new DataView(viewSPSLength.buffer)
+  viewSPSLengthView.setUint16(0, spsData.byteLength, false)
+  ret.push(viewSPSLength) // Size
+  ret.push(spsData) // SPS data
+
+  // Write PPS
+  ret.push(new Uint8Array([1])) // number of PPS NALUs 
+  const viewPPSLength = new Uint8Array(2)
+  const viewPPSLengthView = new DataView(viewPPSLength.buffer)
+  viewPPSLengthView.setUint16(0, ppsData.byteLength, false)
+  ret.push(viewPPSLength) // Size
+  ret.push(ppsData) // PPS data
+
+  // Add extended data for high profiles
+  const AVCProfileIndication = spsData[1]
+  if (AVCProfileIndication != 66 && // Baseline
+      AVCProfileIndication != 77 && // Main
+      AVCProfileIndication != 88) { // Extended
+    // NOT SUPPORTED!
+  }
+
+  return concatBuffer([...ret])
+}
 
 export function ParseAVCDecoderConfigurationRecord(data) {
   if (data == undefined || data == null) {

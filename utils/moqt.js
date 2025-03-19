@@ -650,8 +650,8 @@ export function moqSendObjectEndOfGroupToWriter (writer, objSeq, extensionHeader
   return moqSendToWriter(writer, moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders))
 }
 
-export function moqSendObjectPerDatagramToWriter (writer, trackAlias, groupSeq, objSeq, publisherPriority, data) {
-  return moqSendToWriter(writer, moqCreateObjectPerDatagramBytes(trackAlias, groupSeq, objSeq, publisherPriority, data))
+export function moqSendObjectPerDatagramToWriter (writer, trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders) {
+  return moqSendToWriter(writer, moqCreateObjectPerDatagramBytes(trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders))
 }
 
 export async function moqParseObjectHeader (readerStream) {

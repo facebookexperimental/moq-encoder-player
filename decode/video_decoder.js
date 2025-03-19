@@ -7,8 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum, compareArrayBuffer } from '../utils/utils.js'
 import { TsQueue } from '../utils/ts_queue.js'
-import { ParseAVCDecoderConfigurationRecord, GetVideoCodecStringFromAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
-import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
+import { ParseAVCDecoderConfigurationRecord, GetVideoCodecStringFromAVCDecoderConfigurationRecord, createAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
+import { ParseH264NALs, getSPSandPPSFromNalus, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
 const WORKER_PREFIX = '[VIDEO-DECO]'
 
@@ -64,7 +64,7 @@ function configureDecoder(seqId, metadata) {
   }
   const ret = getAndOverrideInitDataValues(metadata)
 
-  sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`)
+  sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, Reinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`)
   videoDecoder.configure(ret.config)
 }
 
@@ -98,6 +98,7 @@ self.addEventListener('message', async function (e) {
         }
         lastMetadataUsed = e.data.metadata        
       } else {
+        sendMessageToMain(WORKER_PREFIX, 'info', 'Initializing Video decoder')
         // Initialize video decoder
         // eslint-disable-next-line no-undef
         videoDecoder = new VideoDecoder({
@@ -130,7 +131,7 @@ self.addEventListener('message', async function (e) {
       return
     }
 
-    if (videoDecoder.decodeQueueSize >= maxQueuedChunks) {
+    if (videoDecoder != null && videoDecoder.decodeQueueSize >= maxQueuedChunks) {
       discardedBufferFull++
       sendMessageToMain(WORKER_PREFIX, 'warning', 'Discarded ' + discardedBufferFull + ' video chunks because decoder buffer is full')
       return
@@ -164,8 +165,27 @@ self.addEventListener('message', async function (e) {
         e.data.chunk.copyTo(chunkDataBuffer);
         const chunkNALUInfo = ParseH264NALs(chunkDataBuffer, DEFAULT_AVCC_HEADER_LENGTH);
         sendMessageToMain(WORKER_PREFIX, 'info', `New chunk SeqId: ${e.data.seqId}, NALUS: ${JSON.stringify(chunkNALUInfo)}`)
+
+        // Update from internal SPS & PPS
+        const spsAndPps = getSPSandPPSFromNalus(chunkNALUInfo, chunkDataBuffer)
+        sendMessageToMain(WORKER_PREFIX, 'info', `New chunk SeqId: ${e.data.seqId}, spsAndPps: ${JSON.stringify(spsAndPps)}`)
+        if (spsAndPps != undefined && spsAndPps.spsData != undefined && spsAndPps.ppsData != undefined) {
+          const avcDecoderRecord = createAVCDecoderConfigurationRecord(spsAndPps.spsData, spsAndPps.ppsData, DEFAULT_AVCC_HEADER_LENGTH)
+          sendMessageToMain(WORKER_PREFIX, 'info', `New chunk SeqId: ${e.data.seqId}, avcDeco: ${JSON.stringify(avcDecoderRecord)}`)
+          if (avcDecoderRecord != undefined && videoDecoder != null) {            
+            if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, avcDecoderRecord)) {
+              sendMessageToMain(WORKER_PREFIX, 'info', 'SENT To config')
+              configureDecoder(e.data.seqId, avcDecoderRecord)
+            }
+            lastMetadataUsed = avcDecoderRecord
+          }
+        }
       }
-      videoDecoder.decode(e.data.chunk)
+
+      if (videoDecoder != null) {
+        sendMessageToMain(WORKER_PREFIX, 'info', 'SENT frame to decode')
+        videoDecoder.decode(e.data.chunk) 
+      }
 
       const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfo()
       if (decodeQueueInfo.lengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {
