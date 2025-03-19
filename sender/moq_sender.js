@@ -402,7 +402,7 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
     // Get datagram writer
     const datagramWriter = moqt.wt.datagrams.writable.getWriter();
 
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}`)
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}, Ext Headers: ${JSON.stringify(packet.ExtensionHeaders())}`)
 
     moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders())
 
