@@ -76,7 +76,7 @@ LICENSE file in the root directory of this source tree.
         moqTracks: {
             "data": {
                 alias: 0,
-                namespace: "simplechat",
+                namespace: ["simplechat"],
                 name: "foo",
                 maxInFlightRequests: 5,
                 isHipri: false,
@@ -127,7 +127,7 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
-        downloaderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;
+        downloaderConfig.moqTracks["data"].namespace = [document.getElementById('namespace').value];
         downloaderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         downloaderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
 

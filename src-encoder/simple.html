@@ -96,7 +96,7 @@ LICENSE file in the root directory of this source tree.
 
         moqTracks: {
             "data": {
-                namespace: "simplechat",
+                namespace: ["simplechat"],
                 name: "foo",
                 maxInFlightRequests: 5,
                 isHipri: false,
@@ -223,7 +223,7 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
-        muxerSenderConfig.moqTracks["data"].namespace = document.getElementById('namespace').value;
+        muxerSenderConfig.moqTracks["data"].namespace = [document.getElementById('namespace').value];
         muxerSenderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         muxerSenderConfig.moqTracks["data"].maxInFlightRequests = Number(document.getElementById('maxInflightRequests').value);
         muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;

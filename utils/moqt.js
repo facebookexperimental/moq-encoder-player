@@ -876,3 +876,9 @@ async function moqReadExtensionHeaders(readerStream) {
 async function moqSendToWriter (writer, dataBytes) {
   writer.write(dataBytes)
 }
+
+// Helpers
+
+export function getFullTrackName(ns, name) {
+  return `[${ns.join("/")}]/${name}`
+}

@@ -206,7 +206,7 @@ LICENSE file in the root directory of this source tree.
         title: "unknown",
 
         host: undefined,
-        namespace: "",
+        namespace: [""],
         trackBaseName: "", // Add "video0" and "audio0"
         authinfo: "secret",
     }
@@ -230,13 +230,13 @@ LICENSE file in the root directory of this source tree.
         moqTracks: {
             "audio": {
                 alias: 0,
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "audio0",
                 authInfo: "secret"
             },
             "video": {
                 alias: 1,
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "video0",
                 authInfo: "secret"
             }
@@ -827,11 +827,11 @@ LICENSE file in the root directory of this source tree.
         // Get url data
         downloaderConfig.urlHostPort = streamData.host
         
-        downloaderConfig.moqTracks["video"].namespace = streamData.namespace
+        downloaderConfig.moqTracks["video"].namespace = [streamData.namespace]
         downloaderConfig.moqTracks["video"].name = MIgetTrackName(streamData.trackBaseName, false);
         downloaderConfig.moqTracks["video"].authInfo = streamData.authinfo
         
-        downloaderConfig.moqTracks["audio"].namespace = streamData.namespace
+        downloaderConfig.moqTracks["audio"].namespace = [streamData.namespace]
         downloaderConfig.moqTracks["audio"].name = MIgetTrackName(streamData.trackBaseName, true);
         downloaderConfig.moqTracks["audio"].authInfo = streamData.authinfo
 

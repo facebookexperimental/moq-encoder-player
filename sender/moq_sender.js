@@ -476,7 +476,7 @@ async function moqCreatePublisherSession (moqt) {
   const announcedNamespaces = []
   for (const [trackType, trackData] of Object.entries(tracks)) {
     if (!announcedNamespaces.includes(trackData.namespace)) {
-      await moqSendAnnounce(moqt.controlWriter, [trackData.namespace], trackData.authInfo)
+      await moqSendAnnounce(moqt.controlWriter, trackData.namespace, trackData.authInfo)
       const moqMsg = await moqParseMsg(moqt.controlReader)
       if (moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_ERROR) {
         throw new Error(`Expected MOQ_MESSAGE_ANNOUNCE_OK or MOQ_MESSAGE_ANNOUNCE_ERROR, received ${moqMsg.type}`)
@@ -486,8 +486,8 @@ async function moqCreatePublisherSession (moqt) {
       }
       const announceResp = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
-      if (trackData.namespace !== announceResp.namespace.join('')) {
-        throw new Error(`expecting namespace ${trackData.namespace}, got ${JSON.stringify(announceResp)}`)
+      if (!isSameNamespace(trackData.namespace, announceResp.namespace)) {
+        throw new Error(`expecting namespace ${JSON.stringify(trackData.namespace)}, got ${JSON.stringify(announceResp)}`)
       }
       announcedNamespaces.push(trackData.namespace)
     }
@@ -496,12 +496,29 @@ async function moqCreatePublisherSession (moqt) {
   lastObjectSentMs = Date.now()
 }
 
+function isSameNamespace(a, b) {
+  if (a.length !== b.length) {
+      return false;
+  }
+  a.forEach(function (item) {
+    if (!b.includes(item)) {
+      return false
+    }
+  });
+  b.forEach(function (item) {
+    if (!a.includes(item)) {
+      return false
+    }
+  });
+  return true
+}
+
 function checkTrackData () {
   if (Object.entries(tracks).length <= 0) {
     return 'Number of Track Ids to announce needs to be > 0'
   }
   for (const [, track] of Object.entries(tracks)) {
-    if (!('namespace' in track) || !('name' in track) || !('authInfo' in track)) {
+    if (!('namespace' in track) || (track.namespace.length <= 0) || !('name' in track) || !('authInfo' in track)) {
       return 'Track malformed, needs to contain namespace, name, and authInfo'
     }
   }

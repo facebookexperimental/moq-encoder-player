@@ -43,7 +43,7 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">MOQT WT Relay:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>
-                <label>Namespace:<input id="namespace" type="text" value="vc"></label>
+                <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
                     Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
@@ -161,11 +161,11 @@ LICENSE file in the root directory of this source tree.
 </body>
 <script type="module">
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION} from "../utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
     import { getBinaryFile } from "../utils/utils.js"
     import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
     import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
-    import { MI_PACKAGER_VERSION, MIgetFullTrackName, MIgetTrackName } from "../packager/mi_packager.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
 
     // Main vars
     let VERBOSE = false;
@@ -238,7 +238,7 @@ LICENSE file in the root directory of this source tree.
 
         moqTracks: {
             "audio": {
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "audio0",
                 maxInFlightRequests: 100,
                 isHipri: true,
@@ -246,7 +246,7 @@ LICENSE file in the root directory of this source tree.
                 moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
             },
             "video": {
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "video0",
                 maxInFlightRequests: 50,
                 isHipri: false,
@@ -605,9 +605,9 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        const audioFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, true);
-        const videoFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, false);
-        
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, true))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, false))}`
+
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
@@ -1053,13 +1053,13 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         
         //Get max Inflight requests & auth info                
-        muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value;
+        muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         
-        muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value;
+        muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
