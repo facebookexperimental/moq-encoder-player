@@ -257,7 +257,7 @@ async function moqReceiveDatagramObjects (moqt) {
       if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
       }
-      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders, moqObjHeader.payloadLength)
+      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders)
     }
   }
 

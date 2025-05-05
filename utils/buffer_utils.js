@@ -58,15 +58,15 @@ export async function readUntilEof (readableStream, blockSize) {
     }
   }
   // Concatenate received data
-  const payload = new Uint8Array(totalLength)
+  const uint8Buffer = new Uint8Array(totalLength)
   let pos = 0
   for (const element of chunkArray) {
     const uint8view = new Uint8Array(element, 0, element.byteLength)
-    payload.set(uint8view, pos)
+    uint8Buffer.set(uint8view, pos)
     pos += element.byteLength
   }
 
-  return payload
+  return uint8Buffer
 }
 
 export async function buffRead (readableStream, size) {

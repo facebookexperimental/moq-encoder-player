@@ -628,7 +628,6 @@ function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publishe
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
   }
   if (data != undefined && data.byteLength > 0) {
-    msg.push(numberToVarInt(data.byteLength))
     msg.push(data)
   } else {
     msg.push(numberToVarInt(0))
@@ -667,11 +666,7 @@ export async function moqParseObjectHeader (readerStream) {
     const objSeq = await varIntToNumberOrThrow(readerStream);
     const publisherPriority = await moqByteReadOrThrow(readerStream);
     const extensionHeaders = await moqReadExtensionHeaders(readerStream)
-    const payloadLength = await varIntToNumberOrThrow(readerStream);
-    ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders, payloadLength}
-    if (payloadLength == 0) {
-      ret.status = await varIntToNumberOrThrow(readerStream)
-    }
+    ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders}
   }
   else if (type == MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
     const trackAlias = await varIntToNumberOrThrow(readerStream)
