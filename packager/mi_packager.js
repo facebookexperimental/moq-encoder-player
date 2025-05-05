@@ -8,7 +8,7 @@ LICENSE file in the root directory of this source tree.
 // Follows "draft-cenzano-moq-media-interop/": https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/
 
 import { numberToVarInt, varIntToNumbeFromBuffer } from '../utils/varint.js'
-import { buffRead, concatBuffer } from '../utils/buffer_utils.js'
+import { buffRead, concatBuffer, readUntilEof } from '../utils/buffer_utils.js'
 import { MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA} from '../utils/moqt.js'
 
 'use strict'
@@ -77,10 +77,16 @@ export class MIPackager {
   async ParseData(readerStream, extensionHeaders, payloadLength) {
     this.parseExtensionHeaders(extensionHeaders)
     
-    // Read payload
-    const ret = await buffRead(readerStream, payloadLength)
-    this.data = ret.buff
-    this.eof = ret.eof
+    // Read payload with length
+    if (typeof payloadLength !== 'undefined') {
+      const ret = await buffRead(readerStream, payloadLength)
+      this.data = ret.buff
+      this.eof = ret.eof
+    } else {
+      const buff = await readUntilEof(readerStream, this.READ_BLOCK_SIZE)
+      this.data = buff
+      this.eof = true
+    }
   }
 
   parseExtensionHeaders(extensionHeaders) {
