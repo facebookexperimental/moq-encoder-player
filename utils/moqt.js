@@ -855,8 +855,9 @@ async function moqReadExtensionHeaders(readerStream) {
   const count = await varIntToNumberOrThrow(readerStream)
   for (let i = 0; i < count; i++) {
     const extHeaderType = await varIntToNumberOrThrow(readerStream)
+    let isUknown = false
     if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeaderType)) {
-      throw new Error(`Unsupported externsion header type ${extHeaderType}`)
+      isUknown = true
     }
     if (extHeaderType % 2 == 0) { // Even are followed by varint
       const intValue = await varIntToNumberOrThrow(readerStream)
@@ -867,7 +868,7 @@ async function moqReadExtensionHeaders(readerStream) {
       if (buffRet.eof) {
         throw new ReadStreamClosed(`Connection closed while reading data`)
       }
-      ret.push({ type: extHeaderType, value: buffRet.buff})      
+      ret.push({ type: extHeaderType, value: buffRet.buff, isUknown: isUknown})      
     }
   }
   return ret
