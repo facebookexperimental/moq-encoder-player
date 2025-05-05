@@ -45,7 +45,7 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>                
-                <label>Namespace:<input id="namespace" type="text" value="vc"></label>
+                <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
                     Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
@@ -198,8 +198,8 @@ LICENSE file in the root directory of this source tree.
     import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
     import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../utils/utils.js"
-    import { MOQ_CURRENT_VERSION} from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION, MIgetTrackName, MIgetFullTrackName} from "../packager/mi_packager.js"
+    import { MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -220,13 +220,13 @@ LICENSE file in the root directory of this source tree.
         moqTracks: {
             "audio": {
                 alias: 0,
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "audio0",
                 authInfo: "secret"
             },
             "video": {
                 alias: 1,
-                namespace: "vc",
+                namespace: ["vc"],
                 name: "video0",
                 authInfo: "secret"
             }
@@ -355,9 +355,9 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        const audioFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, true);
-        const videoFullTrackName = MIgetFullTrackName(document.getElementById("namespace").value, document.getElementById("trackName").value, false);
-        
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, true))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, false))}`
+  
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
@@ -409,12 +409,15 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+
+        const orignal_ns = document.getElementById('namespace').value;
+        const ns_tuples = orignal_ns.split("/");
         
-        downloaderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value;
+        downloaderConfig.moqTracks["video"].namespace = ns_tuples
         downloaderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         
-        downloaderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value;
+        downloaderConfig.moqTracks["audio"].namespace = ns_tuples
         downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 

@@ -298,10 +298,6 @@ export class MIPackager {
   }
 }
 
-export function MIgetFullTrackName(ns, trackPrefix, isAudio) {
-  return `${ns}/${MIgetTrackName(trackPrefix, isAudio)}`;
-}
-
 export function MIgetTrackName(trackPrefix, isAudio) {
   let suffix = ""
   if (isAudio) {
