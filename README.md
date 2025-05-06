@@ -254,7 +254,41 @@ Note: This assumes the clocks of the encoder and the decoder are in-sync. Always
 
 Note: Encoder and Player clock have to be in sync for this metric to be accurate. If you use same computer as encoder & player then metric should be pretty accurate
 
-## Local testing (localhost)
+## testing (encoder player served from localhost)
+
+- Clone this repo
+
+```bash
+git clone git@github.com:facebookexperimental/moq-encoder-player.git
+```
+
+- Install Python (see this [guide](https://realpython.com/installing-python/))
+
+- Run local webserver by calling:
+
+```bash
+./start-http-server-cross-origin-isolated.py
+```
+
+Note: It is better to run webserver using this script but you can use any webserver you to publish the `.` directory (repo directory)
+
+- Load encoder webpage, url: http://localhost:8080/src-encoder/?local
+  - Click "Start"
+- Load player webpage, url: http://localhost:8080/src-player/?local
+  - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
+  - Click "Start"
+
+ENJOY YOUR POCing!!! :-)
+
+![Encoder UI](./pics/encoder-page-ui.png)
+Fig6: Encoder UI
+
+![Player UI](./pics/player-page-ui.png)
+Fig7: Player UI
+
+Note: This is an experimentation code, we plan the evolve it quick, so those screenshots could be a bit outdated
+
+## Local testing (encoder-player served and moxygen served from localhost)
 
 - Create key, certificate, and certificate fingerprint by running following script
 ```
@@ -289,13 +323,7 @@ Note: You need to use this script to **run the player** because it adds some nee
 
 ENJOY YOUR POCing!!! :-)
 
-![Encoder UI](./pics/encoder-page-ui.png)
-Fig6: Encoder UI
-
-![Player UI](./pics/player-page-ui.png)
-Fig7: Player UI
-
-Note: This is an experimentation code, we plan the evolve it quick, so those screenshots could be a bit outdated
+You should see same UI that is shown in testing section above
 
 ## TODO
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
