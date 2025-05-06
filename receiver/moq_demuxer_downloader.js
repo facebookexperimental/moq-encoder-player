@@ -270,7 +270,7 @@ async function readAndSendPayload(readerStream, extensionHeaders, length) {
   const isEOF = packet.IsEof();
 
   const chunkData = packet.GetData()
-  if (chunkData.type === undefined) {
+  if (chunkData == null || chunkData.type === undefined) {
     throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
   }
   sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-MI: ${packet.GetDataStr()})`)
