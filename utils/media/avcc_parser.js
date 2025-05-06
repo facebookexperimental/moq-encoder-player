@@ -52,6 +52,30 @@ export function ParseNAL(data) {
   return naluData;
 }
 
+export function getSPSandPPSFromNalus(h264AvccStreamData, dataBytes) {
+  const ret = { spsData: undefined, ppsData: undefined }
+  if (dataBytes == undefined || dataBytes == null || h264AvccStreamData == undefined || h264AvccStreamData == null) {
+    return ret
+  }
+  let dataBytes8b = dataBytes
+  if (!(dataBytes instanceof Uint8Array)) {
+    dataBytes8b = new Uint8Array(dataBytes)
+  }
+
+  let i = 0
+  while (i < h264AvccStreamData.length && (ret.spsData == undefined || ret.ppsData == undefined)) {
+    const naluData = h264AvccStreamData[i]
+    if (naluData.nalType == 7) { // SPS
+      ret.spsData = dataBytes8b.subarray(naluData.offset, naluData.offset + naluData.length)
+    }
+    if (naluData.nalType == 8) { // PPS
+      ret.ppsData = dataBytes8b.subarray(naluData.offset, naluData.offset + naluData.length)
+    } 
+    i++
+  }
+  return ret
+}
+
 export function ParseH264NALs(dataBytes, avccHeaderLengthSize) {
   if (dataBytes == undefined || dataBytes == null) {
       return undefined
