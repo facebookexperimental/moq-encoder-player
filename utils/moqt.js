@@ -6,6 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { numberToVarInt, varIntToNumberOrThrow } from './varint.js'
+import { numberTo2BytesArray, numberToSingleByteArray } from './utils.js'
 import { concatBuffer, buffRead, ReadStreamClosed , getArrayBufferByteLength } from './buffer_utils.js'
 
 // MOQ definitions
@@ -18,24 +19,28 @@ export const MOQ_DRAFT07exp2_VERSION = 0xff070002
 export const MOQ_DRAFT07_VERSION = 0xff000007
 export const MOQ_DRAFT08_VERSION_EXP9 = 0xff080009
 export const MOQ_DRAFT08_VERSION = 0xff000008
+export const MOQ_DRAFT12_VERSION = 0xff00000C
 
-export const MOQ_CURRENT_VERSION = MOQ_DRAFT08_VERSION
+export const MOQ_CURRENT_VERSION = MOQ_DRAFT12_VERSION
 export const MOQ_SUPPORTED_VERSIONS = [MOQ_CURRENT_VERSION]
+
+export const MOQ_USE_LITTLE_ENDIAN = false // MoQ is big endian
 
 // Setup params
 // export const MOQ_SETUP_PARAMETER_ROLE = 0x0 removed in version 8
 export const MOQ_SETUP_PARAMETER_PATH = 0x1
-export const MOQ_SETUP_PARAMETER_MAX_SUBSCRIBE_ID = 0x2
+export const MOQ_SETUP_PARAMETER_MAX_REQUEST_ID = 0x2
+export const MOQ_SETUP_MAX_AUTH_TOKEN_CACHE_SIZE = 0x4
 
 //MOQ general params
-export const MOQ_PARAMETER_AUTHORIZATION_INFO = 0x2
-export const MOQ_PARAMETER_DELIVERY_TIMEOUT = 0x3
+export const MOQ_PARAMETER_DELIVERY_TIMEOUT = 0x2
+export const MOQ_PARAMETER_AUTHORIZATION_TOKEN = 0x3
 export const MOQ_PARAMETER_MAX_CACHE_DURATION = 0x4
 
 export const MOQ_MAX_PARAMS = 256
 export const MOQ_MAX_ARRAY_LENGTH = 1024
 export const MOQ_MAX_TUPLE_PARAMS = 32
-export const MOQ_MAX_SUBSCRIBE_ID_NUM = 128
+export const MOQ_MAX_REQUEST_ID_NUM = 128
 
 // MOQ Location modes
 export const MOQ_LOCATION_MODE_NONE = 0x0
@@ -61,8 +66,8 @@ export const MOQ_MESSAGE_OBJECT_DATAGRAM = 0x1
 export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP = 0x4
 
 // MOQ Messages
-export const MOQ_MESSAGE_CLIENT_SETUP = 0x40
-export const MOQ_MESSAGE_SERVER_SETUP = 0x41
+export const MOQ_MESSAGE_CLIENT_SETUP = 0x20
+export const MOQ_MESSAGE_SERVER_SETUP = 0x21
 
 export const MOQ_MESSAGE_SUBSCRIBE = 0x3
 export const MOQ_MESSAGE_SUBSCRIBE_OK = 0x4
@@ -89,6 +94,10 @@ export const MOQ_GROUP_ORDER_FOLLOW_PUBLISHER = 0x0
 export const MOQ_GROUP_ORDER_ASCENDING = 0x1
 export const MOQ_GROUP_ORDER_DESCENDING = 0x2
 
+// Forward
+export const MOQ_FORWARD_FALSE = 0
+export const MOQ_FORWARD_TRUE = 1
+
 // Object status
 export const MOQ_OBJ_STATUS_NORMAL = 0x0
 export const MOQ_OBJ_STATUS_NOT_EXISTS = 0x1
@@ -107,6 +116,16 @@ export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA = 0x13
 //Audio AAC-LC in MPEG4 bitstream data header extension (Header extension type = 0x13)
 
 export const MOQ_EXT_HEADERS_SUPPORTED = [MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA]
+
+// Tokens
+export const MOQ_TOKEN_DELETE = 0x0
+export const MOQ_TOKEN_REGISTER = 0x1
+export const MOQ_TOKEN_USE_ALIAS = 0x2
+export const MOQ_TOKEN_USE_VALUE = 0x3
+
+export const MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND = 0x0
+
+
 
 export function moqCreate () {
   return {
@@ -176,71 +195,69 @@ export async function moqCreateControlStream (moqt) {
 
 // SETUP
 
-function moqCreateSetupMessageBytes () {
+function moqCreateClientSetupMessageBytes () {
   const msg = []
   
-  // Version length
+  // Number of supported versions
   msg.push(numberToVarInt(1));
   // Version[0]
   msg.push(numberToVarInt(MOQ_CURRENT_VERSION));
-  // Number of parameters
-  msg.push(numberToVarInt(numberToVarInt(1)));
-  // param[0]: Max subscribe ID
-  msg.push(moqCreateParamBytes(MOQ_SETUP_PARAMETER_MAX_SUBSCRIBE_ID, MOQ_MAX_SUBSCRIBE_ID_NUM));
+  const params = [
+    {name: MOQ_SETUP_PARAMETER_MAX_REQUEST_ID, val: MOQ_MAX_REQUEST_ID_NUM}
+  ]
+  msg.push(moqCreateParametersBytes(params))
   
   // Length
   const totalLength = getArrayBufferByteLength(msg);
 
-  return concatBuffer([numberToVarInt(MOQ_MESSAGE_CLIENT_SETUP), numberToVarInt(totalLength), ...msg])
+  return concatBuffer([numberToVarInt(MOQ_MESSAGE_CLIENT_SETUP), numberTo2BytesArray(totalLength, MOQ_USE_LITTLE_ENDIAN), ...msg])
 }
 
-export async function moqSendSetup (writerStream) {
-  return moqSend(writerStream, moqCreateSetupMessageBytes())
+export async function moqSendClientSetup (writerStream) {
+  return moqSend(writerStream, moqCreateClientSetupMessageBytes())
 }
 
 async function moqParseSetupResponse (readerStream) {
   const ret = { }
-  await varIntToNumberOrThrow(readerStream) // Length
+  await moqIntReadBytesOrThrow(readerStream, 2) // Length
 
   ret.version = await varIntToNumberOrThrow(readerStream)
   if (!MOQ_SUPPORTED_VERSIONS.includes(ret.version)) {
     throw new Error(`version sent from server NOT supported. Supported versions ${JSON.stringify(MOQ_SUPPORTED_VERSIONS)}, got from server ${JSON.stringify(ret.version)}`)
   }
-  ret.parameters = await moqReadSetupParameters(readerStream)
+  ret.parameters = await moqReadKeyValuePairs(readerStream)
 
   return ret
 }
 
 // ANNOUNCE
 
-function moqCreateAnnounceMessageBytes (namespace, authInfo) {
+function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
   const msg = []
 
+  // RequestID
+  msg.push(numberToVarInt(reqId))
   // Namespace
   msg.push(moqCreateTupleBytes(namespace));
-  // Number of parameters
-  msg.push(numberToVarInt(1))
-  // param[0]: authinfo
-  // param[0]: authinfo value
-  msg.push(moqCreateParamBytes(MOQ_PARAMETER_AUTHORIZATION_INFO, authInfo));
-
+  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  msg.push(moqCreateParametersBytes(kv_params))
+  
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_ANNOUNCE), lengthBytes, ...msg])
 }
 
-export async function moqSendAnnounce (writerStream, namespace, authInfo) {
-  return moqSend(writerStream, moqCreateAnnounceMessageBytes(namespace, authInfo))
+export async function moqSendAnnounce (writerStream, reqId, namespace, authInfo) {
+  return moqSend(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
 }
 
 async function moqParseAnnounceOk (readerStream) {
   const ret = { }
 
-  await varIntToNumberOrThrow(readerStream) // Length
-
-  ret.namespace = await moqTupleReadOrThrow(readerStream)
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  
+  ret.reqId = await varIntToNumberOrThrow(readerStream)
   
   return ret
 }
@@ -248,9 +265,9 @@ async function moqParseAnnounceOk (readerStream) {
 async function moqParseAnnounceError (readerStream) {
   const ret = { }
 
-  await varIntToNumberOrThrow(readerStream) // Length
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
-  ret.namespace = await moqTupleReadOrThrow(readerStream)
+  ret.reqId = await varIntToNumberOrThrow(readerStream)
   ret.errorCode = await varIntToNumberOrThrow(readerStream)
   ret.reason = await moqStringReadOrThrow(readerStream)
   
@@ -267,8 +284,7 @@ function moqCreateUnAnnounceMessageBytes (namespace) {
   msg.push(moqCreateTupleBytes(namespace));
 
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_UNANNOUNCE), lengthBytes, ...msg])
 }
@@ -281,16 +297,11 @@ export async function moqSendUnAnnounce (writerStream, namespace) {
 // SUBSCRIBE
 // Always subscribe from start next group
 
-function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace, trackName, authInfo) {
+function moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo) {
   const msg = []
 
-  // SubscribeID(i)
-  // Unique within the session. Subscribe ID is a monotonically increasing variable length integer which MUST not be reused within a session
-  msg.push(numberToVarInt(subscribeId));
-  
-  // Track Alias (i)
-  // A session specific identifier for the track. Messages that reference a track, such as OBJECT, reference this Track Alias instead of the Track Name and Track Namespace to reduce overhead
-  msg.push(numberToVarInt(trackAlias));
+  // reuqestID
+  msg.push(numberToVarInt(requestId));
   
   // Track namespace
   msg.push(moqCreateTupleBytes(trackNamespace));
@@ -298,11 +309,14 @@ function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace,
   // Track name
   msg.push(moqCreateStringBytes(trackName));
 
-  // Subscriber priority (i)
-  msg.push(new Uint8Array([MOQ_USECASE_SUBSCRIBER_PRIORITY_DEFAULT]));
+  // Subscriber priority
+  msg.push(numberToSingleByteArray(MOQ_USECASE_SUBSCRIBER_PRIORITY_DEFAULT));
 
   // Group order
-  msg.push(new Uint8Array([MOQ_GROUP_ORDER_FOLLOW_PUBLISHER]));
+  msg.push(numberToSingleByteArray(MOQ_GROUP_ORDER_FOLLOW_PUBLISHER));
+
+  // Forward
+  msg.push(numberToSingleByteArray(MOQ_FORWARD_TRUE));
 
   // Filter type (request latest object)
   msg.push(numberToVarInt(MOQ_FILTER_TYPE_LATEST_OBJ));
@@ -310,118 +324,110 @@ function moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace,
   // NO need to add StartGroup, StartObject, EndGroup
 
   // Params
-  // Number of parameters
-  msg.push(numberToVarInt(1))
-  // param[0]: auth info id
-  // param[0]: length + auth info
-  msg.push(moqCreateParamBytes(MOQ_PARAMETER_AUTHORIZATION_INFO, authInfo));
+  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE), lengthBytes, ...msg])
 }
 
 // SUBSCRIBE OK
 
-function moqCreateSubscribeOkMessageBytes (subscribeId, expiresMs, lastGroupSent, lastObjSent, authInfo) {
+function moqCreateSubscribeOkMessageBytes (requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo) {
   const msg = []
   
-  // Subscribe Id
-  msg.push(numberToVarInt(subscribeId))
+  // RequestID
+  msg.push(numberToVarInt(requestId))
+
+  // Trackalias
+  msg.push(numberToVarInt(trackAlias))
 
   // Expires MS
   msg.push(numberToVarInt(expiresMs))
 
   // Group order
-  msg.push(new Uint8Array([MOQ_GROUP_ORDER_DESCENDING])); // Live streaming app (so new needs to be send first)
+  msg.push(numberToSingleByteArray(MOQ_GROUP_ORDER_DESCENDING)); // Live streaming app (so new needs to be send first)
 
   if (lastGroupSent != undefined && lastObjSent != undefined) {
     // Content exists
-    msg.push(new Uint8Array([1]));
+    msg.push(numberToSingleByteArray(1));
     // Final group
     msg.push(numberToVarInt(lastGroupSent));
     // Final object
     msg.push(numberToVarInt(lastObjSent));
   } else {
     // Content exists
-    msg.push(new Uint8Array([0]));
+    msg.push(numberToSingleByteArray(0));
   }
 
   // Params
-  // Number of parameters
-  msg.push(numberToVarInt(1))
-  // param[0]: auth info id
-  // param[0]: length + auth info
-  msg.push(moqCreateParamBytes(MOQ_PARAMETER_AUTHORIZATION_INFO, authInfo));
+  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  msg.push(moqCreateParametersBytes(kv_params))
 
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_OK), lengthBytes, ...msg])
 }
 
 // SUBSCRIBE ERROR
 
-function moqCreateSubscribeErrorMessageBytes (subscribeId, errorCode, reason, trackAlias) {
+function moqCreateSubscribeErrorMessageBytes (requestId, errorCode, reason) {
   const msg = []
   
-  // Subscribe Id
-  msg.push(numberToVarInt(subscribeId));
+  // Request Id
+  msg.push(numberToVarInt(requestId));
   // errorCode
   msg.push(numberToVarInt(errorCode));
   // Reason
   msg.push(moqCreateStringBytes(reason))
-  // trackAlias
-  msg.push(numberToVarInt(trackAlias))
+  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
+  msg.push(numberToVarInt(0));
 
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_ERROR), lengthBytes, ...msg])
 }
 
 // UNSUBSCRIBE
 
-function moqCreateUnSubscribeMessageBytes (subscribeId) {
+function moqCreateUnSubscribeMessageBytes (requestId) {
   const msg = []
 
   // Subscribe Id
-  msg.push(numberToVarInt(subscribeId));
+  msg.push(numberToVarInt(requestId));
 
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_UNSUBSCRIBE), lengthBytes, ...msg])
 }
 
 // SUBSCRIBE DONE
 
-function moqCreateSubscribeDoneMessageBytes(subscribeId, errorCode, reason, numberOfOpenedStreams) {
+function moqCreateSubscribeDoneMessageBytes(requestId, statusCode, reason, streamCount) {
   const msg = []
   
-  // Subscribe Id
-  msg.push(numberToVarInt(subscribeId));
-  // errorCode
-  msg.push(numberToVarInt(errorCode));
-  // numberOfOpenedStreams
-  msg.push(numberToVarInt(numberOfOpenedStreams));
+  // Request Id
+  msg.push(numberToVarInt(requestId));
+  // statusCode
+  msg.push(numberToVarInt(statusCode));
+  // streamCount
+  msg.push(numberToVarInt(streamCount));
   // Reason
   msg.push(moqCreateStringBytes(reason));
 
   // Length
-  const totalLength = getArrayBufferByteLength(msg);
-  const lengthBytes = numberToVarInt(totalLength);
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_DONE), lengthBytes, ...msg])
 }
 
-export async function moqSendSubscribe (writerStream, subscribeId, trackAlias, trackNamespace, trackName, authInfo) {
-  return moqSend(writerStream, moqCreateSubscribeMessageBytes(subscribeId, trackAlias, trackNamespace, trackName, authInfo))
+export async function moqSendSubscribe (writerStream, requestId, trackNamespace, trackName, authInfo) {
+  return moqSend(writerStream, moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo))
 }
 
 export async function moqSendUnSubscribe (writerStream, subscribeId) {
@@ -431,16 +437,17 @@ export async function moqSendUnSubscribe (writerStream, subscribeId) {
 async function moqParseSubscribeOk (readerStream) {
   const ret = { }
 
-  await varIntToNumberOrThrow(readerStream) // Length
-  ret.subscribeId = await varIntToNumberOrThrow(readerStream)
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
+  ret.trackAlias = await varIntToNumberOrThrow(readerStream)
   ret.expires = await varIntToNumberOrThrow(readerStream)
-  ret.groupOrder = await moqByteReadOrThrow(readerStream);
-  const contentExists =  await moqByteReadOrThrow(readerStream);
+  ret.groupOrder = await moqIntReadBytesOrThrow(readerStream, 1);
+  const contentExists =  await moqIntReadBytesOrThrow(readerStream, 1);
   if (contentExists > 0) {
     ret.lastGroupSent = await varIntToNumberOrThrow(readerStream)
     ret.lastObjSent = await varIntToNumberOrThrow(readerStream)
   }
-  ret.parameters = moqReadParameters(readerStream)
+  ret.parameters = await moqReadKeyValuePairs(readerStream)
   
   return ret
 }
@@ -448,11 +455,12 @@ async function moqParseSubscribeOk (readerStream) {
 async function moqParseSubscribeError (readerStream) {
   const ret = { }
 
-  await varIntToNumberOrThrow(readerStream) // Length
-  ret.subscribeId = await varIntToNumberOrThrow(readerStream)
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
   ret.errorCode = await varIntToNumberOrThrow(readerStream)
   ret.errorReason = await moqStringReadOrThrow(readerStream)
-  ret.trackAlias = await varIntToNumberOrThrow(readerStream)
+  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
+  ret.retryAlias = await varIntToNumberOrThrow(readerStream)
 
   return ret
 }
@@ -460,15 +468,11 @@ async function moqParseSubscribeError (readerStream) {
 async function moqParseSubscribeDone (readerStream) {
   const ret = { }
 
-  await varIntToNumberOrThrow(readerStream) // Length
-  ret.subscribeId = await varIntToNumberOrThrow(readerStream)
-  ret.errorCode = await varIntToNumberOrThrow(readerStream)
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
+  ret.statusCode = await varIntToNumberOrThrow(readerStream)
+  ret.streamCount = await varIntToNumberOrThrow(readerStream)
   ret.errorReason = await moqStringReadOrThrow(readerStream)
-  const contentExists = await moqByteReadOrThrow(readerStream);
-  if (contentExists > 0) {
-    ret.lastGroupSent = await varIntToNumberOrThrow(readerStream)
-    ret.lastObjSent = await varIntToNumberOrThrow(readerStream)
-  }
 
   return ret
 }
@@ -476,13 +480,13 @@ async function moqParseSubscribeDone (readerStream) {
 async function moqParseSubscribe (readerStream) {
   const ret = { }
   
-  await varIntToNumberOrThrow(readerStream) // Length
-  ret.subscribeId = await varIntToNumberOrThrow(readerStream)
-  ret.trackAlias = await varIntToNumberOrThrow(readerStream)
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
   ret.namespace = await moqTupleReadOrThrow(readerStream)
   ret.trackName = await moqStringReadOrThrow(readerStream)
-  ret.subscriberPriority = await moqByteReadOrThrow(readerStream);
-  ret.groupOrder = await moqByteReadOrThrow(readerStream);
+  ret.subscriberPriority = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.groupOrder = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.forward = await moqIntReadBytesOrThrow(readerStream, 1);
 
   ret.filterType = await varIntToNumberOrThrow(readerStream)
   if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_START || ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
@@ -510,7 +514,7 @@ async function moqParseSubscribe (readerStream) {
       throw new Error('Not supported endObject')
     }    
   }
-  ret.parameters = await moqReadParameters(readerStream)
+  ret.parameters = await moqReadKeyValuePairs(readerStream)
 
   return ret
 }
@@ -518,10 +522,10 @@ async function moqParseSubscribe (readerStream) {
 async function moqParseUnSubscribe (readerStream) {
   const ret = { }
   
-  await varIntToNumberOrThrow(readerStream) // Length
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
-  // SubscribeId
-  ret.subscribeId = await varIntToNumberOrThrow(readerStream)
+  // requestId
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
 
   return ret
 }
@@ -549,19 +553,22 @@ export async function moqParseMsg (readerStream) {
     throw new Error(`UNKNOWN msg type received, got ${msgType}`)
   }
 
+  // TODO: JOC
+  console.info(`MOQ RX: ${JSON.stringify(data)}`)
+
   return {type: msgType, data: data}
 }
 
-export async function moqSendSubscribeOk (writerStream, subscribeId, expiresMs, lastGroupSent, lastObjSent, authInfo) {
-  return moqSend(writerStream, moqCreateSubscribeOkMessageBytes(subscribeId, expiresMs, lastGroupSent, lastObjSent, authInfo))
+export async function moqSendSubscribeOk (writerStream, requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo) {
+  return moqSend(writerStream, moqCreateSubscribeOkMessageBytes(requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo))
 }
 
-export async function moqSendSubscribeError (writerStream, subscribeId, errorCode, reason, trackAlias) {
-  return moqSend(writerStream, moqCreateSubscribeErrorMessageBytes(subscribeId, errorCode, reason, trackAlias))
+export async function moqSendSubscribeError (writerStream, requestId, errorCode, reason) {
+  return moqSend(writerStream, moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason))
 }
 
-export async function moqSendSubscribeDone(writerStream, subscribeId, errorCode, reason, numberOfOpenedStreams) {
-  return moqSend(writerStream, moqCreateSubscribeDoneMessageBytes(subscribeId, errorCode, reason, numberOfOpenedStreams))
+export async function moqSendSubscribeDone(writerStream, requestId, errorCode, reason, numberOfOpenedStreams) {
+  return moqSend(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
 }
 
 // OBJECT
@@ -574,7 +581,7 @@ function moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority) {
   msg.push(numberToVarInt(trackAlias)); // Track Alias
   msg.push(numberToVarInt(groupSeq)); // Group ID
   msg.push(numberToVarInt(groupSeq)); // Subgroup ID
-  msg.push(new Uint8Array([publisherPriority])); // Publisher priority
+  msg.push(numberToSingleByteArray(publisherPriority)); // Publisher priority
 
   return concatBuffer(msg);
 }
@@ -621,7 +628,7 @@ function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publishe
   msg.push(numberToVarInt(trackAlias))
   msg.push(numberToVarInt(groupSeq))
   msg.push(numberToVarInt(objSeq))
-  msg.push(new Uint8Array([publisherPriority]))
+  msg.push(numberToSingleByteArray(publisherPriority))
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
@@ -664,7 +671,7 @@ export async function moqParseObjectHeader (readerStream) {
     const trackAlias = await varIntToNumberOrThrow(readerStream);
     const groupSeq = await varIntToNumberOrThrow(readerStream);
     const objSeq = await varIntToNumberOrThrow(readerStream);
-    const publisherPriority = await moqByteReadOrThrow(readerStream);
+    const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
     const extensionHeaders = await moqReadExtensionHeaders(readerStream)
     ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders}
   }
@@ -672,7 +679,7 @@ export async function moqParseObjectHeader (readerStream) {
     const trackAlias = await varIntToNumberOrThrow(readerStream)
     const groupSeq = await varIntToNumberOrThrow(readerStream)
     const subGroupSeq = await varIntToNumberOrThrow(readerStream)
-    const publisherPriority = await moqByteReadOrThrow(readerStream)
+    const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
     ret = {type, trackAlias, groupSeq, subGroupSeq, publisherPriority}  
   }
   return ret
@@ -713,17 +720,33 @@ function moqCreateTupleBytes(arr) {
     return concatBuffer(msg);
 }
 
-function moqCreateParamBytes(name, val) {
+function moqCreateParametersBytes(kv_params) {
+  const msg = [];
+  msg.push(numberToVarInt(kv_params.length));
+  for (let i = 0; i < kv_params.length; i++) {
+    const param = kv_params[i]
+    msg.push(moqCreateKvParamBytes(param.name, param.val))
+  }
+  return concatBuffer(msg);
+}
+
+function moqCreateKvParamBytes(name, val) {
   const msg = [];
   msg.push(numberToVarInt(name));
-
   if (typeof val === 'number') {
-    const paramDataBytes = numberToVarInt(val);
-    msg.push(numberToVarInt(paramDataBytes.byteLength));
-    msg.push(paramDataBytes);  
+    if (name % 2 != 0) { // Even are followed by varint
+      throw new Error('Params with odd name needs to be followed by string in this function')
+    }
+    msg.push(numberToVarInt(val));  
   } else if (typeof val === 'string') {
+    if (name % 2 == 0) { // Even are followed by varint
+      throw new Error('Params with even name needs to be followed by number')
+    }
     msg.push(moqCreateStringBytes(val));
-  } else {
+  } else if ((typeof val === 'object') && (name === MOQ_PARAMETER_AUTHORIZATION_TOKEN)) {
+    msg.push(moqCreateTokenBytes(val));
+  }
+  else {
     throw new Error("Not supported MOQT param type");
   }
   return concatBuffer(msg);
@@ -768,12 +791,20 @@ async function moqStringReadOrThrow (readerStream) {
   return new TextDecoder().decode(ret.buff)
 }
 
-async function moqByteReadOrThrow (readerStream) {
-  const ret = await buffRead(readerStream, 1);
+async function moqIntReadBytesOrThrow(readerStream, length) {
+  if (length > 4 || length < 0 || !Number.isInteger(length))
+    throw new Error(`We can NOT read ints of length ${length}, only ints from 1 to 4 bytes`)
+
+  const ret = await buffRead(readerStream, length);
   if (ret.eof) {
     throw new ReadStreamClosed(`Connection closed while reading byte`)
   }
-  return new DataView(ret.buff, 0, 1).getUint8();
+  if (length === 1) 
+    return new DataView(ret.buff, 0, length).getUint8();
+  if (length === 2) 
+    return new DataView(ret.buff, 0, length).getUint16(0, MOQ_USE_LITTLE_ENDIAN)
+  if (length > 2) 
+    return new DataView(ret.buff, 0, length).getUint32(0, MOQ_USE_LITTLE_ENDIAN)
 }
 
 async function moqTupleReadOrThrow (readerStream) {
@@ -788,85 +819,61 @@ async function moqTupleReadOrThrow (readerStream) {
   return ret;
 }
 
-async function moqSend (writerStream, dataBytes) {
+async function moqSend(writerStream, dataBytes) {
+  console.log(`RX: ${dataBytes}`)
   const writer = writerStream.getWriter()
   moqSendToWriter(writer, dataBytes)
   await writer.ready
   writer.releaseLock()
 }
 
-async function moqReadSetupParameters (readerStream) {
-  const ret = {}
-  
-  // Params
-  const numParams = await varIntToNumberOrThrow(readerStream)
-  if (numParams > MOQ_MAX_PARAMS) {
-    throw new Error(`exceeded the max number of supported params ${MOQ_MAX_PARAMS}, got ${numParams}`)
-  }
-  for (let i = 0; i < numParams; i++) {
-    const paramId = await varIntToNumberOrThrow(readerStream)
-    if (paramId === MOQ_SETUP_PARAMETER_MAX_SUBSCRIBE_ID) {
-      await varIntToNumberOrThrow(readerStream) // Length (we should remove it)
-      ret.maxSubscribeId = await varIntToNumberOrThrow(readerStream)
-    } else if (paramId === MOQ_SETUP_PARAMETER_PATH) {
-      ret.path = await moqStringReadOrThrow(readerStream)
-    } else {
-      const paramLength = await varIntToNumberOrThrow(readerStream)
-      const retSkip = await buffRead(readerStream, paramLength)
-      ret[`unknown-${i}-${paramId}-${paramLength}`] = JSON.stringify(retSkip.buff)
-    }
-  }
-  return ret 
-}
-
-async function moqReadParameters (readerStream) {
-  const ret = {}
-  // Params
-  const numParams = await varIntToNumberOrThrow(readerStream)
-  if (numParams > MOQ_MAX_PARAMS) {
-    throw new Error(`exceeded the max number of supported params ${MOQ_MAX_PARAMS}, got ${numParams}`)
-  }
-  for (let i = 0; i < numParams; i++) {
-    const paramId = await varIntToNumberOrThrow(readerStream)
-    if (paramId === MOQ_PARAMETER_AUTHORIZATION_INFO) {
-      ret.authInfo = await moqStringReadOrThrow(readerStream)
-    } else if (paramId === MOQ_PARAMETER_DELIVERY_TIMEOUT) {
-      await varIntToNumberOrThrow(readerStream) // Length (we should remove it)
-      ret.deliveryTimeout = await varIntToNumberOrThrow(readerStream)
-    } else if (paramId === MOQ_PARAMETER_MAX_CACHE_DURATION) {
-      await varIntToNumberOrThrow(readerStream) // Length (we should remove it)
-      ret.maxCacheDuration = await varIntToNumberOrThrow(readerStream)
-    } else {
-      const paramLength = await varIntToNumberOrThrow(readerStream)
-      const retSkip = await buffRead(readerStream, paramLength)
-      ret[`unknown-${i}-${paramId}-${paramLength}`] = JSON.stringify(retSkip.buff)
-    }
-  }
-  return ret
-}
-
-async function moqReadExtensionHeaders(readerStream) {
+async function moqReadKeyValuePairs(readerStream) {
   const ret = []
   const count = await varIntToNumberOrThrow(readerStream)
   for (let i = 0; i < count; i++) {
-    const extHeaderType = await varIntToNumberOrThrow(readerStream)
-    let isUnknown = false
-    if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeaderType)) {
-      isUnknown = true
-    }
-    if (extHeaderType % 2 == 0) { // Even are followed by varint
+    const type = await varIntToNumberOrThrow(readerStream)
+    if (type % 2 == 0) { // Even are followed by varint
       const intValue = await varIntToNumberOrThrow(readerStream)
-      ret.push({type: extHeaderType, value: intValue})
+      ret.push({type: type, value: intValue})
     } else { // Odd are followed by length and buffer
       const size = await varIntToNumberOrThrow(readerStream)
       const buffRet = await buffRead(readerStream, size)
       if (buffRet.eof) {
         throw new ReadStreamClosed(`Connection closed while reading data`)
       }
-      ret.push({ type: extHeaderType, value: buffRet.buff, isUnknown: isUnknown})      
+      if (type === TOKEN) {
+        ret.push({ type: type, value: aaa(buffRet.buff)})     
+      } else {
+        ret.push({ type: type, value: buffRet.buff})     
+      }
     }
   }
   return ret
+}
+function moqCreateUseValueTokenFromString(str) {
+  return { aliasType: MOQ_TOKEN_USE_VALUE, tokenType: MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND, value: new TextEncoder().encode(str)}
+}
+
+function moqCreateTokenBytes(token) {
+  const msg = [];
+
+  if (token.aliasType != MOQ_TOKEN_USE_VALUE) {
+    throw new Error('Only USE_VALUE token supported')
+  }
+  msg.push(numberToVarInt(token.aliasType));
+
+  if (token.tokenType != MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND) {
+    throw new Error('Only TYPE_NEGOTIATED_OUT_OF_BAND token type supported')
+  }
+  msg.push(numberToVarInt(token.tokenType));
+  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
+  msg.push(numberToVarInt(token.value.byteLength));
+  msg.push(token.value) // Already a buffer
+
+  // Length
+  const totalLength = getArrayBufferByteLength(msg);
+
+  return concatBuffer([numberToVarInt(totalLength, MOQ_USE_LITTLE_ENDIAN), ...msg])
 }
 
 async function moqSendToWriter (writer, dataBytes) {
