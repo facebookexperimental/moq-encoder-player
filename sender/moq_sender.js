@@ -288,7 +288,7 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
       
       const lastSent = getLastSentFromTrackAlias(subscribe.trackAlias)
       await moqSendSubscribeOk(controlWriter, subscribe.requestId, subscribe.trackAlias, 0, lastSent.group, lastSent.obj, subscribe.parameters.authInfo)
-      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for subscribeId: ${subscribe.subscribeId}, last: ${lastSent.group}/${lastSent.obj}`)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for requestId: ${subscribe.requestId}, last: ${lastSent.group}/${lastSent.obj}`)
     }
     else if (moqMsg.type === MOQ_MESSAGE_UNSUBSCRIBE) {
       const unsubscribe = moqMsg.data
@@ -394,7 +394,6 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
 
   const mediaType = packet.getMediaType();
 
-  let p = null;
   if (moqMapping === MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
     // Get datagram writer
     const datagramWriter = moqt.wt.datagrams.writable.getWriter();
@@ -428,18 +427,13 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
       let prevUniStreamWritter = moqt.multiObjectWritter[prevStreamWriterId];
       if (prevUniStreamWritter != undefined) {
         // Indicate end of group
-        moqSendObjectEndOfGroupToWriter(prevUniStreamWritter, prevObjSeq + 1);
+        moqSendObjectEndOfGroupToWriter(prevUniStreamWritter, prevObjSeq + 1, [], true);
         sendMessageToMain(WORKER_PREFIX, 'debug', `Send group close for ${prevStreamWriterId} and ${prevGroupSeq}`);
-        p = prevUniStreamWritter.close()
-        p.writteId = prevStreamWriterId;
-        p.finally(() => {
-          if (moqt.multiObjectWritter[p.writteId] != undefined) {
-            delete moqt.multiObjectWritter[p.writteId]
-          }
-          const msg = `Closed stream ${prevStreamWriterId}`
-          sendMessageToMain(WORKER_PREFIX, 'debug', msg);
-          return { dropped: false, message: msg }
-        });
+        if (moqt.multiObjectWritter[prevStreamWriterId] != undefined) {
+          delete moqt.multiObjectWritter[prevStreamWriterId]
+        }
+        const msg = `Closing stream ${prevStreamWriterId}`
+        sendMessageToMain(WORKER_PREFIX, 'debug', msg);
       }
     }
 

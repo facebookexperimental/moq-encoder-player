@@ -189,9 +189,9 @@ async function moqReceiveStreamObjects (moqt) {
 
       const moqStreamsObjHeader = await moqParseObjectHeader(stream.value)
       if (isMoqObjectStreamHeaderType(moqStreamsObjHeader.type)) {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgrp ${JSON.stringify(moqStreamsObjHeader)}`)
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgroup ${JSON.stringify(moqStreamsObjHeader)}`)
         // NO await on purpose!
-        moqReceiveMultiObjectStream(stream.value)
+        moqReceiveMultiObjectStream(stream.value, moqStreamsObjHeader.type)
       } else {
         sendMessageToMain(WORKER_PREFIX, 'error', `Unsupported stream type for sterams ${moqStreamsObjHeader.type}`)
       }
@@ -200,21 +200,21 @@ async function moqReceiveStreamObjects (moqt) {
   sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receive objects loop')
 }
 
-async function moqReceiveMultiObjectStream(readerStream) {
+async function moqReceiveMultiObjectStream(readerStream, type) {
   let isEOF = false
   let numObjRead = 0
-  let moqHeader = {} 
+  let objHeader = {} 
   while (workerState !== StateEnum.Stopped && isEOF === false) {
     reportStats()
     try {
-      moqHeader = await moqParseObjectFromSubgroupHeader(readerStream)
+      objHeader = await moqParseObjectFromSubgroupHeader(readerStream, type)
       
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(moqHeader)}`);
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(objHeader)}`);
 
       // Check if we received the end of the subgroup
-      isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
-      if (!isEOF && moqHeader.payloadLength > 0) {
-        isEOF = await readAndSendPayload(readerStream, moqHeader.extensionHeaders, moqHeader.payloadLength)
+      isEOF = ("status" in objHeader && (objHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
+      if (!isEOF && objHeader.payloadLength > 0) {
+        isEOF = await readAndSendPayload(readerStream, objHeader.extensionHeaders, objHeader.payloadLength)
         sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
       }
       sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);

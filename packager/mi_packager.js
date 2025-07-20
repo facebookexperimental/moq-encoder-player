@@ -9,7 +9,7 @@ LICENSE file in the root directory of this source tree.
 
 import { numberToVarInt, varIntToNumbeFromBuffer } from '../utils/varint.js'
 import { buffRead, concatBuffer, readUntilEof } from '../utils/buffer_utils.js'
-import { MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA} from '../utils/moqt.js'
+import { MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, moqCreateKvPair} from '../utils/moqt.js'
 
 'use strict'
 
@@ -93,92 +93,92 @@ export class MIPackager {
     const extTypeRead = []
     for (let i = 0; i < extensionHeaders.length; i++) {
       const extHeader = extensionHeaders[i]
-      extTypeRead.push(extHeader.type)
+      extTypeRead.push(extHeader.name)
 
-      if (extHeader.type == MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE) {
-        this.type = extHeader.value
+      if (extHeader.name == MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE) {
+        this.type = extHeader.val
       }
-      if (extHeader.type === MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA) {
+      if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA) {
         let bytesRead = 0
-        let r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.seqId = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.pts = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.dts = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.timebase = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.duration = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.wallclock = r.num
       }
-      if (extHeader.type == MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA) {
-        this.metadata = extHeader.value
+      if (extHeader.name == MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA) {
+        this.metadata = extHeader.val
       }
-      if (extHeader.type === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA || extHeader.type === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA) {
+      if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA || extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA) {
         let bytesRead = 0
-        let r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.seqId = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.pts = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.timebase = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.sampleFreq = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.numChannels = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.duration = r.num
 
-        r = varIntToNumbeFromBuffer(extHeader.value, bytesRead)
+        r = varIntToNumbeFromBuffer(extHeader.val, bytesRead)
         bytesRead += r.byteLength
         this.wallclock = r.num
       }
-      if (extHeader.type === MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA) {
-        const r = varIntToNumbeFromBuffer(extHeader.value, 0)
+      if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA) {
+        const r = varIntToNumbeFromBuffer(extHeader.val, 0)
         this.seqId = r.num
       }
     }
 
-    if (this.type === MIPayloadTypeEnum.RAWData) {
+    if (this.name === MIPayloadTypeEnum.RAWData) {
       if (!(extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA))) {
         throw new Error(`Type RAWData needs MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA`) 
       }
     }
-    if (this.type === MIPayloadTypeEnum.VideoH264AVCCWCP) {
+    if (this.name === MIPayloadTypeEnum.VideoH264AVCCWCP) {
       if (!(extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA))) {
         throw new Error(`Type VideoH264AVCCWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA`) 
       }
     }
-    if (this.type === MIPayloadTypeEnum.AudioOpusWCP) {
+    if (this.name === MIPayloadTypeEnum.AudioOpusWCP) {
       if (!(extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA))) {
         throw new Error(`Type AudioOpusWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA`) 
       }
     }
-    if (this.type === MIPayloadTypeEnum.AudioAACMP4LCWCP) {
+    if (this.name === MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       if (!(extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA))) {
         throw new Error(`Type AudioAACMP4LCWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA`) 
       }
@@ -235,10 +235,10 @@ export class MIPackager {
   }
 
   ExtensionHeaders() {
-    let ret = []
+    const kv_params = []
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, value: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_VIDEO_H264_IN_AVCC })
-      
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_VIDEO_H264_IN_AVCC))
+        
       const h264AvccMetadataValue = [];
       h264AvccMetadataValue.push(numberToVarInt(this.seqId))
       h264AvccMetadataValue.push(numberToVarInt(this.pts))
@@ -246,13 +246,13 @@ export class MIPackager {
       h264AvccMetadataValue.push(numberToVarInt(this.timebase))
       h264AvccMetadataValue.push(numberToVarInt(this.duration))
       h264AvccMetadataValue.push(numberToVarInt(this.wallclock))
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, value: concatBuffer(h264AvccMetadataValue) })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, concatBuffer(h264AvccMetadataValue)))
           
       if (this.metadata != undefined && this.metadata != null && this.metadata.byteLength > 0) {
-        ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, value: this.metadata })
+        kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, this.metadata ))
       }
     } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, value: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_OPUS_BITSTREAM })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_OPUS_BITSTREAM))
       
       const opusMetadataValue = [];
       opusMetadataValue.push(numberToVarInt(this.seqId))
@@ -262,9 +262,9 @@ export class MIPackager {
       opusMetadataValue.push(numberToVarInt(this.numChannels))
       opusMetadataValue.push(numberToVarInt(this.duration))
       opusMetadataValue.push(numberToVarInt(this.wallclock))
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, value: concatBuffer(opusMetadataValue) })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, concatBuffer(opusMetadataValue)))
     } else if (this.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, value: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_AUDIO_AACLC_MPEG4 })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_AUDIO_AACLC_MPEG4))
       
       const aacMetadataValue = [];
       aacMetadataValue.push(numberToVarInt(this.seqId))
@@ -274,15 +274,14 @@ export class MIPackager {
       aacMetadataValue.push(numberToVarInt(this.numChannels))
       aacMetadataValue.push(numberToVarInt(this.duration))
       aacMetadataValue.push(numberToVarInt(this.wallclock))
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA, value: concatBuffer(aacMetadataValue) })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA, concatBuffer(aacMetadataValue)))
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, value: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_TEXT_UTF8 })
-      ret.push({ type: MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, value: numberToVarInt(this.seqId) })
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_VALUE_AUDIO_TEXT_UTF8))
+      kv_params.push(moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, numberToVarInt(this.seqId)))
     } else {
       throw new Error(`Payload type ${this.type} not supported`)
     }
-
-    return ret
+    return kv_params
   }
 
   IsEof() {
@@ -296,7 +295,7 @@ export class MIPackager {
   getMediaType() {
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
       return "video";
-    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP) {
+    } else if (this.type == MIPayloadTypeEnum.AudioOpusWCP || this.type == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       return "audio";
     } else {
       return "data";

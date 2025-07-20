@@ -72,7 +72,7 @@ export async function readUntilEof (readableStream, blockSize) {
 export async function buffRead (readableStream, size) {
   let ret = null
   if (size <= 0) {
-    return ret
+    return {eof: false, buff: new Uint8Array(Number(0)) }
   }
   let buff = new Uint8Array(Number(size))
   const reader = readableStream.getReader({ mode: 'byob' })

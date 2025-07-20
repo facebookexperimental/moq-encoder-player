@@ -208,10 +208,8 @@ function moqCreateClientSetupMessageBytes () {
   msg.push(numberToVarInt(1));
   // Version[0]
   msg.push(numberToVarInt(MOQ_CURRENT_VERSION));
-  const params = [
-    {name: MOQ_SETUP_PARAMETER_MAX_REQUEST_ID, val: MOQ_MAX_REQUEST_ID_NUM}
-  ]
-  msg.push(moqCreateParametersBytes(params))
+  const kv_params = [moqCreateKvPair(MOQ_SETUP_PARAMETER_MAX_REQUEST_ID, MOQ_MAX_REQUEST_ID_NUM)]
+  msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
   const totalLength = getArrayBufferByteLength(msg);
@@ -220,7 +218,7 @@ function moqCreateClientSetupMessageBytes () {
 }
 
 export async function moqSendClientSetup (writerStream) {
-  return moqSend(writerStream, moqCreateClientSetupMessageBytes())
+  return moqSendAndFlush(writerStream, moqCreateClientSetupMessageBytes())
 }
 
 async function moqParseSetupResponse (readerStream) {
@@ -231,7 +229,7 @@ async function moqParseSetupResponse (readerStream) {
   if (!MOQ_SUPPORTED_VERSIONS.includes(ret.version)) {
     throw new Error(`version sent from server NOT supported. Supported versions ${JSON.stringify(MOQ_SUPPORTED_VERSIONS)}, got from server ${JSON.stringify(ret.version)}`)
   }
-  ret.parameters = await moqReadKeyValuePairs(readerStream)
+  ret.parameters = await moqReadParameters(readerStream)
 
   return ret
 }
@@ -245,7 +243,7 @@ function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
   msg.push(numberToVarInt(reqId))
   // Namespace
   msg.push(moqCreateTupleBytes(namespace));
-  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
   msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
@@ -255,7 +253,7 @@ function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
 }
 
 export async function moqSendAnnounce (writerStream, reqId, namespace, authInfo) {
-  return moqSend(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
+  return moqSendAndFlush(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
 }
 
 async function moqParseAnnounceOk (readerStream) {
@@ -296,7 +294,7 @@ function moqCreateUnAnnounceMessageBytes (namespace) {
 }
 
 export async function moqSendUnAnnounce (writerStream, namespace) {
-  return moqSend(writerStream, moqCreateUnAnnounceMessageBytes(namespace))
+  return moqSendAndFlush(writerStream, moqCreateUnAnnounceMessageBytes(namespace))
 }
 
 
@@ -330,7 +328,8 @@ function moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, au
   // NO need to add StartGroup, StartObject, EndGroup
 
   // Params
-  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
+  
   msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
@@ -369,7 +368,8 @@ function moqCreateSubscribeOkMessageBytes (requestId, trackAlias, expiresMs, las
   }
 
   // Params
-  const kv_params = [{ name: MOQ_PARAMETER_AUTHORIZATION_TOKEN, val: moqCreateUseValueTokenFromString(authInfo) }]
+  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
+  
   msg.push(moqCreateParametersBytes(kv_params))
 
   // Length
@@ -433,11 +433,11 @@ function moqCreateSubscribeDoneMessageBytes(requestId, statusCode, reason, strea
 }
 
 export async function moqSendSubscribe (writerStream, requestId, trackNamespace, trackName, authInfo) {
-  return moqSend(writerStream, moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo))
+  return moqSendAndFlush(writerStream, moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo))
 }
 
 export async function moqSendUnSubscribe (writerStream, subscribeId) {
-  return moqSend(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
+  return moqSendAndFlush(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
 }
 
 async function moqParseSubscribeOk (readerStream) {
@@ -453,7 +453,7 @@ async function moqParseSubscribeOk (readerStream) {
     ret.lastGroupSent = await varIntToNumberOrThrow(readerStream)
     ret.lastObjSent = await varIntToNumberOrThrow(readerStream)
   }
-  ret.parameters = await moqReadKeyValuePairs(readerStream)
+  ret.parameters = await moqReadParameters(readerStream)
   
   return ret
 }
@@ -520,7 +520,7 @@ async function moqParseSubscribe (readerStream) {
       throw new Error('Not supported endObject')
     }    
   }
-  ret.parameters = await moqReadKeyValuePairs(readerStream)
+  ret.parameters = await moqReadParameters(readerStream)
 
   return ret
 }
@@ -566,15 +566,15 @@ export async function moqParseMsg (readerStream) {
 }
 
 export async function moqSendSubscribeOk (writerStream, requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo) {
-  return moqSend(writerStream, moqCreateSubscribeOkMessageBytes(requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo))
+  return moqSendAndFlush(writerStream, moqCreateSubscribeOkMessageBytes(requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo))
 }
 
 export async function moqSendSubscribeError (writerStream, requestId, errorCode, reason) {
-  return moqSend(writerStream, moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason))
+  return moqSendAndFlush(writerStream, moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason))
 }
 
 export async function moqSendSubscribeDone(writerStream, requestId, errorCode, reason, numberOfOpenedStreams) {
-  return moqSend(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
+  return moqSendAndFlush(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
 }
 
 // OBJECT
@@ -582,8 +582,9 @@ export async function moqSendSubscribeDone(writerStream, requestId, errorCode, r
 function moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority) {
   const msg = []
 
+  const type = getSubgroupHeaderType(true, false, true, false)
   // Message type
-  msg.push(numberToVarInt(MOQ_MESSAGE_STREAM_HEADER_SUBGROUP));
+  msg.push(numberToVarInt(type));
   msg.push(numberToVarInt(trackAlias)); // Track Alias
   msg.push(numberToVarInt(groupSeq)); // Group ID
   msg.push(numberToVarInt(groupSeq)); // Subgroup ID
@@ -599,7 +600,8 @@ function moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders) {
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
-    msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
+    moqCreateKvParamBytes
+    msg.push(moqCreateExternsionsBytes(extensionHeaders)); // Extension headers
   }
   msg.push(numberToVarInt(0)) // Size = 0
   msg.push(numberToVarInt(MOQ_OBJ_STATUS_END_OF_GROUP))
@@ -614,7 +616,7 @@ function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
-    msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
+    msg.push(moqCreateExternsionsBytes(extensionHeaders)); // Extension headers
   }
   if (data != undefined && data.byteLength > 0) {
     msg.push(numberToVarInt(data.byteLength)) // Data size
@@ -640,7 +642,7 @@ function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publishe
   msg.push(numberToVarInt(objSeq))
   msg.push(numberToSingleByteArray(publisherPriority))
   if (hasHeaders) {
-    msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
+    msg.push(moqCreateExternsionsBytes(extensionHeaders)); // Extension headers
   }
   if (hasData) {
     msg.push(data)
@@ -659,8 +661,8 @@ export function moqSendObjectSubgroupToWriter (writer, objSeq, data, extensionHe
   return moqSendToWriter(writer, moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders))
 }
 
-export function moqSendObjectEndOfGroupToWriter (writer, objSeq, extensionHeaders) {
-  return moqSendToWriter(writer, moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders))
+export function moqSendObjectEndOfGroupToWriter (writer, objSeq, extensionHeaders, closeStream) {
+  return moqSendToWriter(writer, moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders), closeStream)
 }
 
 export function moqSendObjectPerDatagramToWriter (writer, trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders, isEndOfFGroup) {
@@ -680,25 +682,34 @@ export async function moqParseObjectHeader (readerStream) {
     const groupSeq = await varIntToNumberOrThrow(readerStream);
     const objSeq = await varIntToNumberOrThrow(readerStream);
     const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
-   let  extensionHeaders = undefined
+    let  extensionHeaders = undefined
     if (options.extensionsPresent) {
-      extensionHeaders = await moqReadKeyValuePairs(readerStream)
+      extensionHeaders = await moqReadHeaderExtensions(readerStream)
     }
     ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders}
   }
   else if (isMoqObjectStreamHeaderType(type)) {
+    const options = moqDecodeStreamHeaderType(type)
     const trackAlias = await varIntToNumberOrThrow(readerStream)
     const groupSeq = await varIntToNumberOrThrow(readerStream)
-    const subGroupSeq = await varIntToNumberOrThrow(readerStream)
+    let subGroupSeq = undefined
+    if (options.subGroupIdPresent) {
+      subGroupSeq = await varIntToNumberOrThrow(readerStream)
+    }
     const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
     ret = {type, trackAlias, groupSeq, subGroupSeq, publisherPriority}  
   }
   return ret
 }
 
-export async function moqParseObjectFromSubgroupHeader (readerStream) { 
+export async function moqParseObjectFromSubgroupHeader(readerStream, type) { 
+  const typeDecoded = moqDecodeStreamHeaderType(type)
+
   const objSeq = await varIntToNumberOrThrow(readerStream)
-  const extensionHeaders = await moqReadExtensionHeaders(readerStream)
+  let extensionHeaders = []
+  if (typeDecoded.extensionsPresent) {
+    extensionHeaders = await moqReadHeaderExtensions(readerStream)
+  }
   const payloadLength = await varIntToNumberOrThrow(readerStream)  
   const ret = {objSeq, payloadLength, extensionHeaders}  
   if (payloadLength == 0) {
@@ -731,64 +742,60 @@ function moqCreateTupleBytes(arr) {
     return concatBuffer(msg);
 }
 
+export function moqCreateKvPair(name, val) {
+  return {name: name, val: val}
+}
+
 function moqCreateParametersBytes(kv_params) {
   const msg = [];
   msg.push(numberToVarInt(kv_params.length));
   for (let i = 0; i < kv_params.length; i++) {
     const param = kv_params[i]
-    msg.push(moqCreateKvParamBytes(param.name, param.val))
+    msg.push(moqCreateKvParamBytes(param.name, param.val, false))
   }
   return concatBuffer(msg);
 }
 
-function moqCreateKvParamBytes(name, val) {
+function moqCreateExternsionsBytes(kv_params) {
+  const msg = [];
+  for (let i = 0; i < kv_params.length; i++) {
+    const param = kv_params[i]
+    msg.push(moqCreateKvParamBytes(param.name, param.val, true))
+  }
+  // Length
+  const lengthBytes = getArrayBufferByteLength(msg)
+  
+  return concatBuffer([numberToVarInt(lengthBytes), ...msg])
+}
+
+function moqCreateKvParamBytes(name, val, isExtensionHeaders) {
   const msg = [];
   msg.push(numberToVarInt(name));
   if (typeof val === 'number') {
-    if (name % 2 != 0) { // Even are followed by varint
-      throw new Error('Params with odd name needs to be followed by string in this function')
+    if (name % 2 != 0) { // Even types indicate value coded by a single varint
+      throw new Error('Params with odd name needs to be followed by string or buffer')
     }
     msg.push(numberToVarInt(val));  
   } else if (typeof val === 'string') {
-    if (name % 2 == 0) { // Even are followed by varint
+    if (name % 2 == 0) { // Odd types are followed by varint or buffer
       throw new Error('Params with even name needs to be followed by number')
     }
     msg.push(moqCreateStringBytes(val));
-  } else if ((typeof val === 'object') && (name === MOQ_PARAMETER_AUTHORIZATION_TOKEN)) {
+  } else if ((typeof val === 'object') && (!isExtensionHeaders) && (name === MOQ_PARAMETER_AUTHORIZATION_TOKEN)) {
     msg.push(moqCreateTokenBytes(val));
   }
-  else {
-    throw new Error("Not supported MOQT param type");
+  else if ((typeof val === 'object') && isExtensionHeaders) {
+    if (name % 2 == 0) { // Odd types are followed by varint or buffer
+      throw new Error('Params with even name needs to be followed by number')
+    }
+    if (!(val instanceof Uint8Array) && !(val instanceof ArrayBuffer)) {
+        throw new Error(`Trying to write an non Uint8Array/ArrayBuffer as buffer`)
+    }
+    msg.push(numberToVarInt(val.byteLength))
+    msg.push(val)
   }
-  return concatBuffer(msg);
-}
-
-function moqCreateExtensionHeaders(extensionHeaders) {
-  const msg = [];
-  const lenght = extensionHeaders.length
-  msg.push(numberToVarInt(lenght));
-  for (let i = 0; i < lenght; i++) {
-    const extHeader = extensionHeaders[i]
-    if (!('type' in extHeader) || (!('value' in extHeader))) {
-      throw new Error(`Malformed externsion header ${JSON.stringify(extHeader)}`)
-    }
-    if (!MOQ_EXT_HEADERS_SUPPORTED.includes(extHeader.type)) {
-      throw new Error(`Unsupported externsion header ${JSON.stringify(extHeader)}`)
-    }
-    if (extHeader.type % 2 == 0) { // Even are followed by varint
-      if (typeof extHeader.value != 'number') {
-        throw new Error(`Trying to write an non number as header extension even. ${JSON.stringify(extHeader)}`)
-      }
-      msg.push(numberToVarInt(extHeader.type));
-      msg.push(numberToVarInt(extHeader.value));
-    } else { // Odd are followed by length and buffer
-      if (!(extHeader.value instanceof Uint8Array) && !(extHeader.value instanceof ArrayBuffer)) {
-        throw new Error(`Trying to write an non Uint8Array as header extension odd, only Uint8Array is supported. ${JSON.stringify(extHeader)} (${typeof extHeader.value})}`)
-      }
-      msg.push(numberToVarInt(extHeader.type));
-      msg.push(numberToVarInt(extHeader.value.byteLength));
-      msg.push(extHeader.value);
-    }
+  else {
+    throw new Error(`Not supported MOQT param type ${(typeof val)}`)
   }
   return concatBuffer(msg);
 }
@@ -830,38 +837,59 @@ async function moqTupleReadOrThrow (readerStream) {
   return ret;
 }
 
-async function moqSend(writerStream, dataBytes) {
-  console.log(`RX: ${dataBytes}`)
-  const writer = writerStream.getWriter()
-  moqSendToWriter(writer, dataBytes)
-  await writer.ready
-  writer.releaseLock()
-}
-
-async function moqReadKeyValuePairs(readerStream) {
+async function moqReadParameters(readerStream) {
   const ret = []
   const count = await varIntToNumberOrThrow(readerStream)
   for (let i = 0; i < count; i++) {
-    const type = await varIntToNumberOrThrow(readerStream)
-    if (type % 2 == 0) { // Even are followed by varint
-      const intValue = await varIntToNumberOrThrow(readerStream)
-      ret.push({type: type, value: intValue})
-    } else { // Odd are followed by length and buffer
-      const size = await varIntToNumberOrThrow(readerStream)
-      if (type == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
-        const token = await moqParseTokenBytes(readerStream, size)
-        ret.push({ type: type, value: token})  
-      } else {
-        const buffRet = await buffRead(readerStream, size)
-        if (buffRet.eof) {
-          throw new ReadStreamClosed(`Connection closed while reading data`)
-        }
-        ret.push({ type: type, value: buffRet.buff})  
-      }
-    }
+    const param = await moqReadKeyValuePair(readerStream, false)
+    ret.push(param.val)
   }
   return ret
 }
+
+async function moqReadHeaderExtensions(readerStream) {
+  const ret = []
+  let remainingBytes = await varIntToNumberOrThrow(readerStream)
+  while (remainingBytes > 0) {
+    const param = await moqReadKeyValuePair(readerStream, true)
+    ret.push(param.val)
+
+    remainingBytes = remainingBytes - param.byteLength
+  }
+  return ret
+}
+
+async function moqReadKeyValuePair(readerStream, isExtensionHeaders) {
+  let param = {val: undefined, byteLength: 0}
+  
+  const name = await varIntToNumberAndLengthOrThrow(readerStream)
+  param.byteLength = param.byteLength + name.byteLength
+
+  if (name.num % 2 == 0) { // Even are followed by varint
+    const intValue = await varIntToNumberAndLengthOrThrow(readerStream)
+    param.byteLength = param.byteLength + intValue.byteLength
+    param.val = moqCreateKvPair(name.num, intValue.num)
+  } else { // Odd are followed by length and buffer
+    const size = await varIntToNumberAndLengthOrThrow(readerStream)
+    param.byteLength = param.byteLength + size.byteLength
+    if ((name.num == MOQ_PARAMETER_AUTHORIZATION_TOKEN) && !isExtensionHeaders) {
+      const token = await moqParseTokenBytes(readerStream, size.num)
+      param.byteLength = param.byteLength + size.num
+      // TODO: JOC
+      console.log(`Token received: ${JSON.stringify(token)}, value(${token.value.byteLength}: ${JSON.stringify(token.value)})`)
+      param.val = moqCreateKvPair(name.num, token)
+    } else {
+      const buffRet = await buffRead(readerStream, size.num)
+      if (buffRet.eof) {
+        throw new ReadStreamClosed(`Connection closed while reading data`)
+      }
+      param.byteLength = param.byteLength + size.num
+      param.val = moqCreateKvPair(name.num, buffRet.buff)
+    }
+  }
+  return param
+}
+
 function moqCreateUseValueTokenFromString(str) {
   return { aliasType: MOQ_TOKEN_USE_VALUE, tokenType: MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND, value: new TextEncoder().encode(str)}
 }
@@ -920,9 +948,36 @@ async function moqParseTokenBytes (readerStream, total_size) {
   return token
 }
 
-async function moqSendToWriter(writer, dataBytes) {
-  console.log(`Bytes sent: ${dataBytes}`)
-  writer.write(dataBytes)
+async function moqSendAndFlush(writerStream, dataBytes) {
+  console.log(`RX: ${dataBytes}`)
+  const writer = writerStream.getWriter()
+  moqSendToWriter(writer, dataBytes)
+  await writer.ready
+  writer.releaseLock()
+}
+
+async function moqSendToWriter(writer, dataBytes, closeStream) {
+  //TODO JOC: Clean up
+  if (closeStream === true) {
+    writer.ready
+      .then(() => {
+        console.log("JOC ready to write");
+        return writer.write(dataBytes)
+      })
+      .then(() => {
+        console.log("JOC ready to close");
+        return writer.close()
+      })
+      .then(() => {
+        console.log("JOC Closed");
+      })
+      .catch((err) => {
+        console.error(`JOC Closing error: ${err}`);
+      });
+  } else {
+    writer.write(dataBytes)
+  }
+  console.log(`Sent bytes: ${dataBytes}, closeStream: ${closeStream}`)
 }
 
 // Helpers
@@ -936,8 +991,8 @@ export function getAuthInfofromToken(parameters) {
   let i = 0
   while (ret == undefined && i < parameters.length) {
     const param = parameters[i]
-    if (param.type == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
-      const token = param.value
+    if (param.name == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
+      const token = param.val
       if (token.aliasType == MOQ_TOKEN_USE_VALUE && token.tokenType == MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND) {
         ret = new TextDecoder().decode(token.value);
       }
@@ -959,7 +1014,7 @@ export function moqDecodeDatagramType(type) {
       ret.isEndOfGroup = true
     }
   }
-  if (type & 0x1 > 0) {
+  if ((type & 0x1) > 0) {
       ret.extensionsPresent = true
   }
   return ret
@@ -981,7 +1036,7 @@ export function isMoqObjectStreamHeaderType(type) {
   return ret
 }
 
-export function getDatagramType(isStatus, hasExternsionHeaders, isEndOfGroup) {
+function getDatagramType(isStatus, hasExternsionHeaders, isEndOfGroup) {
   let type = 0
 
   if (isStatus) {
@@ -999,4 +1054,47 @@ export function getDatagramType(isStatus, hasExternsionHeaders, isEndOfGroup) {
   }
 
   return type
+}
+
+function getSubgroupHeaderType(extensionsPresent, isEndOfGroup, subGroupIdPresent, isSubgroupIdFirstObjectId) {
+  let type = 0x10
+  if (isEndOfGroup) {
+    type = type | 0x8
+  }
+  if (subGroupIdPresent) {
+    type = type | 0x4
+  }
+  if (isSubgroupIdFirstObjectId) {
+    type = type | 0x2
+  }
+  if (extensionsPresent) {
+    type = type | 0x1
+  }
+  if (type == 0x16 || type == 0x17 || type > 0x1d) {
+    throw new Error(`Subgroup header to create type ${type} does not make sense`)
+  }
+  return type
+}
+
+export function moqDecodeStreamHeaderType(type) {
+  if (!isMoqObjectStreamHeaderType(type)) {
+    throw new Error(`No valid stream header type ${type}, it can NOT be decoded`)
+  }
+  if (type == 0x16 || type == 0x17 || type > 0x1d) {
+    throw new Error(`Subgroup received header type ${type} does not make sense`)
+  }
+  const ret = { extensionsPresent: false, isEndOfGroup: false, subGroupIdPresent: false, isSubgroupIdFirstObjectId: false }
+  if ((type & 0x1) > 0) {
+      ret.extensionsPresent = true
+  }
+  if ((type & 0x2) > 0) {
+      ret.isSubgroupIdFirstObjectId = true
+  }
+  if ((type & 0x4) > 0) {
+      ret.subGroupIdPresent = true
+  }
+  if ((type & 0x8) > 0) {
+      ret.isEndOfGroup = true
+  }
+  return ret
 }
