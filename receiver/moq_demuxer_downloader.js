@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendClientSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_SUBGROUP, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName } from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendClientSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, isMoqObjectStreamHeaderType, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName, isMoqObjectDatagramType, moqDecodeDatagramType} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
@@ -188,7 +188,7 @@ async function moqReceiveStreamObjects (moqt) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'New QUIC stream')
 
       const moqStreamsObjHeader = await moqParseObjectHeader(stream.value)
-      if (moqStreamsObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
+      if (isMoqObjectStreamHeaderType(moqStreamsObjHeader.type)) {
         sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgrp ${JSON.stringify(moqStreamsObjHeader)}`)
         // NO await on purpose!
         moqReceiveMultiObjectStream(stream.value)
@@ -257,10 +257,14 @@ async function moqReceiveDatagramObjects (moqt) {
       const moqObjHeader = await moqParseObjectHeader(readableStream)
       sendMessageToMain(WORKER_PREFIX, 'debug', `Received object datagram header ${JSON.stringify(moqObjHeader)}`)
 
-      if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
+      if (!isMoqObjectDatagramType(moqObjHeader.type)) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
       }
-      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders)
+      let length = undefined // Read until end of datagram
+      if (moqDecodeDatagramType(moqObjHeader.type).isStatus) {
+        length = 0 // This will NOT read payload but decode headers if present
+      }
+      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders, length)
     }
   }
 
@@ -340,7 +344,7 @@ async function moqCreateSubscriberSession (moqt) {
       await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
     } else {
       const subscribeResp = moqMsg.data    
-      if (subscribeResp.reqId !== reqId) {
+      if (subscribeResp.requestId !== reqId) {
         throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.reqId} != ${reqId}`)
       }
       sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${getFullTrackName(trackData.namespace, trackData.name)}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)

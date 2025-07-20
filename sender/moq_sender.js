@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
-import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendClientSetup, moqSendUnAnnounce, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendClientSetup, moqSendUnAnnounce, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter, getAuthInfofromToken } from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 
 const WORKER_PREFIX = '[MOQ-SENDER]'
@@ -263,9 +263,10 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
         sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe received ${fullTrackName} is NOT in tracks ${JSON.stringify(tracks)}`)
         continue
       }
-      if (track.authInfo !== subscribe.parameters.authInfo) {
+      const authInfo = getAuthInfofromToken(subscribe.parameters)
+      if (track.authInfo !== authInfo) {
         const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
-        const errReason = `Invalid subscribe authInfo ${subscribe.parameters.authInfo}`
+        const errReason = `Invalid subscribe authInfo ${authInfo}`
         sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
         await moqSendSubscribeError(controlWriter, subscribe.requestId, errorCode, errReason)
         continue
@@ -400,7 +401,7 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
 
     sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}, Ext Headers: ${JSON.stringify(packet.ExtensionHeaders())}`)
 
-    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders())
+    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders(), true)
 
     datagramWriter.releaseLock()
 

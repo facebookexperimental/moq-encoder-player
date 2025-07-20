@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { numberToVarInt, varIntToNumberOrThrow } from './varint.js'
+import { numberToVarInt, varIntToNumberOrThrow, varIntToNumberAndLengthOrThrow} from './varint.js'
 import { numberTo2BytesArray, numberToSingleByteArray } from './utils.js'
 import { concatBuffer, buffRead, ReadStreamClosed , getArrayBufferByteLength } from './buffer_utils.js'
 
@@ -62,8 +62,13 @@ export const MOQ_FILTER_TYPE_ABSOLUTE_START = 0x3
 export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4
 
 // MOQ object headers
-export const MOQ_MESSAGE_OBJECT_DATAGRAM = 0x1
-export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP = 0x4
+// Datagrams
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_MIN= 0x0
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_MAX = 0x4
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN= 0x20
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX= 0x21
+export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MIN = 0x10
+export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MAX = 0x1D
 
 // MOQ Messages
 export const MOQ_MESSAGE_CLIENT_SETUP = 0x20
@@ -117,12 +122,13 @@ export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA = 0x13
 
 export const MOQ_EXT_HEADERS_SUPPORTED = [MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA, MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA]
 
-// Tokens
+// Token Alias type
 export const MOQ_TOKEN_DELETE = 0x0
 export const MOQ_TOKEN_REGISTER = 0x1
 export const MOQ_TOKEN_USE_ALIAS = 0x2
 export const MOQ_TOKEN_USE_VALUE = 0x3
 
+// Token type
 export const MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND = 0x0
 
 
@@ -620,24 +626,25 @@ function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
   return concatBuffer(msg);
 }
 
-function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders) {
+function moqCreateObjectPerDatagramBytes (trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders, isEndOfFGroup) {
   const msg = []
+  const hasHeaders = (extensionHeaders != undefined && extensionHeaders.length > 0)
+  const hasData = (data != undefined && data.byteLength > 0)
 
+  const type = getDatagramType(!hasData, hasHeaders, isEndOfFGroup)
+  
   // Message type
-  msg.push(numberToVarInt(MOQ_MESSAGE_OBJECT_DATAGRAM))
+  msg.push(numberToVarInt(type))
   msg.push(numberToVarInt(trackAlias))
   msg.push(numberToVarInt(groupSeq))
   msg.push(numberToVarInt(objSeq))
   msg.push(numberToSingleByteArray(publisherPriority))
-  if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
-    msg.push(numberToVarInt(0)); // Extension headers count
-  } else {
+  if (hasHeaders) {
     msg.push(moqCreateExtensionHeaders(extensionHeaders)); // Extension headers
   }
-  if (data != undefined && data.byteLength > 0) {
+  if (hasData) {
     msg.push(data)
   } else {
-    msg.push(numberToVarInt(0))
     msg.push(numberToVarInt(MOQ_OBJ_STATUS_NORMAL))
   }
 
@@ -656,26 +663,30 @@ export function moqSendObjectEndOfGroupToWriter (writer, objSeq, extensionHeader
   return moqSendToWriter(writer, moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders))
 }
 
-export function moqSendObjectPerDatagramToWriter (writer, trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders) {
-  return moqSendToWriter(writer, moqCreateObjectPerDatagramBytes(trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders))
+export function moqSendObjectPerDatagramToWriter (writer, trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders, isEndOfFGroup) {
+  return moqSendToWriter(writer, moqCreateObjectPerDatagramBytes(trackAlias, groupSeq, objSeq, publisherPriority, data, extensionHeaders, isEndOfFGroup))
 }
 
 export async function moqParseObjectHeader (readerStream) {
   const type = await varIntToNumberOrThrow(readerStream)
-  if (type !== MOQ_MESSAGE_STREAM_HEADER_SUBGROUP && type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
-    throw new Error(`OBJECT answer type must be ${MOQ_MESSAGE_STREAM_HEADER_SUBGROUP} or ${MOQ_MESSAGE_OBJECT_DATAGRAM}, got ${type}`)
+  if (!isMoqObjectStreamHeaderType(type) && !isMoqObjectDatagramType(type)) {
+    throw new Error(`OBJECT is not any known object type, got ${type}`)
   }
 
-  let ret
-  if (type == MOQ_MESSAGE_OBJECT_DATAGRAM) {
+  let ret = undefined
+  if (isMoqObjectDatagramType(type)) {
+    const options = moqDecodeDatagramType(type)
     const trackAlias = await varIntToNumberOrThrow(readerStream);
     const groupSeq = await varIntToNumberOrThrow(readerStream);
     const objSeq = await varIntToNumberOrThrow(readerStream);
     const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
-    const extensionHeaders = await moqReadExtensionHeaders(readerStream)
+   let  extensionHeaders = undefined
+    if (options.extensionsPresent) {
+      extensionHeaders = await moqReadKeyValuePairs(readerStream)
+    }
     ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders}
   }
-  else if (type == MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
+  else if (isMoqObjectStreamHeaderType(type)) {
     const trackAlias = await varIntToNumberOrThrow(readerStream)
     const groupSeq = await varIntToNumberOrThrow(readerStream)
     const subGroupSeq = await varIntToNumberOrThrow(readerStream)
@@ -837,14 +848,15 @@ async function moqReadKeyValuePairs(readerStream) {
       ret.push({type: type, value: intValue})
     } else { // Odd are followed by length and buffer
       const size = await varIntToNumberOrThrow(readerStream)
-      const buffRet = await buffRead(readerStream, size)
-      if (buffRet.eof) {
-        throw new ReadStreamClosed(`Connection closed while reading data`)
-      }
-      if (type === TOKEN) {
-        ret.push({ type: type, value: aaa(buffRet.buff)})     
+      if (type == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
+        const token = await moqParseTokenBytes(readerStream, size)
+        ret.push({ type: type, value: token})  
       } else {
-        ret.push({ type: type, value: buffRet.buff})     
+        const buffRet = await buffRead(readerStream, size)
+        if (buffRet.eof) {
+          throw new ReadStreamClosed(`Connection closed while reading data`)
+        }
+        ret.push({ type: type, value: buffRet.buff})  
       }
     }
   }
@@ -876,7 +888,40 @@ function moqCreateTokenBytes(token) {
   return concatBuffer([numberToVarInt(totalLength, MOQ_USE_LITTLE_ENDIAN), ...msg])
 }
 
-async function moqSendToWriter (writer, dataBytes) {
+async function moqParseTokenBytes (readerStream, total_size) {
+  const token = {}
+  let remaining_size = total_size
+  const read_data_aliasType = await varIntToNumberAndLengthOrThrow(readerStream)
+  token.aliasType = read_data_aliasType.num
+  remaining_size = remaining_size - read_data_aliasType.byteLength
+  if (token.aliasType != MOQ_TOKEN_USE_VALUE) {
+    throw new Error('Only USE_VALUE token supported')
+  }
+  const read_data_tokenType = await varIntToNumberAndLengthOrThrow(readerStream)
+  token.tokenType = read_data_tokenType.num
+  remaining_size = remaining_size - read_data_tokenType.byteLength
+  if (token.tokenType != MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND) {
+    throw new Error('Only TYPE_NEGOTIATED_OUT_OF_BAND token type supported')
+  }
+  // TODO: JOC REMOVE 2 LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
+  const tmp_num = await varIntToNumberAndLengthOrThrow(readerStream)
+  remaining_size = remaining_size - tmp_num.byteLength
+
+  if (remaining_size > 0) {
+    const buffRet = await buffRead(readerStream, remaining_size)
+    if (buffRet.eof) {
+      throw new ReadStreamClosed(`Connection closed while reading data`)
+    }
+    token.value = buffRet.buff
+  } else if (remaining_size < 0) {
+    throw new Error('Corrupted token size')
+  }
+
+  return token
+}
+
+async function moqSendToWriter(writer, dataBytes) {
+  console.log(`Bytes sent: ${dataBytes}`)
   writer.write(dataBytes)
 }
 
@@ -884,4 +929,74 @@ async function moqSendToWriter (writer, dataBytes) {
 
 export function getFullTrackName(ns, name) {
   return `[${ns.join("/")}]/${name}`
+}
+
+export function getAuthInfofromToken(parameters) {
+  let ret = undefined
+  let i = 0
+  while (ret == undefined && i < parameters.length) {
+    const param = parameters[i]
+    if (param.type == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
+      const token = param.value
+      if (token.aliasType == MOQ_TOKEN_USE_VALUE && token.tokenType == MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND) {
+        ret = new TextDecoder().decode(token.value);
+      }
+    }
+    i++
+  }
+  return ret
+}
+
+export function moqDecodeDatagramType(type) {
+  if (!isMoqObjectDatagramType(type)) {
+    throw new Error(`No valid datagram type ${type}, it can NOT be decoded`)
+  }
+  const ret = { isStatus: false, extensionsPresent: false, isEndOfGroup: false }
+  if (type >= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX) {
+    ret.isStatus = true
+  } else {
+    if (type == 0x2 || type == 0x3) {
+      ret.isEndOfGroup = true
+    }
+  }
+  if (type & 0x1 > 0) {
+      ret.extensionsPresent = true
+  }
+  return ret
+}
+
+export function isMoqObjectDatagramType(type) {
+  let ret = false
+  if ((type >= MOQ_MESSAGE_OBJECT_DATAGRAM_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_MAX) || (type >= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX)) {
+    ret = true
+  }
+  return ret
+}
+
+export function isMoqObjectStreamHeaderType(type) {
+  let ret = false
+  if (type >= MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MIN && type <= MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MAX) {
+    ret = true
+  }
+  return ret
+}
+
+export function getDatagramType(isStatus, hasExternsionHeaders, isEndOfGroup) {
+  let type = 0
+
+  if (isStatus) {
+    type = 0x20
+  } else {
+    if (isEndOfGroup) {
+      type = 0x2
+    } else {
+      type = 0x1
+    }
+  }
+
+  if (hasExternsionHeaders) {
+    type = type | 0x1
+  }
+
+  return type
 }
