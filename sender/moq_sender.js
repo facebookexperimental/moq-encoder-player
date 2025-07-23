@@ -263,13 +263,15 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
         sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe received ${fullTrackName} is NOT in tracks ${JSON.stringify(tracks)}`)
         continue
       }
-      const authInfo = getAuthInfofromParameters(subscribe.parameters)
-      if (track.authInfo !== authInfo) {
-        const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
-        const errReason = `Invalid subscribe authInfo ${authInfo}`
-        sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
-        await moqSendSubscribeError(controlWriter, subscribe.requestId, errorCode, errReason)
-        continue
+      if (track.authInfo != undefined && track.authInfo != "") {
+        const authInfo = getAuthInfofromParameters(subscribe.parameters)
+        if (track.authInfo !== authInfo) {
+          const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
+          const errReason = `Invalid subscribe authInfo ${authInfo}`
+          sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
+          await moqSendSubscribeError(controlWriter, subscribe.requestId, errorCode, errReason)
+          continue
+        }
       }
       if (!('subscribers' in track)) {
         track.subscribers = []

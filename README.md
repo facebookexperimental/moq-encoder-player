@@ -339,3 +339,6 @@ You should see same UI that is shown in testing section above
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
+
+TODO: 
+- Check token in all messages, not just when encoder receives SUBSCRIBE

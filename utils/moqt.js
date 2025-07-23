@@ -249,7 +249,10 @@ function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
   msg.push(numberToVarInt(reqId))
   // Namespace
   msg.push(moqCreateTupleBytes(namespace));
-  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
+  let kv_params = []
+  if (authInfo != undefined && authInfo != "") {
+    kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo))]
+  }
   msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
@@ -337,8 +340,10 @@ function moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, au
   // NO need to add StartGroup, StartObject, EndGroup
 
   // Params
-  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
-  
+  let kv_params = []
+  if (authInfo != undefined && authInfo != "") {
+    kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo))]
+  }
   msg.push(moqCreateParametersBytes(kv_params))
   
   // Length
@@ -423,8 +428,10 @@ function moqCreateSubscribeOkMessageBytes (requestId, trackAlias, expiresMs, las
   }
 
   // Params
-  const kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo) )]
-  
+  let kv_params = []
+  if (authInfo != undefined && authInfo != "") {
+    kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo))]
+  }
   msg.push(moqCreateParametersBytes(kv_params))
 
   // Length
@@ -967,9 +974,11 @@ async function moqSendToWriter(writer, dataBytes, closeStream) {
         return writer.close()
       })
       .then(() => {
+        // TODO: JOC
         console.log("JOC Closed");
       })
       .catch((err) => {
+        // TODO: JOC
         console.error(`JOC Closing error: ${err}`);
       });
   } else {
