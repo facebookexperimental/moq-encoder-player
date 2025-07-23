@@ -218,7 +218,7 @@ function moqCreateClientSetupMessageBytes () {
 }
 
 export async function moqSendClientSetup (writerStream) {
-  return moqSendAndFlush(writerStream, moqCreateClientSetupMessageBytes())
+  return moqSendToStream(writerStream, moqCreateClientSetupMessageBytes())
 }
 
 // SETUP SERVER
@@ -239,7 +239,7 @@ async function moqParseSetupResponse (readerStream) {
 // ANNOUNCE
 
 export async function moqSendAnnounce(writerStream, reqId, namespace, authInfo) {
-  return moqSendAndFlush(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
+  return moqSendToStream(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
 }
 
 function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
@@ -290,7 +290,7 @@ async function moqParseAnnounceError (readerStream) {
 // UNANNOUNCE
 
 export async function moqSendUnAnnounce (writerStream, namespace) {
-  return moqSendAndFlush(writerStream, moqCreateUnAnnounceMessageBytes(namespace))
+  return moqSendToStream(writerStream, moqCreateUnAnnounceMessageBytes(namespace))
 }
 
 function moqCreateUnAnnounceMessageBytes (namespace) {
@@ -310,7 +310,7 @@ function moqCreateUnAnnounceMessageBytes (namespace) {
 // Always subscribe from start next group
 
 export async function moqSendSubscribe (writerStream, requestId, trackNamespace, trackName, authInfo) {
-  return moqSendAndFlush(writerStream, moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo))
+  return moqSendToStream(writerStream, moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo))
 }
 
 function moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo) {
@@ -397,7 +397,7 @@ async function moqParseSubscribe (readerStream) {
 // SUBSCRIBE OK
 
 export async function moqSendSubscribeOk (writerStream, requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo) {
-  return moqSendAndFlush(writerStream, moqCreateSubscribeOkMessageBytes(requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo))
+  return moqSendToStream(writerStream, moqCreateSubscribeOkMessageBytes(requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo))
 }
 
 function moqCreateSubscribeOkMessageBytes (requestId, trackAlias, expiresMs, lastGroupSent, lastObjSent, authInfo) {
@@ -461,7 +461,7 @@ async function moqParseSubscribeOk (readerStream) {
 // SUBSCRIBE ERROR
 
 export async function moqSendSubscribeError (writerStream, requestId, errorCode, reason) {
-  return moqSendAndFlush(writerStream, moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason))
+  return moqSendToStream(writerStream, moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason))
 }
 
 function moqCreateSubscribeErrorMessageBytes (requestId, errorCode, reason) {
@@ -498,7 +498,7 @@ async function moqParseSubscribeError (readerStream) {
 // UNSUBSCRIBE
 
 export async function moqSendUnSubscribe (writerStream, subscribeId) {
-  return moqSendAndFlush(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
+  return moqSendToStream(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId))
 }
 
 function moqCreateUnSubscribeMessageBytes (requestId) {
@@ -526,7 +526,7 @@ async function moqParseUnSubscribe (readerStream) {
 // SUBSCRIBE DONE
 
 export async function moqSendSubscribeDone(writerStream, requestId, errorCode, reason, numberOfOpenedStreams) {
-  return moqSendAndFlush(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
+  return moqSendToStream(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
 }
 
 function moqCreateSubscribeDoneMessageBytes(requestId, statusCode, reason, streamCount) {
@@ -956,34 +956,22 @@ async function moqParseTokenBytes (readerStream, total_size) {
   return token
 }
 
-async function moqSendAndFlush(writerStream, dataBytes) {
+async function moqSendToStream(writerStream, dataBytes, closeStream) {
   const writer = writerStream.getWriter()
-  moqSendToWriter(writer, dataBytes)
+  await moqSendToWriter(writer, dataBytes, closeStream)
   await writer.ready
   writer.releaseLock()
 }
 
 async function moqSendToWriter(writer, dataBytes, closeStream) {
-  //TODO JOC: Clean up
-  if (closeStream === true) {
-    writer.ready
-      .then(() => {
-        return writer.write(dataBytes)
-      })
-      .then(() => {
+  return writer.write(dataBytes)
+    .then(() => {
+      if (closeStream) {
         return writer.close()
-      })
-      .then(() => {
-        // TODO: JOC
-        console.log("JOC Closed");
-      })
-      .catch((err) => {
-        // TODO: JOC
-        console.error(`JOC Closing error: ${err}`);
-      });
-  } else {
-    writer.write(dataBytes)
-  }
+      } else {
+        return Promise.resolve()
+      }
+    })
 }
 
 export function getFullTrackName(ns, name) {
