@@ -473,8 +473,6 @@ function moqCreateSubscribeErrorMessageBytes (requestId, errorCode, reason) {
   msg.push(numberToVarInt(errorCode));
   // Reason
   msg.push(moqCreateStringBytes(reason))
-  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
-  msg.push(numberToVarInt(0));
 
   // Length
   const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
@@ -489,9 +487,7 @@ async function moqParseSubscribeError (readerStream) {
   ret.requestId = await varIntToNumberOrThrow(readerStream)
   ret.errorCode = await varIntToNumberOrThrow(readerStream)
   ret.errorReason = await moqStringReadOrThrow(readerStream)
-  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
-  ret.retryAlias = await varIntToNumberOrThrow(readerStream)
-
+  
   return ret
 }
 
@@ -914,8 +910,6 @@ function moqCreateTokenBytes(token) {
     throw new Error('Only TYPE_NEGOTIATED_OUT_OF_BAND token type supported')
   }
   msg.push(numberToVarInt(token.tokenType));
-  // TODO: JOC REMOVE THIS LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
-  msg.push(numberToVarInt(token.value.byteLength));
   msg.push(token.value) // Already a buffer
 
   // Length
@@ -939,10 +933,7 @@ async function moqParseTokenBytes (readerStream, total_size) {
   if (token.tokenType != MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND) {
     throw new Error('Only TYPE_NEGOTIATED_OUT_OF_BAND token type supported')
   }
-  // TODO: JOC REMOVE 2 LINE (byteLength) is a BUG Alan will fix, we already have size from KV pair
-  const tmp_num = await varIntToNumberAndLengthOrThrow(readerStream)
-  remaining_size = remaining_size - tmp_num.byteLength
-
+  
   if (remaining_size > 0) {
     const buffRet = await buffRead(readerStream, remaining_size)
     if (buffRet.eof) {
