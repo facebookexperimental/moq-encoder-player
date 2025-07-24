@@ -160,6 +160,7 @@ LICENSE file in the root directory of this source tree.
         <ol id="droppedFrames"></ol>
     </div>
 </body>
+<script src="../utils/mediastreamtrackprocessor.js"></script>
 <script type="module">
     import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
     import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
@@ -407,6 +408,7 @@ LICENSE file in the root directory of this source tree.
         // Assuming 1 track
         document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
             if (track.kind == 'audio') {
+                // Return the last audio track
                 ret = track.getSettings();
             }
         });
@@ -993,8 +995,12 @@ LICENSE file in the root directory of this source tree.
             }
         }
         const sourceAudioSetting = getAudioTrackSettings();
-        audioEncoderConfig.encoderConfig.sampleRate = sourceAudioSetting.sampleRate; // Get from source
-        audioEncoderConfig.encoderConfig.numberOfChannels = sourceAudioSetting.channelCount; // Get from source
+        if ("sampleRate" in sourceAudioSetting && sourceAudioSetting.sampleRate > 0) {
+            audioEncoderConfig.encoderConfig.sampleRate = sourceAudioSetting.sampleRate; // Get from source
+        }
+        if ("channelCount" in sourceAudioSetting && sourceAudioSetting.channelCount > 0) {
+            audioEncoderConfig.encoderConfig.numberOfChannels = sourceAudioSetting.channelCount; // Get from source
+        }
         const audioBitrate = document.getElementById('audioEncodingBitrateBpsOptions').options[document.getElementById('audioEncodingBitrateBpsOptions').selectedIndex].data.bitrate;
         audioEncoderConfig.encoderConfig.bitrate = audioBitrate;
 
@@ -1033,6 +1039,7 @@ LICENSE file in the root directory of this source tree.
 
         // Create a MediaStreamTrackProcessor, which exposes frames from the track
         // as a ReadableStream of VideoFrames.
+        // This fallsback to proper implementation if NOT defined
         const vTrack = mediaStream.getVideoTracks()[0];
         const vProcessor = new MediaStreamTrackProcessor(vTrack);
         const vFrameStream = vProcessor.readable;

@@ -342,3 +342,4 @@ moq-encoder-player is released under the [MIT License](https://github.com/facebo
 
 TODO: 
 - Check token in all messages, not just when encoder receives SUBSCRIBE
+- Work on mediastreamtrackprocessor not compatible across browsers

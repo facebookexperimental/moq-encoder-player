@@ -64,9 +64,12 @@ self.addEventListener('message', async function (e) {
     return
   }
   if (type === 'aencoderini') {
+    if (workerState == StateEnum.Running) {
+      sendMessageToMain(WORKER_PREFIX, 'info', 'Encoder already initialized')
+      return
+    }
     const encoderConfig = e.data.encoderConfig
 
-    // eslint-disable-next-line no-undef
     aEncoder = new AudioEncoder(initAudioEncoder)
 
     // We do NOT accept changing audio encoding settings mid-stream for now
@@ -75,6 +78,7 @@ self.addEventListener('message', async function (e) {
     if ('encoderMaxQueueSize' in e.data) {
       encoderMaxQueueSize = e.data.encoderMaxQueueSize
     }
+    workerState = StateEnum.Running
     sendMessageToMain(WORKER_PREFIX, 'info', `Encoder initialized with config: ${JSON.stringify(lastEncoderConfig)}`)
     return
   }
@@ -82,7 +86,10 @@ self.addEventListener('message', async function (e) {
     sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received')
     return
   }
-
+  if (workerState != StateEnum.Running) {
+      sendMessageToMain(WORKER_PREFIX, 'info', 'Audio frame before encoder initialized')
+      return
+    }
   const aFrame = e.data.aframe
 
   if (aEncoder.encodeQueueSize > encoderMaxQueueSize) {

@@ -10,10 +10,9 @@ import { sendMessageToMain } from '../utils/utils.js'
 const WORKER_PREFIX = '[VIDEO-CAP]'
 
 let stopped = false
-let mainLoopInterval
+let mainLoopInterval = undefined
 let isMainLoopInExecution = false
-
-let timeCheck
+let timeCheck = undefined
 let estFps = 0
 
 function mainLoop (frameReader) {

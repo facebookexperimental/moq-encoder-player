@@ -10,7 +10,7 @@ import { sendMessageToMain } from '../utils/utils.js'
 const WORKER_PREFIX = '[AUDIO-CAP]'
 
 let stopped = false
-let mainLoopInterval
+let mainLoopInterval = undefined
 let isMainLoopInExecution = false
 
 function mainLoop (frameReader) {

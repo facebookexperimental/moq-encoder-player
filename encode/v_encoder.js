@@ -70,7 +70,6 @@ self.addEventListener('message', async function (e) {
   if (type === 'vencoderini') {
     const encoderConfig = e.data.encoderConfig
 
-    // eslint-disable-next-line no-undef
     vEncoder = new VideoEncoder(initVideoEncoder)
 
     vEncoder.configure(encoderConfig)
