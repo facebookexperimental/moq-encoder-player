@@ -15,7 +15,7 @@ Note: You need to be careful and check that protocol versions implemented by thi
 
 ## Packager
 
-It uses [draft-cenzano-moq-media-interop-01](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+It uses [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 ## Encoder
 
