@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, MOQ_MESSAGE_OBJECT_DATAGRAM, MOQ_MESSAGE_STREAM_HEADER_SUBGROUP, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName } from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendClientSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, isMoqObjectStreamHeaderType, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName, isMoqObjectDatagramType, moqDecodeDatagramType} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
@@ -21,7 +21,7 @@ let workerState = StateEnum.Created
 
 let urlHostPortEp = ''
 let isSendingStats = false
-let currentSubscribeId = 0
+let currentClientRequestId = undefined
 let currentTrackAlias = 0
 let certificateHash = null
 let tracks = {} // We add subscribeId and trackAlias
@@ -138,6 +138,9 @@ self.addEventListener('message', async function (e) {
 
       await moqt.wt.ready
       await moqCreateControlStream(moqt)
+
+      requestIDsReset()
+
       await moqCreateSubscriberSession(moqt)
 
       sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ Initialized')
@@ -185,10 +188,10 @@ async function moqReceiveStreamObjects (moqt) {
       sendMessageToMain(WORKER_PREFIX, 'debug', 'New QUIC stream')
 
       const moqStreamsObjHeader = await moqParseObjectHeader(stream.value)
-      if (moqStreamsObjHeader.type === MOQ_MESSAGE_STREAM_HEADER_SUBGROUP) {
-        sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgrp ${JSON.stringify(moqStreamsObjHeader)}`)
+      if (isMoqObjectStreamHeaderType(moqStreamsObjHeader.type)) {
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Received object header subgroup ${JSON.stringify(moqStreamsObjHeader)}`)
         // NO await on purpose!
-        moqReceiveMultiObjectStream(stream.value)
+        moqReceiveMultiObjectStream(stream.value, moqStreamsObjHeader.type)
       } else {
         sendMessageToMain(WORKER_PREFIX, 'error', `Unsupported stream type for sterams ${moqStreamsObjHeader.type}`)
       }
@@ -197,21 +200,21 @@ async function moqReceiveStreamObjects (moqt) {
   sendMessageToMain(WORKER_PREFIX, 'info', 'Exited receive objects loop')
 }
 
-async function moqReceiveMultiObjectStream(readerStream) {
+async function moqReceiveMultiObjectStream(readerStream, type) {
   let isEOF = false
   let numObjRead = 0
-  let moqHeader = {} 
+  let objHeader = {} 
   while (workerState !== StateEnum.Stopped && isEOF === false) {
     reportStats()
     try {
-      moqHeader = await moqParseObjectFromSubgroupHeader(readerStream)
+      objHeader = await moqParseObjectFromSubgroupHeader(readerStream, type)
       
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(moqHeader)}`);
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(objHeader)}`);
 
       // Check if we received the end of the subgroup
-      isEOF = ("status" in moqHeader && (moqHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || moqHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
-      if (!isEOF && moqHeader.payloadLength > 0) {
-        isEOF = await readAndSendPayload(readerStream, moqHeader.extensionHeaders, moqHeader.payloadLength)
+      isEOF = ("status" in objHeader && (objHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
+      if (!isEOF && objHeader.payloadLength > 0) {
+        isEOF = await readAndSendPayload(readerStream, objHeader.extensionHeaders, objHeader.payloadLength)
         sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
       }
       sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
@@ -254,10 +257,14 @@ async function moqReceiveDatagramObjects (moqt) {
       const moqObjHeader = await moqParseObjectHeader(readableStream)
       sendMessageToMain(WORKER_PREFIX, 'debug', `Received object datagram header ${JSON.stringify(moqObjHeader)}`)
 
-      if (moqObjHeader.type != MOQ_MESSAGE_OBJECT_DATAGRAM) {
+      if (!isMoqObjectDatagramType(moqObjHeader.type)) {
         throw new Error(`Received via datagram a non properly encoded object ${JSON.stringify(moqObjHeader)}`)
       }
-      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders)
+      let length = undefined // Read until end of datagram
+      if (moqDecodeDatagramType(moqObjHeader.type).isStatus) {
+        length = 0 // This will NOT read payload but decode headers if present
+      }
+      await readAndSendPayload(readableStream, moqObjHeader.extensionHeaders, length)
     }
   }
 
@@ -313,7 +320,7 @@ async function readAndSendPayload(readerStream, extensionHeaders, length) {
 // MOQT
 
 async function moqCreateSubscriberSession (moqt) {
-  await moqSendSetup(moqt.controlWriter)
+  await moqSendClientSetup(moqt.controlWriter)
   const moqMsg = await moqParseMsg(moqt.controlReader)
   if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
     throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${moqMsg.type}`)
@@ -325,7 +332,8 @@ async function moqCreateSubscriberSession (moqt) {
   let pending_subscribes = Object.entries(tracks)
   while (pending_subscribes.length > 0) {
     const [trackType, trackData] = pending_subscribes[0];
-    await moqSendSubscribe(moqt.controlWriter, currentSubscribeId, currentTrackAlias, trackData.namespace, trackData.name, trackData.authInfo)
+    const reqId = getNextClientReqId()
+    await moqSendSubscribe(moqt.controlWriter, reqId, trackData.namespace, trackData.name, trackData.authInfo)
     const moqMsg = await moqParseMsg(moqt.controlReader)
     if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
       throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
@@ -336,12 +344,11 @@ async function moqCreateSubscriberSession (moqt) {
       await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
     } else {
       const subscribeResp = moqMsg.data    
-      if (subscribeResp.subscribeId !== currentSubscribeId) {
-        throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.subscribeId} != ${currentSubscribeId}`)
+      if (subscribeResp.requestId !== reqId) {
+        throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.reqId} != ${reqId}`)
       }
       sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${getFullTrackName(trackData.namespace, trackData.name)}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-      trackData.subscribeId = currentSubscribeId++
-      trackData.trackAlias = currentTrackAlias++
+      trackData.trackAlias = getNextTrackAlias()
 
       pending_subscribes.shift()
     }
@@ -391,4 +398,23 @@ async function unSubscribeTracks(moqt) {
       }
     }
   }
+}
+
+// Requests IDs
+function requestIDsReset() {
+  currentClientRequestId = undefined
+}
+
+function getNextClientReqId() {
+  if (typeof currentClientRequestId == 'undefined') {
+    currentClientRequestId = 0
+  } else {
+    currentClientRequestId = currentClientRequestId + 2
+  }
+  return currentClientRequestId
+}
+
+function getNextTrackAlias() {
+  currentTrackAlias++
+  return currentTrackAlias
 }

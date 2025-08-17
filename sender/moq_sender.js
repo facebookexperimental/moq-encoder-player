@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
-import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendSetup, moqSendUnAnnounce, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendClientSetup, moqSendUnAnnounce, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendAnnounce, getTrackFullName, moqSendSubscribeDone, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_SUBSCRIPTION_DONE_ENDED, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_ANNOUNCE_OK, MOQ_MESSAGE_ANNOUNCE_ERROR, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter, getAuthInfofromParameters } from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 
 const WORKER_PREFIX = '[MOQ-SENDER]'
@@ -26,6 +26,9 @@ let keepAliveNameSpace = ""
 let certificateHash = null
 
 let lastObjectSentMs = 0
+
+let currentClientRequestId = undefined
+let currentTrackAlias = 0
 
 let tracks = {}
 // Example
@@ -152,6 +155,10 @@ self.addEventListener('message', async function (e) {
 
       await moqt.wt.ready
       await moqCreateControlStream(moqt)
+
+      // Reset request IDs
+      requestIDsReset()
+      
       await moqCreatePublisherSession(moqt)
 
       sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ Initialized, waiting for subscriptions')
@@ -235,7 +242,7 @@ self.addEventListener('message', async function (e) {
 
 async function sendKeepAlive(controlWriter) {
   if((Date.now() - lastObjectSentMs) > keepAlivesEveryMs) {
-    await moqSendAnnounce(controlWriter, [keepAliveNameSpace], "")
+    await moqSendAnnounce(controlWriter, getNextClientReqId(), [keepAliveNameSpace], "")
     sendMessageToMain(WORKER_PREFIX, 'info', `Sent keep alive (announce) for ns: ${keepAliveNameSpace}`)
   }
 }
@@ -245,6 +252,8 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
 
   while (workerState === StateEnum.Running) {
     const moqMsg = await moqParseMsg(controlReader)
+    sendMessageToMain(WORKER_PREFIX, 'debug', `Message received: ${JSON.stringify(moqMsg)}`)
+
     if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE) {
       const subscribe = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE: ${JSON.stringify(subscribe)}`)
@@ -254,33 +263,23 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
         sendMessageToMain(WORKER_PREFIX, 'error', `Invalid subscribe received ${fullTrackName} is NOT in tracks ${JSON.stringify(tracks)}`)
         continue
       }
-      if (track.authInfo !== subscribe.parameters.authInfo) {
-        const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
-        const errReason = `Invalid subscribe authInfo ${subscribe.parameters.authInfo}`
-        sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
-        await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
-        continue
+      if (track.authInfo != undefined && track.authInfo != "") {
+        const authInfo = getAuthInfofromParameters(subscribe.parameters)
+        if (track.authInfo !== authInfo) {
+          const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
+          const errReason = `Invalid subscribe authInfo ${authInfo}`
+          sendMessageToMain(WORKER_PREFIX, 'error', `${errReason} does not match with ${JSON.stringify(tracks)}`)
+          await moqSendSubscribeError(controlWriter, subscribe.requestId, errorCode, errReason)
+          continue
+        }
       }
       if (!('subscribers' in track)) {
         track.subscribers = []
       }
-      if (getSubscriberTrackFromTrackAlias(subscribe.trackAlias) != null) {
-        const errorCode = MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS
-        const errReason = `TrackAlias already in use ${subscribe.trackAlias}`
-        sendMessageToMain(WORKER_PREFIX, 'error', `${errReason}`)
-        await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
-        continue
-      }
-      if (getSubscriberTrackFromSubscribeID(subscribe.subscribeId) != null) {
-        const errorCode = MOQ_SUBSCRIPTION_ERROR_INTERNAL
-        const errReason = `SubscribeID already in use ${subscribe.subscribeId}`
-        sendMessageToMain(WORKER_PREFIX, 'error', `${errReason}`)
-        await moqSendSubscribeError(controlWriter, subscribe.subscribeId, errorCode, errReason, subscribe.trackAlias)
-        continue
-      }
-      // Add subscribe
+      // Generate track alias
+      subscribe.trackAlias = getNextTrackAlias()
+      // Add subscription
       track.subscribers.push(subscribe)
-
       if (!('aggregatedNumSubscription' in track)) {
         track.aggregatedNumSubscription = 0
       } else {
@@ -290,21 +289,21 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
       sendMessageToMain(WORKER_PREFIX, 'info', `New subscriber for track ${subscribe.trackAlias}(${subscribe.namespace}/${subscribe.trackName}). Current num subscriber: ${track.subscribers.length}. AuthInfo MATCHED!`)
       
       const lastSent = getLastSentFromTrackAlias(subscribe.trackAlias)
-      await moqSendSubscribeOk(controlWriter, subscribe.subscribeId, 0, lastSent.group, lastSent.obj, subscribe.parameters.authInfo)
-      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for subscribeId: ${subscribe.subscribeId}, last: ${lastSent.group}/${lastSent.obj}`)
+      await moqSendSubscribeOk(controlWriter, subscribe.requestId, subscribe.trackAlias, 0, lastSent.group, lastSent.obj, subscribe.parameters.authInfo)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for requestId: ${subscribe.requestId}, last: ${lastSent.group}/${lastSent.obj}`)
     }
     else if (moqMsg.type === MOQ_MESSAGE_UNSUBSCRIBE) {
       const unsubscribe = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received UNSUBSCRIBE: ${JSON.stringify(unsubscribe)}`)
-      const subscribe = removeSubscriberFromTrack(unsubscribe.subscribeId)
+      const subscribe = removeSubscriberFromTrack(unsubscribe.requestId)
       if (subscribe != null) {
-        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber for subscribeId: ${subscribe.subscribeId}`)
+        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber for subscribeId: ${subscribe.requestId}`)
       } else {
-        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${subscribe.subscribeId}`)
+        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${subscribe.requestId}`)
       }
     }
-    else if (moqMsg.type === MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.data.namespace.join('') === keepAliveNameSpace) {
-      // This is the keep alive answer
+    else if (moqMsg.type === MOQ_MESSAGE_ANNOUNCE_OK) {
+      // This could be the keep alive answer
     }
     else {
       sendMessageToMain(WORKER_PREFIX, 'warning', `Unexpected message (type ${moqMsg.type} received, ignoring`)
@@ -397,14 +396,13 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
 
   const mediaType = packet.getMediaType();
 
-  let p = null;
   if (moqMapping === MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
     // Get datagram writer
     const datagramWriter = moqt.wt.datagrams.writable.getWriter();
 
     sendMessageToMain(WORKER_PREFIX, 'debug', `Sending Object per datagram. trackAlias: ${trackAlias} ${groupSeq}/${objSeq}(${sendOrder}). Data: ${packet.GetDataStr()}, Ext Headers: ${JSON.stringify(packet.ExtensionHeaders())}`)
 
-    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders())
+    moqSendObjectPerDatagramToWriter(datagramWriter, trackAlias, groupSeq, objSeq, publisherPriority, packet.PayloadToBytes(), packet.ExtensionHeaders(), true)
 
     datagramWriter.releaseLock()
 
@@ -431,18 +429,13 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
       let prevUniStreamWritter = moqt.multiObjectWritter[prevStreamWriterId];
       if (prevUniStreamWritter != undefined) {
         // Indicate end of group
-        moqSendObjectEndOfGroupToWriter(prevUniStreamWritter, prevObjSeq + 1);
+        moqSendObjectEndOfGroupToWriter(prevUniStreamWritter, prevObjSeq + 1, [], true);
         sendMessageToMain(WORKER_PREFIX, 'debug', `Send group close for ${prevStreamWriterId} and ${prevGroupSeq}`);
-        p = prevUniStreamWritter.close()
-        p.writteId = prevStreamWriterId;
-        p.finally(() => {
-          if (moqt.multiObjectWritter[p.writteId] != undefined) {
-            delete moqt.multiObjectWritter[p.writteId]
-          }
-          const msg = `Closed stream ${prevStreamWriterId}`
-          sendMessageToMain(WORKER_PREFIX, 'debug', msg);
-          return { dropped: false, message: msg }
-        });
+        if (moqt.multiObjectWritter[prevStreamWriterId] != undefined) {
+          delete moqt.multiObjectWritter[prevStreamWriterId]
+        }
+        const msg = `Closing stream ${prevStreamWriterId}`
+        sendMessageToMain(WORKER_PREFIX, 'debug', msg);
       }
     }
 
@@ -465,7 +458,7 @@ function createMultiObjectHash(mediaType, trackAlias, groupId) {
 
 async function moqCreatePublisherSession (moqt) {
   // SETUP
-  await moqSendSetup(moqt.controlWriter)
+  await moqSendClientSetup(moqt.controlWriter)
 
   const moqMsg = await moqParseMsg(moqt.controlReader)
   if (moqMsg.type !== MOQ_MESSAGE_SERVER_SETUP) {
@@ -476,7 +469,8 @@ async function moqCreatePublisherSession (moqt) {
   const announcedNamespaces = []
   for (const [trackType, trackData] of Object.entries(tracks)) {
     if (!announcedNamespaces.includes(trackData.namespace)) {
-      await moqSendAnnounce(moqt.controlWriter, trackData.namespace, trackData.authInfo)
+      const announceReqId = getNextClientReqId()
+      await moqSendAnnounce(moqt.controlWriter, announceReqId, trackData.namespace, trackData.authInfo)
       const moqMsg = await moqParseMsg(moqt.controlReader)
       if (moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_OK && moqMsg.type !== MOQ_MESSAGE_ANNOUNCE_ERROR) {
         throw new Error(`Expected MOQ_MESSAGE_ANNOUNCE_OK or MOQ_MESSAGE_ANNOUNCE_ERROR, received ${moqMsg.type}`)
@@ -486,31 +480,14 @@ async function moqCreatePublisherSession (moqt) {
       }
       const announceResp = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received ANNOUNCE_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(announceResp)}`)
-      if (!isSameNamespace(trackData.namespace, announceResp.namespace)) {
-        throw new Error(`expecting namespace ${JSON.stringify(trackData.namespace)}, got ${JSON.stringify(announceResp)}`)
+      if (announceReqId != announceResp.reqId) {
+        throw new Error(`Received RequestID ${announceResp.reqId} does NOT match with the one sent in ANNOUNCE ${announceReqId}`)
       }
       announcedNamespaces.push(trackData.namespace)
     }
   }
 
   lastObjectSentMs = Date.now()
-}
-
-function isSameNamespace(a, b) {
-  if (a.length !== b.length) {
-      return false;
-  }
-  a.forEach(function (item) {
-    if (!b.includes(item)) {
-      return false
-    }
-  });
-  b.forEach(function (item) {
-    if (!a.includes(item)) {
-      return false
-    }
-  });
-  return true
 }
 
 function checkTrackData () {
@@ -562,43 +539,13 @@ function getTrackFromFullTrackName (fullTrackName) {
   return null
 }
 
-function getSubscriberTrackFromTrackAlias (trackAlias) {
-  for (const [, trackData] of Object.entries(tracks)) {
-    if ("subscribers" in trackData && trackData.subscribers.length > 0) {
-      let i = 0
-      while (i < trackData.subscribers.length) {
-        if (trackData.subscribers[i].trackAlias === trackAlias) {
-          return trackData
-        }
-        i++
-      }
-    }
-  }
-  return null
-}
-
-function getSubscriberTrackFromSubscribeID (subscribeId) {
-  for (const [, trackData] of Object.entries(tracks)) {
-    if ("subscribers" in trackData && trackData.subscribers.length > 0) {
-      let i = 0
-      while (i < trackData.subscribers.length) {
-        if (trackData.subscribers[i].subscribeId === subscribeId) {
-          return trackData
-        }
-        i++
-      }
-    }
-  }
-  return null
-}
-
-function removeSubscriberFromTrack (subscribeId) {
+function removeSubscriberFromTrack (requestId) {
   for (const trackData of Object.values(tracks)) {
     if ("subscribers" in trackData && trackData.subscribers.length > 0) {
       let i = 0
       if ('subscribers' in trackData) {
         while (i < trackData.subscribers.length) {
-          if (trackData.subscribers[i].subscribeId === subscribeId) {
+          if (trackData.subscribers[i].requestId === requestId) {
             const ret = trackData.subscribers[i]
             trackData.subscribers.splice(i, 1)
             return ret
@@ -611,13 +558,13 @@ function removeSubscriberFromTrack (subscribeId) {
   return null
 }
 
-function getListOfSubscribeIdPerTrack(trackData) {
+function getListOfRequestIdPerTrack(trackData) {
   const ret = []
   if ("subscribers" in trackData && trackData.subscribers.length > 0) {
     let i = 0
     if ('subscribers' in trackData) {
       while (i < trackData.subscribers.length) {
-        ret.push(trackData.subscribers[i].subscribeId)
+        ret.push(trackData.subscribers[i].requestId)
         i++
       }
     }
@@ -632,7 +579,6 @@ function getAggretatedSubscriptions() {
       ret = ret + trackData.aggregatedNumSubscription 
     }
   }
-
   return ret
 }
 
@@ -670,10 +616,10 @@ async function sendSubscribeDone(moqt) {
   const numberOfOpenedStreams = getAggretatedSubscriptions()
   
   for (const trackData of Object.values(tracks)) {
-    const subscribeIDs = getListOfSubscribeIdPerTrack(trackData)
+    const subscribeIDs = getListOfRequestIdPerTrack(trackData)
     for (const subscribeId of subscribeIDs) {
       try {
-        await moqSendSubscribeDone(moqt.controlWriter, subscribeId, errorCode, errReason, numberOfOpenedStreams)
+        await moqSendSubscribeDone(moqt.controlWriter, currentClientRequestId, errorCode, errReason, numberOfOpenedStreams)
         sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_DONE for subscribeId: ${subscribeId}, err: ${errorCode}(${errReason}), numberOfOpenedStreams: ${numberOfOpenedStreams}`)
       }
       catch (err) {
@@ -695,4 +641,24 @@ async function unAnnounceTracks(moqt) {
         sendMessageToMain(WORKER_PREFIX, 'error', `on UnAnnounce. Err: ${err}`)
       }
   }
+}
+
+// Requests IDs
+function requestIDsReset() {
+  currentClientRequestId = undefined
+}
+
+function getNextClientReqId() {
+  if (typeof currentClientRequestId == 'undefined') {
+    currentClientRequestId = 0
+  } else {
+    currentClientRequestId = currentClientRequestId + 2
+  }
+  return currentClientRequestId
+}
+
+function getNextTrackAlias() {
+  const ret = currentTrackAlias
+  currentTrackAlias++
+  return ret
 }

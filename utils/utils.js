@@ -19,6 +19,21 @@ export class StateEnum {
   }
 }
 
+export function numberToSingleByteArray(num) {
+  if (num > 255 || num < 0)
+    throw new Error(`Overlfow! Tried to encode ${num} as single byte`)
+  return new Uint8Array([Math.round(num)]);
+}
+
+export function numberTo2BytesArray(num, isLittleEndian) {
+  if (num > 65535 || num < 0)
+    throw new Error(`Overlfow! Tried to encode ${num} as single byte`)
+  
+  const buffer = new ArrayBuffer(2);
+  new DataView(buffer).setInt16(0, num, isLittleEndian);
+  return buffer
+}
+
 export function sendMessageToMain (prefix, type, data) {
     if (type === 'debug' || type === 'info' || type === 'error' || type === 'warning') {
       data = prefix + ' ' + data
