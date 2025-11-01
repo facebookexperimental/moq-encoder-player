@@ -157,6 +157,7 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
             </form>
         </div>
+        <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
         <ol id="droppedFrames"></ol>
     </div>
 </body>
@@ -864,7 +865,7 @@ LICENSE file in the root directory of this source tree.
 
             // DROPPED
         } else if (e.data.type === "dropped") {
-            updateDroppedFrame(e.data.data);
+            updateDroppedFrame(e.data.data);   
 
             // CHUNKS
         } else if (e.data.type === "vchunk") {
@@ -912,6 +913,9 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateDroppedFrame(droppedFrameData) {
+        if (!document.getElementById('chkLogDroppedFrames').checked) {
+            return
+        }
         const list = document.getElementById('droppedFrames');
 
         const clkms = droppedFrameData.clkms;
