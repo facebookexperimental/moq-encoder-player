@@ -20,8 +20,9 @@ export const MOQ_DRAFT07_VERSION = 0xff000007
 export const MOQ_DRAFT08_VERSION_EXP9 = 0xff080009
 export const MOQ_DRAFT08_VERSION = 0xff000008
 export const MOQ_DRAFT12_VERSION = 0xff00000C
+export const MOQ_DRAFT14_VERSION = 0xff00000E
 
-export const MOQ_CURRENT_VERSION = MOQ_DRAFT12_VERSION
+export const MOQ_CURRENT_VERSION = MOQ_DRAFT14_VERSION
 export const MOQ_SUPPORTED_VERSIONS = [MOQ_CURRENT_VERSION]
 
 export const MOQ_USE_LITTLE_ENDIAN = false // MoQ is big endian
@@ -42,24 +43,15 @@ export const MOQ_MAX_ARRAY_LENGTH = 1024
 export const MOQ_MAX_TUPLE_PARAMS = 32
 export const MOQ_MAX_REQUEST_ID_NUM = 128
 
-// MOQ Location modes
-export const MOQ_LOCATION_MODE_NONE = 0x0
-export const MOQ_LOCATION_MODE_ABSOLUTE = 0x1
-export const MOQ_LOCATION_MODE_RELATIVE_PREVIOUS = 0x2
-export const MOQ_LOCATION_MODE_RELATIVE_NEXT = 0x3
-
 // MOQ SUBSCRIPTION CODES
 export const MOQ_SUBSCRIPTION_ERROR_INTERNAL = 0
 export const MOQ_SUBSCRIPTION_RETRY_TRACK_ALIAS = 0x2
 
-// MOQ SUBSCRIPTION DONE CODES
-export const MOQ_SUBSCRIPTION_DONE_ENDED = 0x4
-
 // MOQ FILTER TYPES
-export const MOQ_FILTER_TYPE_LATEST_GROUP = 0x1
-export const MOQ_FILTER_TYPE_LATEST_OBJ = 0x2
-export const MOQ_FILTER_TYPE_ABSOLUTE_START = 0x3
-export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4
+export const MOQ_FILTER_TYPE_NEXT_GROUP_START = 0x1
+export const MOQ_FILTER_TYPE_LARGEST_OBJECT = 0x2 
+export const MOQ_FILTER_TYPE_ABSOLUTE_START = 0x3 // With location
+export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4 // With location
 
 // MOQ object headers
 // Datagrams
@@ -80,10 +72,11 @@ export const MOQ_MESSAGE_SUBSCRIBE_ERROR = 0x5
 export const MOQ_MESSAGE_UNSUBSCRIBE = 0xa
 export const MOQ_MESSAGE_SUBSCRIBE_DONE = 0xb
 
-export const MOQ_MESSAGE_ANNOUNCE = 0x6
-export const MOQ_MESSAGE_ANNOUNCE_OK = 0x7
-export const MOQ_MESSAGE_ANNOUNCE_ERROR = 0x8
-export const MOQ_MESSAGE_UNANNOUNCE = 0x9
+// PUBLISH 
+export const MOQ_MESSAGE_PUBLISH = 0x1d
+export const MOQ_MESSAGE_PUBLISH_OK = 0x1e
+export const MOQ_MESSAGE_PUBLISH_ERROR = 0x1f
+export const MOQ_MESSAGE_PUBLISH_DONE = 0xb
 
 // MOQ PRIORITIES
 export const MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT = 0xa
@@ -131,6 +124,13 @@ export const MOQ_TOKEN_USE_VALUE = 0x3
 // Token type
 export const MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND = 0x0
 
+// Status code
+export const MOQ_STATUS_UNAUTHORIZED = 0x1
+export const MOQ_STATUS_TRACK_ENDED = 0x2
+export const SUBSCRIPTION_ENDED = 0x3
+export const GOING_AWAY = 0x4
+export const MOQ_STATUS_EXPIRED = 0x5
+export const MOQ_STATUS_TOO_FAR_BEHIND = 0x6
 
 
 export function moqCreate () {
@@ -236,19 +236,30 @@ async function moqParseSetupResponse (readerStream) {
   return ret
 }
 
-// ANNOUNCE
+// PUBLISH
 
-export async function moqSendAnnounce(writerStream, reqId, namespace, authInfo) {
-  return moqSendToStream(writerStream, moqCreateAnnounceMessageBytes(namespace, reqId, authInfo))
+export async function moqSendPublish(writerStream, reqId, namespace, name, trackAlias, authInfo) {
+  return moqSendToStream(writerStream, moqCreatePublishMessageBytes(reqId, namespace, name, trackAlias, authInfo))
 }
 
-function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
+function moqCreatePublishMessageBytes (reqId, namespace, name, trackAlias, authInfo) {
   const msg = []
 
   // RequestID
   msg.push(numberToVarInt(reqId))
   // Namespace
   msg.push(moqCreateTupleBytes(namespace));
+  // Name
+  msg.push(moqCreateStringBytes(name));
+  // TrackAlias
+  msg.push(numberToVarInt(trackAlias));
+  // Group order
+  msg.push(numberToSingleByteArray(MOQ_GROUP_ORDER_ASCENDING));
+  // Context exists
+  msg.push(numberToSingleByteArray(0)); // Nothing has been published before
+  // Forward
+  msg.push(numberToSingleByteArray(MOQ_FORWARD_TRUE)); // Start sending now
+  // Parameters
   let kv_params = []
   if (authInfo != undefined && authInfo != "") {
     kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo))]
@@ -258,24 +269,29 @@ function moqCreateAnnounceMessageBytes (namespace, reqId, authInfo) {
   // Length
   const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
-  return concatBuffer([numberToVarInt(MOQ_MESSAGE_ANNOUNCE), lengthBytes, ...msg])
+  return concatBuffer([numberToVarInt(MOQ_MESSAGE_PUBLISH), lengthBytes, ...msg])
 }
 
-// ANNOUNCE OK
+// PUBLISH OK
 
-async function moqParseAnnounceOk (readerStream) {
+async function moqParsePublishOk(readerStream) {
   const ret = { }
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   
-  ret.reqId = await varIntToNumberOrThrow(readerStream)
+  ret.reqId = await varIntToNumberOrThrow(readerStream);
+  ret.forward = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.subscriberPriority = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.groupOrder = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.filter = await moqDecodeFilterLocation(readerStream)
+  ret.parameters = await moqReadParameters(readerStream)
   
   return ret
 }
 
-// ANNOUNCE ERROR
+// PUBLISH ERROR
 
-async function moqParseAnnounceError (readerStream) {
+async function moqParsePublishError (readerStream) {
   const ret = { }
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
@@ -287,22 +303,40 @@ async function moqParseAnnounceError (readerStream) {
   return ret
 }
 
-// UNANNOUNCE
+// PUBLISH DONE
 
-export async function moqSendUnAnnounce (writerStream, namespace) {
-  return moqSendToStream(writerStream, moqCreateUnAnnounceMessageBytes(namespace))
+export async function moqSendPublishDone(writerStream, requestId, statusCode, streamCount, reason) {
+  return moqSendToStream(writerStream, moqCreatePublishDoneMessageBytes(requestId, statusCode, streamCount, reason))
 }
 
-function moqCreateUnAnnounceMessageBytes (namespace) {
+function moqCreatePublishDoneMessageBytes(requestId, statusCode, streamCount, reason) {
   const msg = []
   
-  // Namespace
-  msg.push(moqCreateTupleBytes(namespace));
+  // Request ID
+  msg.push(numberToVarInt(requestId))
+  // Status code
+  msg.push(numberToVarInt(statusCode));
+  // Stream count
+  msg.push(numberToVarInt(streamCount));
+  // Error reason
+  msg.push(moqCreateStringBytes(reason))
 
   // Length
   const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
-  return concatBuffer([numberToVarInt(MOQ_MESSAGE_UNANNOUNCE), lengthBytes, ...msg])
+  return concatBuffer([numberToVarInt(MOQ_MESSAGE_PUBLISH_DONE), lengthBytes, ...msg])
+}
+
+async function moqParsePublishDone (readerStream) {
+  const ret = { }
+
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
+  ret.statusCode = await varIntToNumberOrThrow(readerStream)
+  ret.streamCount = await varIntToNumberOrThrow(readerStream)
+  ret.errorReason = await moqStringReadOrThrow(readerStream)
+
+  return ret
 }
 
 
@@ -318,24 +352,18 @@ function moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, au
 
   // reuqestID
   msg.push(numberToVarInt(requestId));
-  
   // Track namespace
   msg.push(moqCreateTupleBytes(trackNamespace));
-
   // Track name
   msg.push(moqCreateStringBytes(trackName));
-
   // Subscriber priority
   msg.push(numberToSingleByteArray(MOQ_USECASE_SUBSCRIBER_PRIORITY_DEFAULT));
-
   // Group order
   msg.push(numberToSingleByteArray(MOQ_GROUP_ORDER_FOLLOW_PUBLISHER));
-
   // Forward
   msg.push(numberToSingleByteArray(MOQ_FORWARD_TRUE));
-
   // Filter type (request latest object)
-  msg.push(numberToVarInt(MOQ_FILTER_TYPE_LATEST_OBJ));
+  msg.push(numberToVarInt(MOQ_FILTER_TYPE_LARGEST_OBJECT));
 
   // NO need to add StartGroup, StartObject, EndGroup
 
@@ -362,33 +390,7 @@ async function moqParseSubscribe (readerStream) {
   ret.subscriberPriority = await moqIntReadBytesOrThrow(readerStream, 1);
   ret.groupOrder = await moqIntReadBytesOrThrow(readerStream, 1);
   ret.forward = await moqIntReadBytesOrThrow(readerStream, 1);
-
-  ret.filterType = await varIntToNumberOrThrow(readerStream)
-  if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_START || ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
-    ret.startGroup = await varIntToNumberOrThrow(readerStream)
-    if (ret.startGroup !== MOQ_LOCATION_MODE_NONE) {
-      await varIntToNumberOrThrow(readerStream)
-      throw new Error('Not supported startGroup')
-    }
-    // Start object
-    ret.startObject = await varIntToNumberOrThrow(readerStream)
-    if (ret.startObject !== MOQ_LOCATION_MODE_NONE) {
-      await varIntToNumberOrThrow(readerStream)
-      throw new Error('Not supported startObject')
-    }
-  }
-  if (ret.filterType === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
-    ret.endGroup = await varIntToNumberOrThrow(readerStream)
-    if (ret.endGroup !== MOQ_LOCATION_MODE_NONE) {
-      await varIntToNumberOrThrow(readerStream)
-      throw new Error('Not supported endGroup')
-    }
-    ret.endObject = await varIntToNumberOrThrow(readerStream)
-    if (ret.endObject !== MOQ_LOCATION_MODE_NONE) {
-      await varIntToNumberOrThrow(readerStream)
-      throw new Error('Not supported endObject')
-    }    
-  }
+  ret.filter = await moqDecodeFilterLocation(readerStream)
   ret.parameters = await moqReadParameters(readerStream)
 
   return ret
@@ -405,23 +407,18 @@ function moqCreateSubscribeOkMessageBytes (requestId, trackAlias, expiresMs, las
   
   // RequestID
   msg.push(numberToVarInt(requestId))
-
   // Trackalias
   msg.push(numberToVarInt(trackAlias))
-
   // Expires MS
   msg.push(numberToVarInt(expiresMs))
-
   // Group order
   msg.push(numberToSingleByteArray(MOQ_GROUP_ORDER_DESCENDING)); // Live streaming app (so new needs to be send first)
 
   if (lastGroupSent != undefined && lastObjSent != undefined) {
     // Content exists
     msg.push(numberToSingleByteArray(1));
-    // Final group
-    msg.push(numberToVarInt(lastGroupSent));
-    // Final object
-    msg.push(numberToVarInt(lastObjSent));
+    // Location
+    msg.push(moqCreateLocationBytes(lastGroupSent, lastObjSent));
   } else {
     // Content exists
     msg.push(numberToSingleByteArray(0));
@@ -450,8 +447,7 @@ async function moqParseSubscribeOk (readerStream) {
   ret.groupOrder = await moqIntReadBytesOrThrow(readerStream, 1);
   const contentExists =  await moqIntReadBytesOrThrow(readerStream, 1);
   if (contentExists > 0) {
-    ret.lastGroupSent = await varIntToNumberOrThrow(readerStream)
-    ret.lastObjSent = await varIntToNumberOrThrow(readerStream)
+    ret.last = await moqDecodeLocation(readerStream)
   }
   ret.parameters = await moqReadParameters(readerStream)
   
@@ -519,42 +515,6 @@ async function moqParseUnSubscribe (readerStream) {
 
   return ret
 }
-// SUBSCRIBE DONE
-
-export async function moqSendSubscribeDone(writerStream, requestId, errorCode, reason, numberOfOpenedStreams) {
-  return moqSendToStream(writerStream, moqCreateSubscribeDoneMessageBytes(requestId, errorCode, reason, numberOfOpenedStreams))
-}
-
-function moqCreateSubscribeDoneMessageBytes(requestId, statusCode, reason, streamCount) {
-  const msg = []
-  
-  // Request Id
-  msg.push(numberToVarInt(requestId));
-  // statusCode
-  msg.push(numberToVarInt(statusCode));
-  // streamCount
-  msg.push(numberToVarInt(streamCount));
-  // Reason
-  msg.push(moqCreateStringBytes(reason));
-
-  // Length
-  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
-  
-  return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_DONE), lengthBytes, ...msg])
-}
-
-async function moqParseSubscribeDone (readerStream) {
-  const ret = { }
-
-  await moqIntReadBytesOrThrow(readerStream, 2); // Length
-  ret.requestId = await varIntToNumberOrThrow(readerStream)
-  ret.statusCode = await varIntToNumberOrThrow(readerStream)
-  ret.streamCount = await varIntToNumberOrThrow(readerStream)
-  ret.errorReason = await moqStringReadOrThrow(readerStream)
-
-  return ret
-}
-
 
 // PARSE MESSAGES
 
@@ -565,19 +525,20 @@ export async function moqParseMsg (readerStream) {
     data = await moqParseSubscribe(readerStream)
   } else if (msgType === MOQ_MESSAGE_UNSUBSCRIBE) {
     data = await moqParseUnSubscribe(readerStream)
-  } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_DONE) {
-    data = await moqParseSubscribeDone(readerStream)
+  } else if (msgType === MOQ_MESSAGE_PUBLISH_DONE) {
+    data = await moqParsePublishDone(readerStream)
   } else if (msgType === MOQ_MESSAGE_SERVER_SETUP) {
     data = await moqParseSetupResponse(readerStream)
-  } else if (msgType === MOQ_MESSAGE_ANNOUNCE_OK) {
-    data = await moqParseAnnounceOk(readerStream)
-  } else if (msgType === MOQ_MESSAGE_ANNOUNCE_ERROR) {
-    data = await moqParseAnnounceError(readerStream)
   } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_OK) {
     data = await moqParseSubscribeOk(readerStream)
   } else if (msgType === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
     data = await moqParseSubscribeError(readerStream)
-  } else {
+  } else if (msgType == MOQ_MESSAGE_PUBLISH_OK) {
+    data = await moqParsePublishOk(readerStream)
+  } else if (msgType == MOQ_MESSAGE_PUBLISH_ERROR) {
+    data = await moqParsePublishError(readerStream)
+  } 
+  else {
     throw new Error(`UNKNOWN msg type received, got ${msgType}`)
   }
   return {type: msgType, data: data}
@@ -1078,4 +1039,42 @@ export function moqDecodeStreamHeaderType(type) {
       ret.isEndOfGroup = true
   }
   return ret
+}
+
+async function moqDecodeFilterLocation(readerStream) {
+  const ret = {}
+
+  ret.type = await varIntToNumberOrThrow(readerStream)
+  if (ret.type != MOQ_FILTER_TYPE_ABSOLUTE_START && ret.type != MOQ_FILTER_TYPE_ABSOLUTE_RANGE && ret.type != MOQ_FILTER_TYPE_NEXT_GROUP_START && ret.type != MOQ_FILTER_TYPE_LARGEST_OBJECT) {
+    throw new Error(`Not supported filter type ${ret.type}`)
+  }
+  if (ret.type === MOQ_FILTER_TYPE_ABSOLUTE_START || ret.type === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
+    ret.start = await moqDecodeLocation(readerStream)
+  }
+  if (ret.type === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
+    ret.end = {}
+    ret.end.group = await varIntToNumberOrThrow(readerStream)
+  }
+  
+  return ret
+}
+
+async function moqDecodeLocation(readerStream) {
+  const ret = {}
+  
+  ret.group = await varIntToNumberOrThrow(readerStream)
+  ret.obj = await varIntToNumberOrThrow(readerStream)
+  
+  return ret
+}
+
+function moqCreateLocationBytes(lastGroupSent, lastObjSent) {
+  const msg = [];
+
+  // Final group
+  msg.push(numberToVarInt(lastGroupSent));
+  // Final object
+  msg.push(numberToVarInt(lastObjSent));
+
+  return concatBuffer(msg)
 }
