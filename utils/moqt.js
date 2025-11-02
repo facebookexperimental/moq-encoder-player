@@ -66,6 +66,7 @@ export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MAX = 0x1D
 export const MOQ_MESSAGE_CLIENT_SETUP = 0x20
 export const MOQ_MESSAGE_SERVER_SETUP = 0x21
 
+export const MOQ_MESSAGE_SUBSCRIBE_UPDATE = 0x2
 export const MOQ_MESSAGE_SUBSCRIBE = 0x3
 export const MOQ_MESSAGE_SUBSCRIBE_OK = 0x4
 export const MOQ_MESSAGE_SUBSCRIBE_ERROR = 0x5
@@ -105,7 +106,7 @@ export const MOQ_OBJ_STATUS_END_OF_SUBGROUP = 0x5
 
 // Extension headers (Even types indicate value coded by a single varint. Odd types idicates value is byte buffer with prefixed varint to indicate lenght)
 export const MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE = 0x0A
-export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA = 0x0B
+export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA = 0x15
 export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA = 0x0D
 export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA = 0x0F
 export const MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA = 0x11
@@ -511,10 +512,29 @@ async function moqParseUnSubscribe (readerStream) {
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
   // requestId
-  ret.requestId = await varIntToNumberOrThrow(readerStream)
+  ret.subscriptionRequestId = await varIntToNumberOrThrow(readerStream)
 
   return ret
 }
+
+// SUBSCRIBE UPDATE
+
+async function moqParseSubscribeUpdate(readerStream) {
+  const ret = { }
+
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.requestId = await varIntToNumberOrThrow(readerStream)
+  ret.subscriptionRequestId = await varIntToNumberOrThrow(readerStream)
+  ret.start = await moqDecodeLocation(readerStream)
+  ret.end = {}
+  ret.end.group = await varIntToNumberOrThrow(readerStream)
+  ret.subscriberPriority = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.forward = await moqIntReadBytesOrThrow(readerStream, 1);
+  ret.parameters = await moqReadParameters(readerStream)
+  
+  return ret
+}
+
 
 // PARSE MESSAGES
 
@@ -537,7 +557,9 @@ export async function moqParseMsg (readerStream) {
     data = await moqParsePublishOk(readerStream)
   } else if (msgType == MOQ_MESSAGE_PUBLISH_ERROR) {
     data = await moqParsePublishError(readerStream)
-  } 
+  } else if (msgType == MOQ_MESSAGE_SUBSCRIBE_UPDATE) {
+    data = await moqParseSubscribeUpdate(readerStream)
+  }
   else {
     throw new Error(`UNKNOWN msg type received, got ${msgType}`)
   }
