@@ -188,8 +188,8 @@ self.addEventListener('message', async function (e) {
       if (keepAlivesEveryMs > 0) {
         keepAliveNameSpace = "keepAlive"
         keepAliveName = `${Math.floor(Math.random() * 10000000)}`
-        //TODO sendMessageToMain(WORKER_PREFIX, 'info', `Starting keep alive every ${keepAlivesEveryMs}ms, ns: ${keepAliveNameSpace}`)
-        //TODO keepAliveInterval = setInterval(sendKeepAlive, keepAlivesEveryMs, moqt.controlWriter);
+        sendMessageToMain(WORKER_PREFIX, 'info', `Starting keep alive every ${keepAlivesEveryMs}ms, ns: ${keepAliveNameSpace}`)
+        keepAliveInterval = setInterval(sendKeepAlive, keepAlivesEveryMs, moqt.controlWriter);
       }
     } catch (err) {
       if (MOQT_DEV_MODE) {throw err}
