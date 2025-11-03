@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum} from '../utils/utils.js'
-import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendClientSetup, moqSendPublishDone, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendPublish, getTrackFullName, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_PUBLISH_OK, MOQ_MESSAGE_PUBLISH_ERROR, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter, getAuthInfofromParameters, MOQ_STATUS_TRACK_ENDED, MOQ_MESSAGE_SUBSCRIBE_UPDATE} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCloseWrttingStreams, moqParseMsg, moqCreateControlStream, moqSendSubscribeOk, moqSendSubscribeError, moqSendSubgroupHeader, moqSendObjectPerDatagramToWriter, moqSendClientSetup, moqSendPublishDone, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, moqSendPublish, getTrackFullName, MOQ_SUBSCRIPTION_ERROR_INTERNAL, MOQ_MESSAGE_SUBSCRIBE, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_PUBLISH_OK, MOQ_MESSAGE_PUBLISH_ERROR, MOQ_MESSAGE_MAX_REQUEST_ID, MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MESSAGE_UNSUBSCRIBE, MOQ_MAPPING_OBJECT_PER_DATAGRAM, moqSendObjectSubgroupToWriter, moqSendObjectEndOfGroupToWriter, getAuthInfofromParameters, MOQ_STATUS_TRACK_ENDED, MOQ_MESSAGE_SUBSCRIBE_UPDATE} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 
 const WORKER_PREFIX = '[MOQ-SENDER]'
@@ -486,22 +486,31 @@ async function moqCreatePublisherSession (moqt) {
       trackData.trackAlias = trackAlias
       await moqSendPublish(moqt.controlWriter, publishReqId, trackData.namespace, trackData.name, trackData.trackAlias, trackData.authInfo)
       sendMessageToMain(WORKER_PREFIX, 'info', 'Sent MOQ_MESSAGE_PUBLISH')
-      const moqMsg = await moqParseMsg(moqt.controlReader)
-      if (moqMsg.type !== MOQ_MESSAGE_PUBLISH_OK && moqMsg.type !== MOQ_MESSAGE_PUBLISH_ERROR) {
-        throw new Error(`Expected MOQ_MESSAGE_PUBLISH_OK or MOQ_MESSAGE_PUBLISH_ERROR, received ${moqMsg.type}`)
-      }
-      if (moqMsg.type === MOQ_MESSAGE_PUBLISH_ERROR) {
-        throw new Error(`Received MOQ_MESSAGE_PUBLISH_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
-      }
-      const publishResp = moqMsg.data
-      sendMessageToMain(WORKER_PREFIX, 'info', `Received MOQ_MESSAGE_PUBLISH_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(publishResp)}`)
-      if (publishReqId != publishResp.reqId) {
-        throw new Error(`Received RequestID ${publishResp.reqId} does NOT match with the one sent in MOQ_MESSAGE_PUBLISH ${publishReqId}`)
-      }
-      publishedNamespaces.push(trackData.namespace)
+      let continueLoopingForAnswer = true
+      while (continueLoopingForAnswer) {
+        const moqMsg = await moqParseMsg(moqt.controlReader)
+        if (moqMsg.type !== MOQ_MESSAGE_PUBLISH_OK && moqMsg.type !== MOQ_MESSAGE_PUBLISH_ERROR && moqMsg.type != MOQ_MESSAGE_MAX_REQUEST_ID) {
+          throw new Error(`Expected MOQ_MESSAGE_PUBLISH_OK or MOQ_MESSAGE_PUBLISH_ERROR or MOQ_MESSAGE_MAX_REQUEST_ID, received ${moqMsg.type}`)
+        }
+        if (moqMsg.type === MOQ_MESSAGE_PUBLISH_ERROR) {
+          throw new Error(`Received MOQ_MESSAGE_PUBLISH_ERROR response for ${trackData.namespace}/${trackData.name}-(type: ${trackType}): ${JSON.stringify(moqMsg.data)}`)
+        }
+        else if (moqMsg.type === MOQ_MESSAGE_PUBLISH_OK) {
+          const publishResp = moqMsg.data
+          sendMessageToMain(WORKER_PREFIX, 'info', `Received MOQ_MESSAGE_PUBLISH_OK response for ${trackData.id}-${trackType}-${trackData.namespace}: ${JSON.stringify(publishResp)}`)
+          if (publishReqId != publishResp.reqId) {
+            throw new Error(`Received RequestID ${publishResp.reqId} does NOT match with the one sent in MOQ_MESSAGE_PUBLISH ${publishReqId}`)
+          }
+          publishedNamespaces.push(trackData.namespace)
 
-      if (publishResp.forward === 1) {
-        addSubscriberToTrack(trackData, publishReqId, 1, publishResp.parameters)
+          if (publishResp.forward === 1) {
+            addSubscriberToTrack(trackData, publishReqId, 1, publishResp.parameters)
+          }
+          continueLoopingForAnswer = false
+        }
+        else {
+          sendMessageToMain(WORKER_PREFIX, 'warning', `UNKNOWN message received ${JSON.stringify(moqMsg)}`)
+        }
       }
     }
   }

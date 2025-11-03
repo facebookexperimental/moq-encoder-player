@@ -79,6 +79,9 @@ export const MOQ_MESSAGE_PUBLISH_OK = 0x1e
 export const MOQ_MESSAGE_PUBLISH_ERROR = 0x1f
 export const MOQ_MESSAGE_PUBLISH_DONE = 0xb
 
+// MAX REQUEST ID
+export const MOQ_MESSAGE_MAX_REQUEST_ID = 0x15
+
 // MOQ PRIORITIES
 export const MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT = 0xa
 
@@ -535,6 +538,16 @@ async function moqParseSubscribeUpdate(readerStream) {
   return ret
 }
 
+// UNKNOWN
+
+async function moqParseUnknown(readerStream) {
+  const ret = { }
+
+  const size = await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  ret.data = await buffRead(readerStream, size)
+  
+  return ret
+}
 
 // PARSE MESSAGES
 
@@ -561,7 +574,7 @@ export async function moqParseMsg (readerStream) {
     data = await moqParseSubscribeUpdate(readerStream)
   }
   else {
-    throw new Error(`UNKNOWN msg type received, got ${msgType}`)
+    data = await moqParseUnknown(readerStream)
   }
   return {type: msgType, data: data}
 }
