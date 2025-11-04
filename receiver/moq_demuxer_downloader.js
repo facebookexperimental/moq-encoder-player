@@ -345,6 +345,7 @@ async function moqCreateSubscriberSession (moqt) {
       if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
         sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${getFullTrackName(trackData.namespace, trackData.name)} (type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
         await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
+        continueLoopingForAnswer = false
       }
       else if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
         const subscribeResp = moqMsg.data    
