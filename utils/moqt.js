@@ -245,11 +245,11 @@ async function moqParseSetupResponse (readerStream) {
 
 // PUBLISH
 
-export async function moqSendPublish(writerStream, reqId, namespace, name, trackAlias, authInfo) {
-  return moqSendToStream(writerStream, moqCreatePublishMessageBytes(reqId, namespace, name, trackAlias, authInfo))
+export async function moqSendPublish(writerStream, reqId, namespace, name, trackAlias, authInfo, forward) {
+  return moqSendToStream(writerStream, moqCreatePublishMessageBytes(reqId, namespace, name, trackAlias, authInfo, forward))
 }
 
-function moqCreatePublishMessageBytes (reqId, namespace, name, trackAlias, authInfo) {
+function moqCreatePublishMessageBytes (reqId, namespace, name, trackAlias, authInfo, forward) {
   const msg = []
 
   // RequestID
@@ -265,7 +265,7 @@ function moqCreatePublishMessageBytes (reqId, namespace, name, trackAlias, authI
   // Context exists
   msg.push(numberToSingleByteArray(0)); // Nothing has been published before
   // Forward
-  msg.push(numberToSingleByteArray(MOQ_FORWARD_TRUE)); // Start sending now
+  msg.push(numberToSingleByteArray(forward)); // Start sending now
   // Parameters
   let kv_params = []
   if (authInfo != undefined && authInfo != "") {

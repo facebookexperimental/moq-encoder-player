@@ -340,6 +340,7 @@ async function moqCreateSubscriberSession (moqt) {
     while (continueLoopingForAnswer) {
       const moqMsg = await moqParseMsg(moqt.controlReader)
       if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR && moqMsg.type != MOQ_MESSAGE_MAX_REQUEST_ID) {
+        // TODO JOC: Comment following line to ignore extra messages
         throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR or MOQ_MESSAGE_MAX_REQUEST_ID, received ${moqMsg.type}`)
       }
       if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {

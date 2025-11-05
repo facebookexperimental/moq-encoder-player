@@ -257,7 +257,7 @@ self.addEventListener('message', async function (e) {
 
 async function sendKeepAlive(controlWriter) {
   if((Date.now() - lastObjectSentMs) > keepAlivesEveryMs) {
-    await moqSendPublish(controlWriter, getNextClientReqId(), [keepAliveNameSpace], keepAliveName, KEEPALIVE_TRACK_ALIAS)
+    await moqSendPublish(controlWriter, getNextClientReqId(), [keepAliveNameSpace], keepAliveName, KEEPALIVE_TRACK_ALIAS, 0)
     sendMessageToMain(WORKER_PREFIX, 'info', `Sent keep alive (publish) for ns: ${keepAliveNameSpace} name: ${keepAliveName}`)
   }
 }
@@ -544,7 +544,7 @@ async function moqCreatePublisherSession (moqt, usePublishNamespace) {
       trackData.trackAlias = getNextTrackAlias()
       const publishReqId = getNextClientReqId()
       trackData.publisherRequestId = publishReqId
-      await moqSendPublish(moqt.controlWriter, publishReqId, trackData.namespace, trackData.name, trackData.trackAlias, trackData.authInfo)
+      await moqSendPublish(moqt.controlWriter, publishReqId, trackData.namespace, trackData.name, trackData.trackAlias, trackData.authInfo, 1)
       sendMessageToMain(WORKER_PREFIX, 'info', 'Sent MOQ_MESSAGE_PUBLISH')
       let continueLoopingForAnswer = true
       while (continueLoopingForAnswer) {
