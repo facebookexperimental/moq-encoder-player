@@ -48,7 +48,7 @@ LICENSE file in the root directory of this source tree.
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
                     Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
                 <div class="clear"></div>
-                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace"></label>
+                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace" checked="true"></label>
                 <div class="clear"></div>
                 <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
                 <div class="clear"></div>
@@ -56,8 +56,8 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
                 <div class="clear"></div>
-                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
-                (Leave it blank to NOT use it)
+                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
+                <label>Active: <input type="checkbox" id="useAuthToken"></label>
                 <div class="clear"></div>
                 <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>  
                 <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>  
@@ -240,7 +240,7 @@ LICENSE file in the root directory of this source tree.
 
         certificateHash: null,
 
-        usePublishNamespace: false,
+        usePublishNamespace: true,
 
         moqTracks: {
             "audio": {
@@ -970,6 +970,10 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    async function UIUseToken(use) {
+        document.getElementById('authInfo').disabled = !use
+    }
+
     async function start() {
         currentAudioTs = undefined;
         currentVideoTs = undefined;
@@ -1068,15 +1072,22 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
-        muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
-        
+        if (document.getElementById('authInfo').disabled) {
+            muxerSenderConfig.moqTracks["video"].authInfo = ""
+        } else {
+            muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
+        }
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
-
+        if (document.getElementById('authInfo').disabled) {
+            muxerSenderConfig.moqTracks["audio"].authInfo = ""
+        } else {
+            muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+        }
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
 
@@ -1096,4 +1107,5 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('videoEncodingOptions').addEventListener("change", (event) => {onVideoEncodingsSettingsChanged(event.target.options[event.target.selectedIndex].data);});
 
     document.getElementById('audioCodecOptions').addEventListener("change", (event) => {onAudioCodecChanged(event.target.options[event.target.selectedIndex].data);});
+    document.getElementById('useAuthToken').addEventListener("change", (event) => { UIUseToken(event.target.checked) });
 </script>

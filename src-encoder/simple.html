@@ -47,10 +47,10 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Track name:<input id="trackName" type="text" value="foo"></label>
                 <div class="clear"></div>
-                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace"></label>
+                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace" checked></label>
                 <div class="clear"></div>
-                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
-                (Leave it blank to NOT use it)
+                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
+                <label>Active: <input type="checkbox" id="useAuthToken"></label>
                 <div class="clear"></div>
                 <label>Max inflight requests:<input id="maxInflightRequests" type="text" value="5"></label>
                 <div class="clear"></div>
@@ -93,7 +93,7 @@ LICENSE file in the root directory of this source tree.
 
         keepAlivesEveryMs: 5000,
 
-        usePublishNamespace: false,
+        usePublishNamespace: true,
 
         certificateHash: null,
 
@@ -210,6 +210,10 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    async function UIUseToken(use) {
+        document.getElementById('authInfo').disabled = !use
+    }
+
     async function start() {
         document.getElementById("btnStart").disabled = true
         document.getElementById("btnStop").disabled = false
@@ -228,13 +232,17 @@ LICENSE file in the root directory of this source tree.
         }
 
         muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked
-        
+
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         muxerSenderConfig.moqTracks["data"].namespace = [document.getElementById('namespace').value];
         muxerSenderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         muxerSenderConfig.moqTracks["data"].maxInFlightRequests = Number(document.getElementById('maxInflightRequests').value);
-        muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
+        if (document.getElementById('authInfo').disabled) {
+            muxerSenderConfig.moqTracks["data"].authInfo = ""
+        } else {
+            muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
+        }
         muxerSenderConfig.moqTracks["data"].newSubgroupEvery = parseInt(document.getElementById('moqNewSubgroup').value);
         
         // Initialize muxer - sender
@@ -252,4 +260,5 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnStart').addEventListener("click", (event) => {start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnSend').addEventListener("click", (event) => {send();});
+    document.getElementById('useAuthToken').addEventListener("change", (event) => { UIUseToken(event.target.checked) });
 </script>

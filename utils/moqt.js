@@ -662,7 +662,6 @@ function moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders) {
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
-    moqCreateKvParamBytes
     msg.push(moqCreateExtensionsBytes(extensionHeaders)); // Extension headers
   }
   msg.push(numberToVarInt(0)) // Size = 0
