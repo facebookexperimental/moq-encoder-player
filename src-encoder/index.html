@@ -48,6 +48,8 @@ LICENSE file in the root directory of this source tree.
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
                     Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
                 <div class="clear"></div>
+                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace"></label>
+                <div class="clear"></div>
                 <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
                 <div class="clear"></div>
                 <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
@@ -237,6 +239,8 @@ LICENSE file in the root directory of this source tree.
         keepAlivesEveryMs: 5000,
 
         certificateHash: null,
+
+        usePublishNamespace: false,
 
         moqTracks: {
             "audio": {
@@ -1052,8 +1056,11 @@ LICENSE file in the root directory of this source tree.
         // Transport
         if (IS_LOCALHOST) {
             const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
-            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)    
         }
+
+        muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked 
+        
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
         

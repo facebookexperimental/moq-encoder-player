@@ -78,6 +78,9 @@ export const MOQ_MESSAGE_PUBLISH = 0x1d
 export const MOQ_MESSAGE_PUBLISH_OK = 0x1e
 export const MOQ_MESSAGE_PUBLISH_ERROR = 0x1f
 export const MOQ_MESSAGE_PUBLISH_DONE = 0xb
+export const MOQ_MESSAGE_PUBLISH_NAMESPACE = 0x6
+export const MOQ_MESSAGE_PUBLISH_NAMESPACE_OK = 0x7
+export const MOQ_MESSAGE_PUBLISH_NAMESPACE_ERROR = 0x8
 
 // MAX REQUEST ID
 export const MOQ_MESSAGE_MAX_REQUEST_ID = 0x15
@@ -274,6 +277,59 @@ function moqCreatePublishMessageBytes (reqId, namespace, name, trackAlias, authI
   const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
   
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_PUBLISH), lengthBytes, ...msg])
+}
+
+// PUBLISH NAMESPACE
+
+export async function moqSendPublishNamespace(writerStream, reqId, namespace, authInfo) {
+  return moqSendToStream(writerStream, moqCreatePublishNamespaceMessageBytes(reqId, namespace, authInfo))
+}
+
+function moqCreatePublishNamespaceMessageBytes (reqId, namespace, authInfo) {
+  const msg = []
+
+  // RequestID
+  msg.push(numberToVarInt(reqId))
+  // Namespace
+  msg.push(moqCreateTupleBytes(namespace));
+  // Parameters
+  let kv_params = []
+  if (authInfo != undefined && authInfo != "") {
+    kv_params = [moqCreateKvPair(MOQ_PARAMETER_AUTHORIZATION_TOKEN, moqCreateUseValueTokenFromString(authInfo))]
+  }
+  msg.push(moqCreateParametersBytes(kv_params))
+  
+  // Length
+  const lengthBytes = numberTo2BytesArray(getArrayBufferByteLength(msg), MOQ_USE_LITTLE_ENDIAN)
+  
+  return concatBuffer([numberToVarInt(MOQ_MESSAGE_PUBLISH_NAMESPACE), lengthBytes, ...msg])
+}
+
+// PUBLISH NAMESPACE OK
+
+async function moqParsePublishNamespaceOk(readerStream) {
+  const ret = { }
+
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  
+  ret.reqId = await varIntToNumberOrThrow(readerStream);
+  
+  return ret
+}
+
+
+// PUBLISH NAMESPACE ERROR
+
+async function moqParsePublishNamespaceError(readerStream) {
+  const ret = { }
+
+  await moqIntReadBytesOrThrow(readerStream, 2); // Length
+  
+  ret.reqId = await varIntToNumberOrThrow(readerStream);
+  ret.errorCode = await varIntToNumberOrThrow(readerStream)
+  ret.reason = await moqStringReadOrThrow(readerStream)
+  
+  return ret
 }
 
 // PUBLISH OK
@@ -572,6 +628,10 @@ export async function moqParseMsg (readerStream) {
     data = await moqParsePublishError(readerStream)
   } else if (msgType == MOQ_MESSAGE_SUBSCRIBE_UPDATE) {
     data = await moqParseSubscribeUpdate(readerStream)
+  } else if (msgType == MOQ_MESSAGE_PUBLISH_NAMESPACE_OK) {
+    data = await moqParsePublishNamespaceOk(readerStream)
+  } else if (msgType == MOQ_MESSAGE_PUBLISH_NAMESPACE_ERROR) {
+    data = await moqParsePublishNamespaceError(readerStream)
   }
   else {
     data = await moqParseUnknown(readerStream)
