@@ -305,11 +305,11 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
         sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid MOQ_MESSAGE_UNSUBSCRIBE received, subscriptionRequestId not found')
         continue
       }
-      const subscribe = removeSubscriberFromTrackByPublisherId(unsubscribe.subscriptionRequestId)
-      if (subscribe != null) {
-        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber for subscribeId: ${subscribe.subscriptionRequestId}`)
+      const subscribers = removeSubscriberFromTrackByPublisherId(unsubscribe.subscriptionRequestId)
+      if (subscribers.length > 0) {
+        sendMessageToMain(WORKER_PREFIX, 'info', `Removed subscriber(s) for subscriptionRequestId: ${JSON.stringify(subscribers)}`)
       } else {
-        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${subscribe.subscriptionRequestId}`)
+        sendMessageToMain(WORKER_PREFIX, 'error', `Removing subscriber. Could not find subscribeId: ${unsubscribe.subscriptionRequestId}`)
       }
     }
     else if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE) {
@@ -475,7 +475,8 @@ async function createSendPromise (packet, trackAlias, moqMapping, isHiPri) {
     }
 
     // Send object to current stream
-    moqSendObjectSubgroupToWriter(currentUniStreamWritter, objSeq, packet.PayloadToBytes(), packet.ExtensionHeaders())
+    // ObjID delta will be always 0, since we are always incrementing
+    moqSendObjectSubgroupToWriter(currentUniStreamWritter, 0, packet.PayloadToBytes(), packet.ExtensionHeaders())
     moqPublisherState[trackAlias].currentObjectSeq++;
   }
   else {
@@ -625,26 +626,24 @@ function getTrackFromPublishRequestId (reqId) {
 }
 
 function removeSubscriberFromTrackByPublisherId (requestId) {
-  c = []
+  const ret = []
   for (const trackData of Object.values(tracks)) {
     if ("subscribers" in trackData && trackData.subscribers.length > 0) {
       let i = 0
       let idx_todel = []
-      if ('subscribers' in trackData) {
-        while (i < trackData.subscribers.length) {
-          if (trackData.subscribers[i].requestId === requestId) {
-            idx_todel.push(i)
-          }
-          i++
+      while (i < trackData.subscribers.length) {
+        if (trackData.subscribers[i].subscriptionRequestId === requestId) {
+          idx_todel.push(i)
         }
-        for (i = idx_todel.length - 1; i >= 0; i--) {
-          ret.push(trackData.subscribers[i])
-          trackData.subscribers.splice(i, 1)
-        } 
+        i++
       }
+      for (i = idx_todel.length - 1; i >= 0; i--) {
+        ret.push(trackData.subscribers[i])
+        trackData.subscribers.splice(i, 1)
+      } 
     }
   }
-  return null
+  return ret
 }
 
 function getNumInflightRequestByType(moqt, trackType) {

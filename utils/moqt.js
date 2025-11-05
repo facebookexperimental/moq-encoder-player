@@ -671,10 +671,10 @@ function moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders) {
   return concatBuffer(msg);
 }
 
-function moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders) {
+function moqCreateObjectSubgroupBytes(objSeqDelta, data, extensionHeaders) {
   const msg = []
 
-  msg.push(numberToVarInt(objSeq)); // Object ID
+  msg.push(numberToVarInt(objSeqDelta)); // Object ID delta
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
     msg.push(numberToVarInt(0)); // Extension headers count
   } else {
@@ -719,8 +719,8 @@ export function moqSendSubgroupHeader (writer, trackAlias, groupSeq, publisherPr
   return moqSendToWriter(writer, moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority))
 }
 
-export function moqSendObjectSubgroupToWriter (writer, objSeq, data, extensionHeaders) {
-  return moqSendToWriter(writer, moqCreateObjectSubgroupBytes(objSeq, data, extensionHeaders))
+export function moqSendObjectSubgroupToWriter (writer, objSeqDelta, data, extensionHeaders) {
+  return moqSendToWriter(writer, moqCreateObjectSubgroupBytes(objSeqDelta, data, extensionHeaders))
 }
 
 export function moqSendObjectEndOfGroupToWriter (writer, objSeq, extensionHeaders, closeStream) {
