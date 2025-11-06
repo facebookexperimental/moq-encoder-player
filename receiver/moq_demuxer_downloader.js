@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { sendMessageToMain, StateEnum, convertTimestamp } from '../utils/utils.js'
-import { moqCreate, moqClose, moqCreateControlStream, moqSendClientSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_SUBSCRIBE_ERROR, isMoqObjectStreamHeaderType, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName, isMoqObjectDatagramType, moqDecodeDatagramType} from '../utils/moqt.js'
+import { moqCreate, moqClose, moqCreateControlStream, moqSendClientSetup, moqParseObjectHeader, moqSendSubscribe, moqSendUnSubscribe, MOQ_MESSAGE_SUBSCRIBE_DONE, moqParseMsg, MOQ_MESSAGE_SERVER_SETUP, MOQ_MESSAGE_SUBSCRIBE_OK, MOQ_MESSAGE_MAX_REQUEST_ID, MOQ_MESSAGE_SUBSCRIBE_ERROR, isMoqObjectStreamHeaderType, moqParseObjectFromSubgroupHeader, MOQ_OBJ_STATUS_END_OF_GROUP, MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP, MOQ_OBJ_STATUS_END_OF_SUBGROUP, getFullTrackName, isMoqObjectDatagramType, moqDecodeDatagramType} from '../utils/moqt.js'
 import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 import { ContainsNALUSliceIDR , DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_parser.js"
 
@@ -334,23 +334,34 @@ async function moqCreateSubscriberSession (moqt) {
     const [trackType, trackData] = pending_subscribes[0];
     const reqId = getNextClientReqId()
     await moqSendSubscribe(moqt.controlWriter, reqId, trackData.namespace, trackData.name, trackData.authInfo)
-    const moqMsg = await moqParseMsg(moqt.controlReader)
-    if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-      throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR, received ${moqMsg.type}`)
-    }
-    if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
-      sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${getFullTrackName(trackData.namespace, trackData.name)} (type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
+    sendMessageToMain(WORKER_PREFIX, 'info', 'Sent MOQ_MESSAGE_SUBSCRIBE')
 
-      await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
-    } else {
-      const subscribeResp = moqMsg.data    
-      if (subscribeResp.requestId !== reqId) {
-        throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.reqId} != ${reqId}`)
+    let continueLoopingForAnswer = true
+    while (continueLoopingForAnswer) {
+      const moqMsg = await moqParseMsg(moqt.controlReader)
+      if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR && moqMsg.type != MOQ_MESSAGE_MAX_REQUEST_ID) {
+        // There is a chance that we get PUBLISH messsage before SUBSCRIBE answer (relay race condition), so we are NOT breaking in that case
+        //throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR or MOQ_MESSAGE_MAX_REQUEST_ID, received ${moqMsg.type}`)
       }
-      sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${getFullTrackName(trackData.namespace, trackData.name)}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
-      trackData.trackAlias = getNextTrackAlias()
+      if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
+        sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${getFullTrackName(trackData.namespace, trackData.name)} (type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)
+        await new Promise(r => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
+        continueLoopingForAnswer = false
+      }
+      else if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
+        const subscribeResp = moqMsg.data    
+        if (subscribeResp.requestId !== reqId) {
+          throw new Error(`Received subscribeId does NOT match with subscriptionId ${subscribeResp.reqId} != ${reqId}`)
+        }
+        sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE_OK for ${getFullTrackName(trackData.namespace, trackData.name)}-(type: ${trackType}): ${JSON.stringify(subscribeResp)}`)
+        trackData.trackAlias = getNextTrackAlias()
 
-      pending_subscribes.shift()
+        pending_subscribes.shift()
+        continueLoopingForAnswer = false
+      }
+      else {
+        sendMessageToMain(WORKER_PREFIX, 'warning', `UNKNOWN message received ${JSON.stringify(moqMsg)}`)
+      }
     }
   }
   sendMessageToMain(WORKER_PREFIX, 'info', 'Finished subscription loop')
