@@ -340,8 +340,8 @@ async function moqCreateSubscriberSession (moqt) {
     while (continueLoopingForAnswer) {
       const moqMsg = await moqParseMsg(moqt.controlReader)
       if (moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_OK && moqMsg.type !== MOQ_MESSAGE_SUBSCRIBE_ERROR && moqMsg.type != MOQ_MESSAGE_MAX_REQUEST_ID) {
-        // TODO JOC: Comment following line to ignore extra messages
-        throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR or MOQ_MESSAGE_MAX_REQUEST_ID, received ${moqMsg.type}`)
+        // There is a chance that we get PUBLISH messsage before SUBSCRIBE answer (relay race condition), so we are NOT breaking in that case
+        //throw new Error(`Expected MOQ_MESSAGE_SUBSCRIBE_OK or MOQ_MESSAGE_SUBSCRIBE_ERROR or MOQ_MESSAGE_MAX_REQUEST_ID, received ${moqMsg.type}`)
       }
       if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE_ERROR) {
         sendMessageToMain(WORKER_PREFIX, 'warning', `Received SUBSCRIBE_ERROR response for ${getFullTrackName(trackData.namespace, trackData.name)} (type: ${trackType}): ${JSON.stringify(moqMsg.data)}. waiting for ${SLEEP_SUBSCRIBE_ERROR_MS}ms and Retrying!!`)

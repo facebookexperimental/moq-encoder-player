@@ -55,12 +55,14 @@ export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4 // With location
 
 // MOQ object headers
 // Datagrams
-export const MOQ_MESSAGE_OBJECT_DATAGRAM_MIN= 0x0
-export const MOQ_MESSAGE_OBJECT_DATAGRAM_MAX = 0x4
-export const MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN= 0x20
-export const MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX= 0x21
-export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MIN = 0x10
-export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MAX = 0x1D
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_TYPES = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x20, 0x21]
+export const MOQ_MESSAGE_OBJECT_DATAGRAM_TYPES_STATUS = [0x20, 0x21]
+
+export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_TYPES  = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D]
+
+// Streamgroup
+export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_TYPE_MIN = 0x10
+export const MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_TYPE_MAX = 0x1D
 
 // MOQ Messages
 export const MOQ_MESSAGE_CLIENT_SETUP = 0x20
@@ -738,27 +740,27 @@ export async function moqParseObjectHeader (readerStream) {
 
   let ret = undefined
   if (isMoqObjectDatagramType(type)) {
-    const options = moqDecodeDatagramType(type)
-    const trackAlias = await varIntToNumberOrThrow(readerStream);
-    const groupSeq = await varIntToNumberOrThrow(readerStream);
-    const objSeq = await varIntToNumberOrThrow(readerStream);
-    const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
-    let  extensionHeaders = undefined
-    if (options.extensionsPresent) {
-      extensionHeaders = await moqReadHeaderExtensions(readerStream)
+    ret = {type}
+    ret.options = moqDecodeDatagramType(type)
+    ret.trackAlias = await varIntToNumberOrThrow(readerStream);
+    ret.groupSeq = await varIntToNumberOrThrow(readerStream);
+    if (ret.options.isObjIdPresent) {
+      ret.objSeq = await varIntToNumberOrThrow(readerStream);
     }
-    ret = {type, trackAlias, groupSeq, objSeq, publisherPriority, extensionHeaders}
+    ret.publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
+    if (ret.options.extensionsPresent) {
+      ret.extensionHeaders = await moqReadHeaderExtensions(readerStream)
+    }
   }
   else if (isMoqObjectStreamHeaderType(type)) {
-    const options = moqDecodeStreamHeaderType(type)
-    const trackAlias = await varIntToNumberOrThrow(readerStream)
-    const groupSeq = await varIntToNumberOrThrow(readerStream)
-    let subGroupSeq = undefined
-    if (options.subGroupIdPresent) {
-      subGroupSeq = await varIntToNumberOrThrow(readerStream)
+    ret = {type}
+    ret.options = moqDecodeStreamHeaderType(type)
+    ret.trackAlias = await varIntToNumberOrThrow(readerStream)
+    ret.groupSeq = await varIntToNumberOrThrow(readerStream)
+    if (ret.options.subGroupIdPresent) {
+      ret.subGroupSeq = await varIntToNumberOrThrow(readerStream)
     }
-    const publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
-    ret = {type, trackAlias, groupSeq, subGroupSeq, publisherPriority}  
+    ret.publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
   }
   return ret
 }
@@ -1044,12 +1046,16 @@ export function moqDecodeDatagramType(type) {
   if (!isMoqObjectDatagramType(type)) {
     throw new Error(`No valid datagram type ${type}, it can NOT be decoded`)
   }
-  const ret = { isStatus: false, extensionsPresent: false, isEndOfGroup: false }
-  if (type >= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX) {
+  const ret = { isStatus: false, extensionsPresent: false, isEndOfGroup: false, isObjIdPresent: false}
+  if (MOQ_MESSAGE_OBJECT_DATAGRAM_TYPES_STATUS.includes(type)) {
     ret.isStatus = true
+    ret.isObjIdPresent = true
   } else {
     if (type == 0x2 || type == 0x3) {
       ret.isEndOfGroup = true
+    }
+    if ((type & 0x4) == 0) {
+      ret.isObjIdPresent = true
     }
   }
   if ((type & 0x1) > 0) {
@@ -1059,19 +1065,11 @@ export function moqDecodeDatagramType(type) {
 }
 
 export function isMoqObjectDatagramType(type) {
-  let ret = false
-  if ((type >= MOQ_MESSAGE_OBJECT_DATAGRAM_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_MAX) || (type >= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MIN && type <= MOQ_MESSAGE_OBJECT_DATAGRAM_STATUS_MAX)) {
-    ret = true
-  }
-  return ret
+  return MOQ_MESSAGE_OBJECT_DATAGRAM_TYPES.includes(type);
 }
 
 export function isMoqObjectStreamHeaderType(type) {
-  let ret = false
-  if (type >= MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MIN && type <= MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_MAX) {
-    ret = true
-  }
-  return ret
+  return MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_TYPES.includes(type);
 }
 
 function getDatagramType(isStatus, hasExternsionHeaders, isEndOfGroup) {
