@@ -12,11 +12,17 @@ import { MIPackager, MIPayloadTypeEnum} from '../packager/mi_packager.js'
 const WORKER_PREFIX = '[MOQ-SENDER]'
 
 const KEEPALIVE_TRACK_ALIAS = 1
+const CATALOG_TRACK_ALIAS = 0  // Catalog uses alias 0
+
+// Catalog track name per moq-js convention
+const CATALOG_TRACK_NAME = "catalog.json"
 
 // Show verbose exceptions
 const MOQT_DEV_MODE = true
 
 let moqPublisherState = {}
+let catalogPublished = false
+let catalogSubscribers = []
 
 let workerState = StateEnum.Created
 
@@ -315,6 +321,16 @@ async function startLoopSubscriptionsLoop(controlReader, controlWriter) {
     else if (moqMsg.type === MOQ_MESSAGE_SUBSCRIBE) {
       const subscribe = moqMsg.data
       sendMessageToMain(WORKER_PREFIX, 'info', `Received SUBSCRIBE: ${JSON.stringify(subscribe)}`)
+      if (subscribe.trackName === CATALOG_TRACK_NAME) {
+        sendMessageToMain(WORKER_PREFIX, 'info', `Received catalog SUBSCRIBE for namespace: ${subscribe.namespace}`)
+        catalogSubscribers.push({requestId: subscribe.requestId, namespace: subscribe.namespace})
+        // Send SUBSCRIBE_OK for catalog
+        await moqSendSubscribeOk(controlWriter, subscribe.requestId, CATALOG_TRACK_ALIAS, 0, 0, 0, subscribe.parameters?.authInfo)
+        sendMessageToMain(WORKER_PREFIX, 'info', `Sent SUBSCRIBE_OK for catalog, requestId: ${subscribe.requestId}`)
+        // Send the catalog object
+        await sendCatalogObject(subscribe.namespace)
+        continue
+      }
       const fullTrackName = getTrackFullName(subscribe.namespace, subscribe.trackName)
       const trackData = getTrackFromFullTrackName(fullTrackName)
       if (trackData == null) {
@@ -544,8 +560,9 @@ async function moqCreatePublisherSession (moqt, usePublishNamespace) {
       trackData.trackAlias = getNextTrackAlias()
       const publishReqId = getNextClientReqId()
       trackData.publisherRequestId = publishReqId
-      await moqSendPublish(moqt.controlWriter, publishReqId, trackData.namespace, trackData.name, trackData.trackAlias, trackData.authInfo, 1)
-      sendMessageToMain(WORKER_PREFIX, 'info', 'Sent MOQ_MESSAGE_PUBLISH')
+      const forward = (trackType === 'video') ? 0 : 1
+      await moqSendPublish(moqt.controlWriter, publishReqId, trackData.namespace, trackData.name, trackData.trackAlias, trackData.authInfo, forward)
+      sendMessageToMain(WORKER_PREFIX, 'info', `Sent MOQ_MESSAGE_PUBLISH for ${trackType} track with forward=${forward} (${forward === 0 ? 'TRACK/streams' : 'OBJECT/datagrams'})`)
       let continueLoopingForAnswer = true
       while (continueLoopingForAnswer) {
         const moqMsg = await moqParseMsg(moqt.controlReader)
@@ -755,4 +772,101 @@ function getTrackFromFullTrackName (fullTrackName) {
     }
   }
   return null
+}
+
+/**
+ * Build a catalog JSON object describing available tracks.
+ * Format follows IETF Common Catalog Format (draft-ietf-moq-catalogformat-01).
+ * @param {string[]} namespace - The namespace for the catalog
+ * @returns {object} Catalog JSON object
+ */
+function buildCatalogJson(namespace) {
+  // IETF catalog format structure
+  const catalog = {
+    version: 1,
+    streamingFormat: 1,  // LOC format
+    streamingFormatVersion: "0.2",
+    commonTrackFields: {
+      namespace: Array.isArray(namespace) ? namespace.join('/') : namespace,
+      packaging: "loc",
+      renderGroup: 1
+    },
+    tracks: []
+  }
+
+  for (const [trackType, trackData] of Object.entries(tracks)) {
+    // Check if track belongs to this namespace
+    const trackNsStr = stringifyNamespace(trackData.namespace)
+    const nsStr = Array.isArray(namespace) ? stringifyNamespace(namespace) : namespace
+    if (trackNsStr !== nsStr) {
+      continue
+    }
+
+    if (trackType === 'video') {
+      catalog.tracks.push({
+        name: trackData.name,
+        selectionParams: {
+          codec: "avc1.42001e",  // H.264 Baseline Profile Level 3.0
+          width: 640,
+          height: 480,
+          framerate: 30,
+          bitrate: 1500000
+        }
+      })
+    } else if (trackType === 'audio') {
+      catalog.tracks.push({
+        name: trackData.name,
+        selectionParams: {
+          codec: "opus",
+          samplerate: 48000,
+          channelConfig: "2",
+          bitrate: 64000
+        }
+      })
+    }
+  }
+
+  sendMessageToMain(WORKER_PREFIX, 'info', `Built IETF catalog JSON: ${JSON.stringify(catalog)}`)
+  return catalog
+}
+
+/**
+ * Send the catalog object to subscribers via a unidirectional stream.
+ * @param {string[]} namespace - The namespace for the catalog
+ */
+async function sendCatalogObject(namespace) {
+  if (moqt.wt === null) {
+    sendMessageToMain(WORKER_PREFIX, 'error', 'Cannot send catalog: WebTransport not connected')
+    return
+  }
+
+  try {
+    // Build catalog JSON
+    const catalog = buildCatalogJson(namespace)
+    const catalogJsonStr = JSON.stringify(catalog)
+    const catalogBytes = new TextEncoder().encode(catalogJsonStr)
+
+    sendMessageToMain(WORKER_PREFIX, 'info', `Sending catalog object (${catalogBytes.length} bytes): ${catalogJsonStr}`)
+
+    // Create a unidirectional stream for the catalog
+    const uniStream = await moqt.wt.createUnidirectionalStream({ options: { sendOrder: Number.MAX_SAFE_INTEGER } })
+    const catalogWriter = uniStream.getWriter()
+
+    // Send subgroup header for catalog track (group 0)
+    const publisherPriority = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT
+    moqSendSubgroupHeader(catalogWriter, CATALOG_TRACK_ALIAS, 0, publisherPriority)
+
+    // Send the catalog object (object 0 in group 0)
+    // For catalog, we don't use MI packaging - send raw JSON bytes
+    moqSendObjectSubgroupToWriter(catalogWriter, 0, catalogBytes, [])
+
+    // Close the stream with end of group
+    moqSendObjectEndOfGroupToWriter(catalogWriter, 1, [], true)
+
+    catalogPublished = true
+    sendMessageToMain(WORKER_PREFIX, 'info', 'Catalog object sent successfully')
+  } catch (err) {
+    if (MOQT_DEV_MODE) {throw err}
+    sendMessageToMain(WORKER_PREFIX, 'error', `Error sending catalog object: ${err.message}`)
+  }
 }

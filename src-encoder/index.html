@@ -268,6 +268,24 @@ LICENSE file in the root directory of this source tree.
     let vEncoderWorker = null;
     let aEncoderWorker = null;
     let muxerSenderWorker = null;
+    let encoderHeartbeatTimer = null;
+    let lastVideoSeqId = 0;
+    let lastAudioSeqId = 0;
+
+    // Global error handler
+    window.addEventListener('error', function(event) {
+        console.error('[ENCODER-ERROR] Global error caught:', {
+            message: event.message,
+            filename: event.filename,
+            lineno: event.lineno,
+            colno: event.colno,
+            error: event.error
+        });
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+        console.error('[ENCODER-ERROR] Unhandled promise rejection:', event.reason);
+    });
 
     // Read & parse QS data
     const queryString = window.location.search;
@@ -507,6 +525,7 @@ LICENSE file in the root directory of this source tree.
             VERBOSE = true
         }
         const local = qsParams.get('local')
+        console.info('Localhost? ' + local);
         if (local != undefined) {
             IS_LOCALHOST = true
         }
@@ -782,6 +801,14 @@ LICENSE file in the root directory of this source tree.
     }
 
     function stop() {
+        console.log('[ENCODER-DEBUG] Stopping encoder');
+
+        // Clear heartbeat timer
+        if (encoderHeartbeatTimer) {
+            clearInterval(encoderHeartbeatTimer);
+            encoderHeartbeatTimer = null;
+            console.log('[ENCODER-DEBUG] Heartbeat timer cleared');
+        }
         enableUI("readyToPublish");
         
         document.getElementById("oldTrackName").value = document.getElementById("trackName").value;
@@ -884,6 +911,15 @@ LICENSE file in the root directory of this source tree.
                 updateEncodedVideoTSUI(chunk.timestamp, itemTsClk.compensatedTs);          
                 updateEncodingVideoLatencyUI(Date.now()  - itemTsClk.clkms);
             }
+            console.log('[ENCODER-DEBUG] Sending video chunk to muxer:', {
+                seqId: seqId,
+                timestamp: chunk.timestamp,
+                type: chunk.type,
+                byteLength: chunk.byteLength,
+                duration: chunk.duration,
+                metadataSize: metadata ? metadata.byteLength : 0
+            });
+            lastVideoSeqId = seqId;
             muxerSenderWorker.postMessage({ type: "video", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, estimatedDuration: itemTsClk.estimatedDuration, seqId: seqId, chunk: chunk, metadata, timebase });
         } else if (e.data.type === "achunk") {
             const chunk = e.data.chunk;
@@ -900,6 +936,15 @@ LICENSE file in the root directory of this source tree.
                 updateEncodedAudioTSUI(chunk.timestamp, itemTsClk.compensatedTs);
                 updateEncodingAudioLatencyUI(Date.now()  - itemTsClk.clkms);                
             }
+            if (seqId % 100 === 0) {  // Log every 100th audio chunk to avoid spam
+                console.log('[ENCODER-DEBUG] Sending audio chunk to muxer:', {
+                    seqId: seqId,
+                    timestamp: chunk.timestamp,
+                    byteLength: chunk.byteLength,
+                    duration: chunk.duration
+                });
+            }
+            lastAudioSeqId = seqId;
             muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
@@ -1030,26 +1075,69 @@ LICENSE file in the root directory of this source tree.
         vStreamWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
+        vStreamWorker.addEventListener('error', function (e) {
+            console.error('[ENCODER-ERROR] vStreamWorker error:', e.message, e);
+        });
         aStreamWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
+        });
+        aStreamWorker.addEventListener('error', function (e) {
+            console.error('[ENCODER-ERROR] aStreamWorker error:', e.message, e);
         });
         vEncoderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
+        vEncoderWorker.addEventListener('error', function (e) {
+            console.error('[ENCODER-ERROR] vEncoderWorker error:', e.message, e);
+        });
         aEncoderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
+        aEncoderWorker.addEventListener('error', function (e) {
+            console.error('[ENCODER-ERROR] aEncoderWorker error:', e.message, e);
+        });
         muxerSenderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
+        });
+        muxerSenderWorker.addEventListener('error', function (e) {
+            console.error('[ENCODER-ERROR] muxerSenderWorker error:', e.message, e);
         });
 
         // Create a MediaStreamTrackProcessor, which exposes frames from the track
         // as a ReadableStream of VideoFrames.
         const vTrack = mediaStream.getVideoTracks()[0];
+        console.log('[ENCODER-DEBUG] Video track initialized:', {
+            id: vTrack.id,
+            label: vTrack.label,
+            readyState: vTrack.readyState,
+            enabled: vTrack.enabled,
+            muted: vTrack.muted
+        });
+
+        vTrack.addEventListener('ended', function() {
+            console.error('[ENCODER-ERROR] Video track ENDED');
+        });
+        vTrack.addEventListener('mute', function() {
+            console.warn('[ENCODER-WARN] Video track MUTED');
+        });
         const vProcessor = new MediaStreamTrackProcessor(vTrack);
         const vFrameStream = vProcessor.readable;
 
         const aTrack = mediaStream.getAudioTracks()[0];
+        console.log('[ENCODER-DEBUG] Audio track initialized:', {
+            id: aTrack.id,
+            label: aTrack.label,
+            readyState: aTrack.readyState,
+            enabled: aTrack.enabled,
+            muted: aTrack.muted
+        });
+
+        aTrack.addEventListener('ended', function() {
+            console.error('[ENCODER-ERROR] Audio track ENDED');
+        });
+        aTrack.addEventListener('mute', function() {
+            console.warn('[ENCODER-WARN] Audio track MUTED');
+        });
         const aProcessor = new MediaStreamTrackProcessor(aTrack);
         const aFrameStream = aProcessor.readable;
 
@@ -1059,6 +1147,7 @@ LICENSE file in the root directory of this source tree.
 
         // Transport
         if (IS_LOCALHOST) {
+            console.info('Location origin: ' + `${location.origin}`);
             const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
             muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)    
         }
@@ -1094,6 +1183,10 @@ LICENSE file in the root directory of this source tree.
         // Transfer the readable stream to the worker.
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
         aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);
+        console.log('[ENCODER-DEBUG] Starting encoder heartbeat monitoring');
+        encoderHeartbeatTimer = setInterval(() => {
+            console.log('[ENCODER-HEARTBEAT] Encoder active - Last video seqId:', lastVideoSeqId, 'Last audio seqId:', lastAudioSeqId);
+        }, 5000); // Log every 5 seconds
     }
 
     // Add listeners from HTML

@@ -13,7 +13,7 @@ import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from "../utils/media/avcc_p
 const WORKER_PREFIX = '[VIDEO-DECO]'
 
 const MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS = 500
-const MAX_QUEUED_CHUNKS_DEFAULT = 60
+const MAX_QUEUED_CHUNKS_DEFAULT = 3  // Reduced from 60 to prevent worker message queue saturation
 
 let workerState = StateEnum.Created
 
@@ -64,8 +64,18 @@ function configureDecoder(seqId, metadata) {
   }
   const ret = getAndOverrideInitDataValues(metadata)
 
+  console.log('[DEBUG] Configuring VideoDecoder:', {
+    seqId: seqId,
+    codec: ret.config.codec,
+    descriptionLength: ret.config.description ? ret.config.description.byteLength : 0,
+    hardwareAcceleration: ret.config.hardwareAcceleration,
+    optimizeForLatency: ret.config.optimizeForLatency
+  })
+
   sendMessageToMain(WORKER_PREFIX, 'info', `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`)
   videoDecoder.configure(ret.config)
+
+  console.log('[DEBUG] VideoDecoder configured, state:', videoDecoder.state)
 }
 
 self.addEventListener('message', async function (e) {
@@ -102,9 +112,16 @@ self.addEventListener('message', async function (e) {
         // eslint-disable-next-line no-undef
         videoDecoder = new VideoDecoder({
           output: frame => {
+            console.log('[DEBUG] VideoDecoder output callback fired:', {
+              timestamp: frame.timestamp,
+              duration: frame.duration,
+              displayWidth: frame.displayWidth,
+              displayHeight: frame.displayHeight
+            })
             processVideoFrame(frame)
           },
           error: err => {
+            console.error('[DEBUG] VideoDecoder error callback fired:', err.message, err)
             sendMessageToMain(WORKER_PREFIX, 'error', 'Video decoder. err: ' + err.message)
           }
         })
@@ -144,14 +161,36 @@ self.addEventListener('message', async function (e) {
     }
 
     // The message is video chunk
+    console.log('[DEBUG] VideoDecoder state:', {
+      seqId: e.data.seqId,
+      chunkType: e.data.chunk.type,
+      chunkTimestamp: e.data.chunk.timestamp,
+      chunkDuration: e.data.chunk.duration,
+      chunkByteLength: e.data.chunk.byteLength,
+      waitingForKeyframe: isWaitingForKeyframe(),
+      decoderState: videoDecoder.state,
+      decodeQueueSize: videoDecoder.decodeQueueSize
+    })
     if (isWaitingForKeyframe() && (e.data.chunk.type !== 'key')) {
       // Discard Frame
       discardedDelta++
+      console.warn('[DEBUG] VideoDecoder DISCARDING delta frame (waiting for keyframe):', {
+        seqId: e.data.seqId,
+        chunkType: e.data.chunk.type,
+        totalDiscarded: discardedDelta
+      })
     } else {
       if (discardedDelta > 0) {
         sendMessageToMain(WORKER_PREFIX, 'warning', 'Discarded ' + discardedDelta + ' video chunks before key')
       }
       discardedDelta = 0
+      if (e.data.chunk.type === 'key') {
+        console.log('[DEBUG] VideoDecoder RECEIVED KEYFRAME, starting decode:', {
+          seqId: e.data.seqId,
+          timestamp: e.data.chunk.timestamp,
+          byteLength: e.data.chunk.byteLength
+        })
+      }
       setWaitForKeyframe(false)
 
       ptsQueue.removeUntil(videoDecoder.decodeQueueSize)
@@ -165,7 +204,14 @@ self.addEventListener('message', async function (e) {
         const chunkNALUInfo = ParseH264NALs(chunkDataBuffer, DEFAULT_AVCC_HEADER_LENGTH);
         sendMessageToMain(WORKER_PREFIX, 'info', `New chunk SeqId: ${e.data.seqId}, NALUS: ${JSON.stringify(chunkNALUInfo)}`)
       }
+      console.log('[DEBUG] VideoDecoder calling decode():', {
+        seqId: e.data.seqId,
+        chunkType: e.data.chunk.type,
+        timestamp: e.data.chunk.timestamp,
+        decoderStateBefore: videoDecoder.state
+      })
       videoDecoder.decode(e.data.chunk)
+      console.log('[DEBUG] VideoDecoder decode() returned, state:', videoDecoder.state)
 
       const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfo()
       if (decodeQueueInfo.lengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {

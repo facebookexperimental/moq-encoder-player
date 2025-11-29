@@ -363,10 +363,12 @@ LICENSE file in the root directory of this source tree.
 
     function playerCreateWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
-        
-        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
+        // Add cache-busting timestamp to force browser to load latest version
+        const cacheBust = "?v=" + Date.now();
+        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js" + cacheBust, {type: "module"});
+
+        audioDecoderWorker = new Worker("../decode/audio_decoder.js" + cacheBust, {type: "module"});
+        videoDecoderWorker = new Worker("../decode/video_decoder.js" + cacheBust, {type: "module"});
     }
 
     function playerClearUI() {

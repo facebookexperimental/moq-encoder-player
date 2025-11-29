@@ -204,29 +204,59 @@ async function moqReceiveMultiObjectStream(readerStream, type) {
   let isEOF = false
   let numObjRead = 0
   let objHeader = {} 
-  while (workerState !== StateEnum.Stopped && isEOF === false) {
-    reportStats()
-    try {
-      objHeader = await moqParseObjectFromSubgroupHeader(readerStream, type)
-      
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(objHeader)}`);
+  let lastReadTime = Date.now()
+  const STREAM_IDLE_TIMEOUT_MS = 500  // If no data for 500ms, assume stream is done
 
-      // Check if we received the end of the subgroup
-      isEOF = ("status" in objHeader && (objHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
-      if (!isEOF && objHeader.payloadLength > 0) {
-        isEOF = await readAndSendPayload(readerStream, objHeader.extensionHeaders, objHeader.payloadLength)
-        sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
+  try {
+    while (workerState !== StateEnum.Stopped && isEOF === false) {
+      reportStats()
+      try {
+        // Create a timeout promise to detect stalled streams
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Stream read timeout - no more data')), STREAM_IDLE_TIMEOUT_MS)
+        })
+
+        // Race between reading next object and timeout
+        objHeader = await Promise.race([
+          moqParseObjectFromSubgroupHeader(readerStream, type),
+          timeoutPromise
+        ])
+
+        lastReadTime = Date.now()
+        sendMessageToMain(WORKER_PREFIX, 'debug', `Received subgrp object header ${JSON.stringify(objHeader)}`);
+
+          // Check if we received the end of the subgroup
+          isEOF = ("status" in objHeader && (objHeader.status == MOQ_OBJ_STATUS_END_OF_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP || objHeader.status == MOQ_OBJ_STATUS_END_OF_SUBGROUP))
+          if (!isEOF && objHeader.payloadLength > 0) {
+            isEOF = await readAndSendPayload(readerStream, objHeader.extensionHeaders, objHeader.payloadLength)
+            sendMessageToMain(WORKER_PREFIX, 'debug', `Read & send upstream. isEOF: ${isEOF}`);
+          }
+          sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
+          numObjRead++
+      } catch(err) {
+        // We receive ERROR when we have a reader and the stream closes
+        // OR when the stream times out (no more data coming)
+        if (err.message && err.message.includes('Stream read timeout')) {
+          // Stream has been idle - assume it's done (next group uses a new stream)
+          sendMessageToMain(WORKER_PREFIX, 'debug', `Stream idle timeout after ${numObjRead} objects - releasing`)
+          isEOF = true
+        } else if (numObjRead > 0 || err instanceof WebTransportError && err.message.includes("The session is closed")) {
+          isEOF = true
+        } else {
+          throw err
+        }
       }
-      sendMessageToMain(WORKER_PREFIX, 'debug', `isEOF: ${isEOF}`);
-      numObjRead++
-    } catch(err) {
-      // We receive ERROR when we have a reader and the stream closes
-      // TODO: Objects with single subgroup/group does NOT send MOQ_OBJ_STATUS_END_OF_GROUP (Bug?), we need to remove numObjRead
-      if (numObjRead > 0 || err instanceof WebTransportError && err.message.includes("The session is closed")) {
-        isEOF = true
-      } else {
-        throw err
-      }
+    }
+  } finally {
+    // CRITICAL FIX: Cancel the stream to release browser WebTransport resources
+    // Without this, the browser accumulates unreleased streams until hitting its limit (~30 streams)
+    // causing incomingUnidirectionalStreams to stop delivering new streams
+    try {
+      await readerStream.cancel();
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Stream cancelled and released (read ${numObjRead} objects)`)
+    } catch (err) {
+      // Stream may already be closed/cancelled, this is not an error
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Stream cancel completed with: ${err.message}`)
     }
   }
   sendMessageToMain(WORKER_PREFIX, 'debug', 'Exited from subgroup reader loop')
@@ -272,6 +302,11 @@ async function moqReceiveDatagramObjects (moqt) {
 }
 
 async function readAndSendPayload(readerStream, extensionHeaders, length) {
+  console.log('[DEBUG] ParseData called with:', {
+    numExtHeaders: extensionHeaders.length,
+    extHeaders: extensionHeaders,
+    payloadLength: length
+  });
   const packet = new MIPackager()
   await packet.ParseData(readerStream, extensionHeaders, length)
   const isEOF = packet.IsEof();
@@ -280,7 +315,17 @@ async function readAndSendPayload(readerStream, extensionHeaders, length) {
   if (chunkData == null || chunkData.type === undefined) {
     throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
   }
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-MI: ${packet.GetDataStr()})`)
+  console.log('[DEBUG] ParseData SUCCESS:', {
+    type: chunkData.type,
+    seqId: chunkData.seqId,
+    pts: chunkData.pts,
+    dts: chunkData.dts,
+    timebase: chunkData.timebase,
+    duration: chunkData.duration,
+    payloadSize: chunkData.data ? chunkData.data.byteLength : 0
+  });
+
+  sendMessageToMain(WORKER_PREFIX, 'info', `Decoded MOQT-MI: ${packet.GetDataStr()})`);
   
   let chunk
   let appMediaType
@@ -288,6 +333,16 @@ async function readAndSendPayload(readerStream, extensionHeaders, length) {
     appMediaType = "audiochunk"
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemAudioTimebase);
     const duration = convertTimestamp(chunkData.duration, chunkData.timebase, systemAudioTimebase);
+    console.log('[DEBUG] Audio timestamps:', {
+      seqId: chunkData.seqId,
+      rawPts: chunkData.pts,
+      rawDuration: chunkData.duration,
+      rawTimebase: chunkData.timebase,
+      convertedTimestamp: timestamp,
+      convertedDuration: duration,
+      systemAudioTimebase: systemAudioTimebase,
+      isValid: !isNaN(timestamp) && !isNaN(duration) && timestamp >= 0
+    });
     chunk = new EncodedAudioChunk({
       timestamp: timestamp,
       type: "key",
@@ -301,6 +356,17 @@ async function readAndSendPayload(readerStream, extensionHeaders, length) {
     const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH)
     const timestamp = convertTimestamp(chunkData.pts, chunkData.timebase, systemVideoTimebase);
     const duration = convertTimestamp(chunkData.duration, chunkData.timebase, systemVideoTimebase);
+    console.log('[DEBUG] Video timestamps:', {
+      seqId: chunkData.seqId,
+      rawPts: chunkData.pts,
+      rawDuration: chunkData.duration,
+      rawTimebase: chunkData.timebase,
+      convertedTimestamp: timestamp,
+      convertedDuration: duration,
+      systemVideoTimebase: systemVideoTimebase,
+      isIdr: isIdr,
+      isValid: !isNaN(timestamp) && !isNaN(duration) && timestamp >= 0
+    });
     chunk = new EncodedVideoChunk({
       timestamp: timestamp,
       type: isIdr ? "key": "delta",

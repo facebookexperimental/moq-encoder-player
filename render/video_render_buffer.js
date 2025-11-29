@@ -5,7 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-const MAX_ELEMENTS_RENDERER = 60
+// Reduced from 60 to 30 to prevent excessive buffering
+// This matches the frame dropping threshold in index.html
+const MAX_ELEMENTS_RENDERER = 30
 
 export class VideoRenderBuffer {
   constructor () {

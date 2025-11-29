@@ -202,6 +202,7 @@ LICENSE file in the root directory of this source tree.
     import { getBinaryFile } from "../utils/utils.js"
     import { MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
     import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
+    import { ParseAVCDecoderConfigurationRecord, GetVideoCodecStringFromAVCDecoderConfigurationRecord } from "../utils/media/avc_decoder_configuration_record_parser.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -213,6 +214,10 @@ LICENSE file in the root directory of this source tree.
     let VERBOSE = true;
     let IS_LOCALHOST = false;
 
+    let renderedFrames = 0;
+    let droppedFrames = 0;
+    let lastHealthCheck = performance.now();
+    let healthCheckInterval = null;
     const downloaderConfig = {
         urlHostPort: '',
         urlPath: '',
@@ -244,7 +249,6 @@ LICENSE file in the root directory of this source tree.
     // Current workers
     let muxerDownloaderWorker = null;
     let audioDecoderWorker = null;
-    let videoDecoderWorker = null;
 
     // TS info
     const timingInfo = {
@@ -300,6 +304,18 @@ LICENSE file in the root directory of this source tree.
     const RENDER_VIDEO_EVERY_MS = 10;
 
     let videoRendererBuffer = null;
+
+    // Main thread video decoder (simplified - single frame buffer)
+    let videoDecoder = null;
+    let currentVideoFrame = null;  // Single frame for rendering (no buffering)
+    let lastVideoMetadata = null;
+    let waitForKeyFrame = true;
+    let videoFrameCount = 0;
+    let lastRenderedFrameTimestamp = -1; // Track last rendered frame to avoid duplicates
+
+    // Sequential chunk processing queue (prevent concurrent decode)
+    let videoChunkQueue = [];
+    let videoChunkProcessing = false;
 
     // Jitter buffers
     let wtVideoJitterBuffer = null;
@@ -392,12 +408,11 @@ LICENSE file in the root directory of this source tree.
 
         createLatencyChecker();
 
+        startRendererHealthMonitoring();
+
         createWorkers();
 
         muxerDownloaderWorker.addEventListener('message', function (e) {
-            processWorkerMessage(e);
-        });
-        videoDecoderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
         audioDecoderWorker.addEventListener('message', function (e) {
@@ -436,13 +451,18 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
 
+        stopRendererHealthMonitoring();
+
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
-        videoDecoderWorker.postMessage(stopMsg);
         audioDecoderWorker.postMessage(stopMsg);
 
-        await audioCtx.close();
-        audioCtx = null;
+        closeMainThreadVideoDecoder();
+
+        if (audioCtx !== null) {
+            await audioCtx.close();
+            audioCtx = null;
+        }
         sourceBufferAudioWorklet = null;
         if (audioSharedBuffer != null) {
             audioSharedBuffer.Clear();
@@ -475,6 +495,44 @@ LICENSE file in the root directory of this source tree.
         videoRendererBuffer = null;
     }
 
+    // Renderer health monitoring functions
+    function startRendererHealthMonitoring() {
+        renderedFrames = 0;
+        droppedFrames = 0;
+        lastHealthCheck = performance.now();
+
+        healthCheckInterval = setInterval(() => {
+            const now = performance.now();
+            const elapsed = (now - lastHealthCheck) / 1000;
+
+            const queueDepth = videoRendererBuffer ? videoRendererBuffer.elementsList.length : 0;
+            const decoderQueueSize = buffersInfo.decoder.video.size;
+
+            console.log('[RENDERER-HEALTH]', {
+                queueDepth: queueDepth,
+                renderedFps: (renderedFrames / elapsed).toFixed(1),
+                droppedFps: (droppedFrames / elapsed).toFixed(1),
+                decoderQueueSize: decoderQueueSize
+            });
+
+            renderedFrames = 0;
+            droppedFrames = 0;
+            lastHealthCheck = now;
+        }, 1000);
+    }
+
+    function stopRendererHealthMonitoring() {
+        if (healthCheckInterval != null) {
+            clearInterval(healthCheckInterval);
+            healthCheckInterval = null;
+        }
+    }
+
+    // Helper function to check if frame is a keyframe
+    function isKeyframe(frame) {
+        return frame.type === 'key';
+    }
+
     function jitterAudioDroppedCallback(data) {
         console.warn(`[AUDIO-JITTER] Dropped late audio frame. seqId: ${data.seqId}, currentSeqId:${data.firstBufferSeqId}`);
     }
@@ -502,12 +560,147 @@ LICENSE file in the root directory of this source tree.
         latencyVideoChecker = null;
     }
 
+    function initMainThreadVideoDecoder() {
+        console.log('[VIDEO-DECODER] Initializing main thread VideoDecoder');
+
+        videoDecoder = new VideoDecoder({
+            output: (vFrame) => {
+                // Single frame buffer - simplest approach to avoid 3-frame limit
+                // Close old frame immediately when new frame arrives
+                if (currentVideoFrame) {
+                    currentVideoFrame.close();
+                }
+                currentVideoFrame = vFrame;
+                videoFrameCount++;
+
+                if (videoFrameCount === 1) {
+                    console.log('[VIDEO-DECODER] First frame received:', vFrame.timestamp);
+                }
+            },
+            error: (err) => {
+                console.error('[VIDEO-DECODER] Error:', err);
+            }
+        });
+
+        console.log('[VIDEO-DECODER] VideoDecoder initialized');
+    }
+
+    function closeMainThreadVideoDecoder() {
+        // Clear processing queue
+        videoChunkQueue = [];
+        videoChunkProcessing = false;
+
+        if (videoDecoder) {
+            videoDecoder.close();
+            videoDecoder = null;
+        }
+        if (currentVideoFrame) {
+            currentVideoFrame.close();
+            currentVideoFrame = null;
+        }
+        lastVideoMetadata = null;
+        waitForKeyFrame = true;
+        videoFrameCount = 0;
+        lastRenderedFrameTimestamp = -1;
+        console.log('[VIDEO-DECODER] Closed');
+    }
+
+    // Helper function to compare ArrayBuffers
+    function compareArrayBuffer(buf1, buf2) {
+        if (buf1 === buf2) return true;
+        if (!buf1 || !buf2) return false;
+        if (buf1.byteLength !== buf2.byteLength) return false;
+
+        const view1 = new Uint8Array(buf1);
+        const view2 = new Uint8Array(buf2);
+        for (let i = 0; i < view1.length; i++) {
+            if (view1[i] !== view2[i]) return false;
+        }
+        return true;
+    }
+
+    // Enqueue video chunk for sequential processing (hang/moq-js strategy)
+    function enqueueVideoChunk(chunk, metadata, isDisco, seqId) {
+        videoChunkQueue.push({ chunk, metadata, isDisco, seqId });
+        processVideoChunkQueue();
+    }
+
+    async function processVideoChunkQueue() {
+        if (videoChunkProcessing || videoChunkQueue.length === 0) {
+            return;
+        }
+
+        videoChunkProcessing = true;
+
+        while (videoChunkQueue.length > 0) {
+            const item = videoChunkQueue.shift();
+            await processVideoChunk(item.chunk, item.metadata, item.isDisco, item.seqId);
+        }
+
+        videoChunkProcessing = false;
+    }
+
+    async function processVideoChunk(chunk, metadata, isDisco, seqId) {
+        if (!videoDecoder) {
+            console.warn('[VIDEO-DECODER] Decoder not initialized');
+            return;
+        }
+
+        // Configure decoder if we have new metadata (compare contents, not references)
+        if (metadata && (!lastVideoMetadata || !compareArrayBuffer(lastVideoMetadata, metadata))) {
+            const avcInfo = ParseAVCDecoderConfigurationRecord(metadata);
+            const codecString = GetVideoCodecStringFromAVCDecoderConfigurationRecord(avcInfo);
+
+            const config = {
+                codec: codecString,
+                description: metadata,
+                optimizeForLatency: true,
+                hardwareAcceleration: 'prefer-software'
+            };
+
+            console.log('[VIDEO-DECODER] Configuring with codec:', codecString);
+            videoDecoder.configure(config);
+            lastVideoMetadata = metadata;
+
+            // After configure(), decoder requires a keyframe
+            waitForKeyFrame = true;
+        }
+
+        // Wait for keyframe after disco or initial start
+        if (isDisco) {
+            waitForKeyFrame = true;
+            console.log('[VIDEO-DECODER] DISCO - waiting for keyframe');
+        }
+
+        if (waitForKeyFrame && chunk.type !== 'key') {
+            return; // Discard delta frames until keyframe
+        }
+
+        if (chunk.type === 'key') {
+            waitForKeyFrame = false;
+            console.log('[VIDEO-DECODER] Keyframe received, starting decode');
+        }
+
+        // Decode immediately - no sleep in main thread
+        // The 2-frame buffer and decoder backpressure will handle pacing
+        if (videoDecoder.state === 'configured') {
+            videoDecoder.decode(chunk);
+
+            buffersInfo.decoder.video.size = videoDecoder.decodeQueueSize;
+            timingInfo.decoder.currentVideoTs = chunk.timestamp;
+        }
+    }
     function createWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
-        
-        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
+        // Add cache-busting timestamp to force browser to load latest version
+        const cacheBust = "?v=" + Date.now();
+        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js" + cacheBust, {type: "module"});
+
+        audioDecoderWorker = new Worker("../decode/audio_decoder.js" + cacheBust, {type: "module"});
+
+        // Video decoder now runs in main thread (no worker) - hang/moq-js strategy
+        // Initialize main thread video decoder
+        initMainThreadVideoDecoder();
     }
 
     function clearUI() {
@@ -702,7 +895,12 @@ LICENSE file in the root directory of this source tree.
 
                         timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                         updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
+                        enqueueVideoChunk(
+                            orderedVideoData.chunk,
+                            orderedVideoData.extraData.metadata,
+                            orderedVideoData.isDisco,
+                            orderedVideoData.seqId
+                        );
                     }
                 }
                 updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
@@ -775,29 +973,6 @@ LICENSE file in the root directory of this source tree.
                     animFrame = requestAnimationFrame(audioTimestamps);
                 }
             }
-        } else if (e.data.type === "vframe") {
-            const vFrame = e.data.frame;
-            timingInfo.decoder.currentVideoTs = vFrame.timestamp;
-
-            buffersInfo.decoder.video.size = e.data.queueSize;
-            buffersInfo.decoder.video.lengthMs = e.data.queueLengthMs;
-
-            updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
-
-            const decoded = overlayDecoder.Decode(vFrame)
-            if (decoded.confidence > 0.3) {
-                vFrame.overlayClk = decoded.val                
-            } else {
-                updateVideoLatencyOverlayUI()
-            }
-            if (VERBOSE) {
-                console.debug(`[OVERLAY] overlay decoded. ts: ${vFrame.timestamp}, val: ${decoded.val} (conf: ${decoded.confidence})}`)
-            }
-               
-            if (videoRendererBuffer != null && videoRendererBuffer.AddItem(vFrame) === false) {
-                console.warn("Dropped video frame because video renderer is full");
-                vFrame.close();
-            }
             // Downloader STATS
         } else if (e.data.type === "downloaderstats") {
             const downloaderData = e.data.data;
@@ -805,6 +980,12 @@ LICENSE file in the root directory of this source tree.
             // Dropped
         } else if (e.data.type === "dropped") {
             updateListDroppedFrame(e.data.data);
+
+            // PUBLISH_DONE
+        } else if (e.data.type === "publishdone") {
+            console.warn("PUBLISH_DONE received: Publisher disconnected (status=" + e.data.statusCode + ", reason=" + e.data.reason + ")");
+            // Auto-stop playback when publisher is gone
+            await stop();
 
             // UNKNOWN
         } else {
@@ -872,8 +1053,67 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    function renderVideoFrame() {
+        // Only render if we have a NEW frame (not at 60fps)
+        if (!currentVideoFrame) {
+            return; // No frame to render
+        }
+
+        // Skip if we already rendered this frame
+        if (currentVideoFrame.timestamp === lastRenderedFrameTimestamp) {
+            return;
+        }
+
+        // Get canvas context
+        if (!videoPlayerCtx) {
+            const canvas = document.getElementById('videoPlayer');
+            if (canvas) {
+                videoPlayerCtx = canvas.getContext('2d', {
+                    alpha: false,
+                    desynchronized: true
+                });
+            }
+        }
+
+        if (!videoPlayerCtx) {
+            return;
+        }
+
+        try {
+            // Render directly from currentVideoFrame - NO CLONE
+            // This keeps us at 1 frame maximum (avoiding Firefox's 2-frame limit)
+            const frame = currentVideoFrame;
+
+            // Resize canvas if needed
+            const canvas = videoPlayerCtx.canvas;
+            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+                canvas.width = frame.displayWidth;
+                canvas.height = frame.displayHeight;
+                console.log('[VIDEO-RENDER] Canvas resized to', frame.displayWidth, 'x', frame.displayHeight);
+            }
+
+            // Clear canvas
+            videoPlayerCtx.fillStyle = '#000';
+            videoPlayerCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw frame directly (no clone)
+            videoPlayerCtx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+
+            // Update stats
+            renderedFrames++;
+            lastRenderedFrameTimestamp = currentVideoFrame.timestamp;
+            timingInfo.renderer.currentVideoTS = currentVideoFrame.timestamp;
+
+        } catch (err) {
+            console.error('[VIDEO-RENDER] Error rendering frame:', err);
+        }
+    }
+
     function audioTimestamps(wcTimestamp) {
         const wcInterval = wcTimestamp - wcLastRender;
+
+        // Render video frame (hang/moq-js strategy with frame cloning)
+        renderVideoFrame();
 
         if (audioSharedBuffer != null) {
             updateAudioStats(audioSharedBuffer.GetStats());
@@ -881,41 +1121,33 @@ LICENSE file in the root directory of this source tree.
             updateAudioState();
         }
 
-        // Update every 10ms
-        if ((audioCtx != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
-            wcLastRender = wcTimestamp;
+        // Render video - consume frames immediately to prevent backpressure
+        if (videoRendererBuffer != null) {
+            const retData = videoRendererBuffer.GetFirstElement();
 
-            if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTS >= 0) {
-                // Assuming audioTS in microseconds
-                const compensatedAudioTS = Math.max(0, timingInfo.renderer.currentAudioTS - (systemAudioLatencyMs * 1000));
-                const retData = videoRendererBuffer.GetItemByTs(compensatedAudioTS);
-                if (retData.vFrame != null) {
-                    setVideoSize(retData.vFrame);
-                    videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
+            if (retData != null && retData.vFrame != null) {
+                setVideoSize(retData.vFrame);
+                videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
 
-                    timingInfo.renderer.currentVideoTS = retData.vFrame.timestamp;
-                    buffersInfo.renderer.video.size = retData.queueSize;
-                    buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
+                timingInfo.renderer.currentVideoTS = retData.vFrame.timestamp;
+                buffersInfo.renderer.video.size = retData.queueSize;
+                buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
-                    if ('overlayClk' in retData.vFrame) {
-                        const currentLatencyMs = (Date.now() - Number(retData.vFrame.overlayClk));
-                        updateVideoLatencyOverlayUI(currentLatencyMs);
-                    } 
-                    // Legacy                        
-                    if (latencyVideoChecker != null) {
-                        const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
-                        if (frameClosestData.valid) {
-                            const currentLatencyMs = (Date.now() - Number(frameClosestData.clkms));
-                            updateVideoLatencyUI(currentLatencyMs);
-                        }
-                    }
-
-                    retData.vFrame.close();
-                } else {
-                    if (VERBOSE) {
-                        console.debug("NO FRAME to paint");
+                if ('overlayClk' in retData.vFrame) {
+                    const currentLatencyMs = (Date.now() - Number(retData.vFrame.overlayClk));
+                    updateVideoLatencyOverlayUI(currentLatencyMs);
+                }
+                // Legacy
+                if (latencyVideoChecker != null) {
+                    const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
+                    if (frameClosestData.valid) {
+                        const currentLatencyMs = (Date.now() - Number(frameClosestData.clkms));
+                        updateVideoLatencyUI(currentLatencyMs);
                     }
                 }
+
+                retData.vFrame.close();
+                renderedFrames++;
 
                 updateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
             }
