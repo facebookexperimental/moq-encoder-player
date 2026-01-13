@@ -22,6 +22,9 @@ let encoderMaxQueueSize = 5
 let keyframeEvery = 60
 let insertNextKeyframe = false
 
+// Make sure we send the metadata in all keyframes (send last if encoder not provides one)
+let last_keyframe_metadata = undefined
+
 // Encoder
 const initVideoEncoder = {
   output: handleChunk,
@@ -38,11 +41,17 @@ let vEncoder = null
 
 function handleChunk (chunk, metadata) {
   // decoderConfig in h264 is AVCDecoderConfigurationRecord
-  const frame_metadata = (metadata != undefined && metadata.decoderConfig != undefined && "description" in metadata.decoderConfig) ? metadata.decoderConfig.description : undefined;
+  let frame_metadata = (metadata != undefined && metadata.decoderConfig != undefined && "description" in metadata.decoderConfig) ? metadata.decoderConfig.description : undefined;
+  if (frame_metadata != undefined) {
+    last_keyframe_metadata = frame_metadata
+  } else if (chunk.type == 'key') {
+    frame_metadata = last_keyframe_metadata
+  }
+
   const msg = { type: 'vchunk', seqId: chunkDeliveredCounter++, chunk, metadata: frame_metadata, timebase: WEBCODECS_TIMESCALE}
 
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
-  sendMessageToMain(WORKER_PREFIX, 'debug', `Chunk created. sId: ${msg.seqId}, pts: ${chunk.timestamp}, dur: ${chunk.duration}, type: ${chunk.type}, size: ${chunk.byteLength}, metadata_size:${(frame_metadata != undefined) ? frame_metadata.byteLength : 0}, avcDecoderConfigurationRecord: ${(frame_metadata != undefined) ? JSON.stringify(ParseAVCDecoderConfigurationRecord(frame_metadata)) : "-"}`)
+  sendMessageToMain(WORKER_PREFIX, 'debug', `Chunk created. sId: ${msg.seqId}, pts: ${msg.chunk.timestamp}, dur: ${msg.chunk.duration}, type: ${msg.chunk.type}, size: ${msg.chunk.byteLength}, metadata_size:${(msg.metadata != undefined) ? msg.metadata.byteLength : 0}, avcDecoderConfigurationRecord: ${(msg.metadata != undefined) ? JSON.stringify(ParseAVCDecoderConfigurationRecord(msg.metadata)) : "-"}`)
 
   self.postMessage(msg)
 }
