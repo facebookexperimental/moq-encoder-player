@@ -157,13 +157,187 @@ export const GOING_AWAY = 0x4;
 export const MOQ_STATUS_EXPIRED = 0x5;
 export const MOQ_STATUS_TOO_FAR_BEHIND = 0x6;
 
+// Protocol value types
+
+export interface Token {
+  aliasType: number;
+  tokenType: number;
+  value: Uint8Array;
+}
+
+export type KvPairValue = number | string | Uint8Array | ArrayBuffer | Token;
+
+export interface KvPair<T extends KvPairValue = KvPairValue> {
+  name: number;
+  val: T;
+}
+
+export interface Location {
+  group: number;
+  obj: number;
+}
+
+export interface RangeEnd {
+  group: number;
+}
+
+export interface Filter {
+  type: number;
+  start?: Location;
+  end?: RangeEnd;
+}
+
+export interface DatagramTypeOptions {
+  isStatus: boolean;
+  extensionsPresent: boolean;
+  isEndOfGroup: boolean;
+  isObjIdPresent: boolean;
+}
+
+export interface StreamHeaderOptions {
+  extensionsPresent: boolean;
+  isEndOfGroup: boolean;
+  subGroupIdPresent: boolean;
+  isSubgroupIdFirstObjectId: boolean;
+}
+
+// Parsed control messages
+
+export interface ParsedServerSetup {
+  version: number;
+  parameters: KvPair[];
+}
+
+export interface ParsedSubscribe {
+  requestId: number;
+  namespace: string[];
+  trackName: string;
+  subscriberPriority: number;
+  groupOrder: number;
+  forward: number;
+  filter: Filter;
+  parameters: KvPair[];
+}
+
+export interface ParsedSubscribeOk {
+  requestId: number;
+  trackAlias: number;
+  expires: number;
+  groupOrder: number;
+  last?: Location;
+  parameters: KvPair[];
+}
+
+export interface ParsedSubscribeError {
+  requestId: number;
+  errorCode: number;
+  errorReason: string;
+}
+
+export interface ParsedUnsubscribe {
+  subscriptionRequestId: number;
+}
+
+export interface ParsedSubscribeUpdate {
+  requestId: number;
+  subscriptionRequestId: number;
+  start: Location;
+  end: RangeEnd;
+  subscriberPriority: number;
+  forward: number;
+  parameters: KvPair[];
+}
+
+export interface ParsedPublishOk {
+  reqId: number;
+  forward: number;
+  subscriberPriority: number;
+  groupOrder: number;
+  filter: Filter;
+  parameters: KvPair[];
+}
+
+export interface ParsedPublishError {
+  reqId: number;
+  errorCode: number;
+  reason: string;
+}
+
+export interface ParsedPublishDone {
+  requestId: number;
+  statusCode: number;
+  streamCount: number;
+  errorReason: string;
+}
+
+export interface ParsedPublishNamespaceOk {
+  reqId: number;
+}
+
+export interface ParsedPublishNamespaceError {
+  reqId: number;
+  errorCode: number;
+  reason: string;
+}
+
+export interface ParsedUnknown {
+  data: { eof: boolean; buff: Uint8Array } | null;
+}
+
+export type MoqMessageData =
+  | ParsedServerSetup
+  | ParsedSubscribe
+  | ParsedSubscribeOk
+  | ParsedSubscribeError
+  | ParsedUnsubscribe
+  | ParsedSubscribeUpdate
+  | ParsedPublishOk
+  | ParsedPublishError
+  | ParsedPublishDone
+  | ParsedPublishNamespaceOk
+  | ParsedPublishNamespaceError
+  | ParsedUnknown;
+
+export interface MoqMessage {
+  type: number;
+  // `data` is one of the Parsed* shapes above, discriminated at runtime by
+  // `type`. It is typed `any` because callers select fields based on `type`
+  // without narrowing; each individual parser is still strongly typed.
+  data: any;
+}
+
+// Parsed object header. The fields present depend on `options`; datagram-only
+// fields (objSeq, extensionHeaders) and subgroup-only fields (subGroupSeq) are
+// therefore optional on this single shared shape.
+export interface ObjectHeader {
+  type: number;
+  options: DatagramTypeOptions | StreamHeaderOptions;
+  trackAlias: number;
+  groupSeq: number;
+  publisherPriority: number;
+  objSeq?: number;
+  extensionHeaders?: KvPair[];
+  subGroupSeq?: number;
+}
+
+export interface SubgroupObject {
+  objSeq: number;
+  payloadLength: number;
+  extensionHeaders: KvPair[];
+  status?: number;
+}
+
 export interface MoqtState {
+  // Kept loose: callers invoke `wt.createUnidirectionalStream(...)` with a
+  // non-standard options shape (see docs/moqt-review.md). Typing this as
+  // `WebTransport` would not compile against the existing caller code, which is
+  // out of scope for this types-only change.
   wt: any;
-  controlStream: any;
-  controlWriter: any;
-  controlReader: any;
-  multiObjectWritter: Record<string, any>;
-  datagramsReader: any;
+  controlStream: WebTransportBidirectionalStream | null;
+  controlWriter: WritableStream<Uint8Array> | null;
+  controlReader: ReadableStream<Uint8Array> | null;
+  multiObjectWritter: Record<string, WritableStreamDefaultWriter<Uint8Array>>;
+  datagramsReader: ReadableStreamDefaultReader<Uint8Array> | null;
 }
 
 export function moqCreate(): MoqtState {
@@ -180,8 +354,8 @@ export function moqCreate(): MoqtState {
   };
 }
 
-export async function moqCloseWrttingStreams(moqt: MoqtState) {
-  const multiWritterClosePromises = [];
+export async function moqCloseWrttingStreams(moqt: MoqtState): Promise<void> {
+  const multiWritterClosePromises: Promise<void>[] = [];
   for (const multiWritter of Object.values(moqt.multiObjectWritter)) {
     multiWritterClosePromises.push(multiWritter.close());
   }
@@ -191,7 +365,7 @@ export async function moqCloseWrttingStreams(moqt: MoqtState) {
   moqt.multiObjectWritter = {};
 }
 
-export async function moqClose(moqt: MoqtState) {
+export async function moqClose(moqt: MoqtState): Promise<void> {
   await moqCloseWrttingStreams(moqt);
 
   if (moqt.datagramsReader != null) {
@@ -219,7 +393,7 @@ export async function moqClose(moqt: MoqtState) {
 
 // MOQ control stream
 
-export async function moqCreateControlStream(moqt: MoqtState) {
+export async function moqCreateControlStream(moqt: MoqtState): Promise<void> {
   if (moqt.wt === null) {
     throw new Error('WT session is NULL when we tried to create MOQ');
   }
@@ -236,8 +410,8 @@ export async function moqCreateControlStream(moqt: MoqtState) {
 
 // SETUP CLIENT
 
-function moqCreateClientSetupMessageBytes() {
-  const msg = [];
+function moqCreateClientSetupMessageBytes(): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // Number of supported versions
   msg.push(numberToVarInt(1));
@@ -256,14 +430,18 @@ function moqCreateClientSetupMessageBytes() {
   ]);
 }
 
-export async function moqSendClientSetup(writerStream: any) {
+export async function moqSendClientSetup(
+  writerStream: WritableStream<Uint8Array>,
+): Promise<void> {
   return moqSendToStream(writerStream, moqCreateClientSetupMessageBytes());
 }
 
 // SETUP SERVER
 
-async function moqParseSetupResponse(readerStream: any) {
-  const ret: any = {};
+async function moqParseSetupResponse(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedServerSetup> {
+  const ret = {} as ParsedServerSetup;
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
   ret.version = await varIntToNumberOrThrow(readerStream);
@@ -280,14 +458,14 @@ async function moqParseSetupResponse(readerStream: any) {
 // PUBLISH
 
 export async function moqSendPublish(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   reqId: number,
   namespace: string[],
   name: string,
   trackAlias: number,
-  authInfo: any,
+  authInfo: string | number | undefined,
   forward?: number,
-) {
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreatePublishMessageBytes(reqId, namespace, name, trackAlias, authInfo, forward),
@@ -299,10 +477,10 @@ function moqCreatePublishMessageBytes(
   namespace: string[],
   name: string,
   trackAlias: number,
-  authInfo: any,
-  forward: number,
-) {
-  const msg = [];
+  authInfo: string | number | undefined,
+  forward: number | undefined,
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // RequestID
   msg.push(numberToVarInt(reqId));
@@ -319,12 +497,12 @@ function moqCreatePublishMessageBytes(
   // Forward
   msg.push(numberToSingleByteArray(forward)); // Start sending now
   // Parameters
-  let kv_params: any[] = [];
+  let kv_params: KvPair[] = [];
   if (authInfo != undefined && authInfo != '') {
     kv_params = [
       moqCreateKvPair(
         MOQ_PARAMETER_AUTHORIZATION_TOKEN,
-        moqCreateUseValueTokenFromString(authInfo),
+        moqCreateUseValueTokenFromString(authInfo as string),
       ),
     ];
   }
@@ -339,31 +517,35 @@ function moqCreatePublishMessageBytes(
 // PUBLISH NAMESPACE
 
 export async function moqSendPublishNamespace(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   reqId: number,
   namespace: string[],
-  authInfo: any,
-) {
+  authInfo: string | number | undefined,
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreatePublishNamespaceMessageBytes(reqId, namespace, authInfo),
   );
 }
 
-function moqCreatePublishNamespaceMessageBytes(reqId: number, namespace: string[], authInfo: any) {
-  const msg = [];
+function moqCreatePublishNamespaceMessageBytes(
+  reqId: number,
+  namespace: string[],
+  authInfo: string | number | undefined,
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // RequestID
   msg.push(numberToVarInt(reqId));
   // Namespace
   msg.push(moqCreateTupleBytes(namespace));
   // Parameters
-  let kv_params: any[] = [];
+  let kv_params: KvPair[] = [];
   if (authInfo != undefined && authInfo != '') {
     kv_params = [
       moqCreateKvPair(
         MOQ_PARAMETER_AUTHORIZATION_TOKEN,
-        moqCreateUseValueTokenFromString(authInfo),
+        moqCreateUseValueTokenFromString(authInfo as string),
       ),
     ];
   }
@@ -377,8 +559,10 @@ function moqCreatePublishNamespaceMessageBytes(reqId: number, namespace: string[
 
 // PUBLISH NAMESPACE OK
 
-async function moqParsePublishNamespaceOk(readerStream: any) {
-  const ret: any = {};
+async function moqParsePublishNamespaceOk(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedPublishNamespaceOk> {
+  const ret = {} as ParsedPublishNamespaceOk;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
@@ -389,8 +573,10 @@ async function moqParsePublishNamespaceOk(readerStream: any) {
 
 // PUBLISH NAMESPACE ERROR
 
-async function moqParsePublishNamespaceError(readerStream: any) {
-  const ret: any = {};
+async function moqParsePublishNamespaceError(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedPublishNamespaceError> {
+  const ret = {} as ParsedPublishNamespaceError;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
@@ -403,8 +589,10 @@ async function moqParsePublishNamespaceError(readerStream: any) {
 
 // PUBLISH OK
 
-async function moqParsePublishOk(readerStream: any) {
-  const ret: any = {};
+async function moqParsePublishOk(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedPublishOk> {
+  const ret = {} as ParsedPublishOk;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
@@ -420,8 +608,10 @@ async function moqParsePublishOk(readerStream: any) {
 
 // PUBLISH ERROR
 
-async function moqParsePublishError(readerStream: any) {
-  const ret: any = {};
+async function moqParsePublishError(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedPublishError> {
+  const ret = {} as ParsedPublishError;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
@@ -435,12 +625,12 @@ async function moqParsePublishError(readerStream: any) {
 // PUBLISH DONE
 
 export async function moqSendPublishDone(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   requestId: number,
   statusCode: number,
   streamCount: number,
   reason: string,
-) {
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreatePublishDoneMessageBytes(requestId, statusCode, streamCount, reason),
@@ -452,8 +642,8 @@ function moqCreatePublishDoneMessageBytes(
   statusCode: number,
   streamCount: number,
   reason: string,
-) {
-  const msg = [];
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // Request ID
   msg.push(numberToVarInt(requestId));
@@ -470,8 +660,10 @@ function moqCreatePublishDoneMessageBytes(
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_PUBLISH_DONE), lengthBytes, ...msg]);
 }
 
-async function moqParsePublishDone(readerStream: any) {
-  const ret: any = {};
+async function moqParsePublishDone(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedPublishDone> {
+  const ret = {} as ParsedPublishDone;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.requestId = await varIntToNumberOrThrow(readerStream);
@@ -486,12 +678,12 @@ async function moqParsePublishDone(readerStream: any) {
 // Always subscribe from start next group
 
 export async function moqSendSubscribe(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   requestId: number,
   trackNamespace: string[],
   trackName: string,
-  authInfo: any,
-) {
+  authInfo: string | number | undefined,
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo),
@@ -502,9 +694,9 @@ function moqCreateSubscribeMessageBytes(
   requestId: number,
   trackNamespace: string[],
   trackName: string,
-  authInfo: any,
-) {
-  const msg = [];
+  authInfo: string | number | undefined,
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // reuqestID
   msg.push(numberToVarInt(requestId));
@@ -524,12 +716,12 @@ function moqCreateSubscribeMessageBytes(
   // NO need to add StartGroup, StartObject, EndGroup
 
   // Params
-  let kv_params: any[] = [];
+  let kv_params: KvPair[] = [];
   if (authInfo != undefined && authInfo != '') {
     kv_params = [
       moqCreateKvPair(
         MOQ_PARAMETER_AUTHORIZATION_TOKEN,
-        moqCreateUseValueTokenFromString(authInfo),
+        moqCreateUseValueTokenFromString(authInfo as string),
       ),
     ];
   }
@@ -541,8 +733,10 @@ function moqCreateSubscribeMessageBytes(
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE), lengthBytes, ...msg]);
 }
 
-async function moqParseSubscribe(readerStream: any) {
-  const ret: any = {};
+async function moqParseSubscribe(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedSubscribe> {
+  const ret = {} as ParsedSubscribe;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.requestId = await varIntToNumberOrThrow(readerStream);
@@ -560,14 +754,14 @@ async function moqParseSubscribe(readerStream: any) {
 // SUBSCRIBE OK
 
 export async function moqSendSubscribeOk(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   requestId: number,
   trackAlias: number,
   expiresMs: number,
   lastGroupSent: number | undefined,
   lastObjSent: number | undefined,
-  authInfo: any,
-) {
+  authInfo: string | number | undefined,
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreateSubscribeOkMessageBytes(
@@ -587,9 +781,9 @@ function moqCreateSubscribeOkMessageBytes(
   expiresMs: number,
   lastGroupSent: number | undefined,
   lastObjSent: number | undefined,
-  authInfo: any,
-) {
-  const msg = [];
+  authInfo: string | number | undefined,
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // RequestID
   msg.push(numberToVarInt(requestId));
@@ -611,12 +805,12 @@ function moqCreateSubscribeOkMessageBytes(
   }
 
   // Params
-  let kv_params: any[] = [];
+  let kv_params: KvPair[] = [];
   if (authInfo != undefined && authInfo != '') {
     kv_params = [
       moqCreateKvPair(
         MOQ_PARAMETER_AUTHORIZATION_TOKEN,
-        moqCreateUseValueTokenFromString(authInfo),
+        moqCreateUseValueTokenFromString(authInfo as string),
       ),
     ];
   }
@@ -628,8 +822,10 @@ function moqCreateSubscribeOkMessageBytes(
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_OK), lengthBytes, ...msg]);
 }
 
-async function moqParseSubscribeOk(readerStream: any) {
-  const ret: any = {};
+async function moqParseSubscribeOk(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedSubscribeOk> {
+  const ret = {} as ParsedSubscribeOk;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.requestId = await varIntToNumberOrThrow(readerStream);
@@ -648,19 +844,23 @@ async function moqParseSubscribeOk(readerStream: any) {
 // SUBSCRIBE ERROR
 
 export async function moqSendSubscribeError(
-  writerStream: any,
+  writerStream: WritableStream<Uint8Array>,
   requestId: number,
   errorCode: number,
   reason: string,
-) {
+): Promise<void> {
   return moqSendToStream(
     writerStream,
     moqCreateSubscribeErrorMessageBytes(requestId, errorCode, reason),
   );
 }
 
-function moqCreateSubscribeErrorMessageBytes(requestId: number, errorCode: number, reason: string) {
-  const msg = [];
+function moqCreateSubscribeErrorMessageBytes(
+  requestId: number,
+  errorCode: number,
+  reason: string,
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // Request Id
   msg.push(numberToVarInt(requestId));
@@ -675,8 +875,10 @@ function moqCreateSubscribeErrorMessageBytes(requestId: number, errorCode: numbe
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_SUBSCRIBE_ERROR), lengthBytes, ...msg]);
 }
 
-async function moqParseSubscribeError(readerStream: any) {
-  const ret: any = {};
+async function moqParseSubscribeError(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedSubscribeError> {
+  const ret = {} as ParsedSubscribeError;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.requestId = await varIntToNumberOrThrow(readerStream);
@@ -688,12 +890,15 @@ async function moqParseSubscribeError(readerStream: any) {
 
 // UNSUBSCRIBE
 
-export async function moqSendUnSubscribe(writerStream: any, subscribeId: number) {
+export async function moqSendUnSubscribe(
+  writerStream: WritableStream<Uint8Array>,
+  subscribeId: number,
+): Promise<void> {
   return moqSendToStream(writerStream, moqCreateUnSubscribeMessageBytes(subscribeId));
 }
 
-function moqCreateUnSubscribeMessageBytes(requestId: number) {
-  const msg = [];
+function moqCreateUnSubscribeMessageBytes(requestId: number): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // Subscribe Id
   msg.push(numberToVarInt(requestId));
@@ -704,8 +909,10 @@ function moqCreateUnSubscribeMessageBytes(requestId: number) {
   return concatBuffer([numberToVarInt(MOQ_MESSAGE_UNSUBSCRIBE), lengthBytes, ...msg]);
 }
 
-async function moqParseUnSubscribe(readerStream: any) {
-  const ret: any = {};
+async function moqParseUnSubscribe(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedUnsubscribe> {
+  const ret = {} as ParsedUnsubscribe;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
 
@@ -717,14 +924,16 @@ async function moqParseUnSubscribe(readerStream: any) {
 
 // SUBSCRIBE UPDATE
 
-async function moqParseSubscribeUpdate(readerStream: any) {
-  const ret: any = {};
+async function moqParseSubscribeUpdate(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedSubscribeUpdate> {
+  const ret = {} as ParsedSubscribeUpdate;
 
   await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.requestId = await varIntToNumberOrThrow(readerStream);
   ret.subscriptionRequestId = await varIntToNumberOrThrow(readerStream);
   ret.start = await moqDecodeLocation(readerStream);
-  ret.end = {};
+  ret.end = {} as RangeEnd;
   ret.end.group = await varIntToNumberOrThrow(readerStream);
   ret.subscriberPriority = await moqIntReadBytesOrThrow(readerStream, 1);
   ret.forward = await moqIntReadBytesOrThrow(readerStream, 1);
@@ -735,8 +944,10 @@ async function moqParseSubscribeUpdate(readerStream: any) {
 
 // UNKNOWN
 
-async function moqParseUnknown(readerStream: any) {
-  const ret: any = {};
+async function moqParseUnknown(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ParsedUnknown> {
+  const ret = {} as ParsedUnknown;
 
   const size = await moqIntReadBytesOrThrow(readerStream, 2); // Length
   ret.data = await buffRead(readerStream, size);
@@ -746,9 +957,11 @@ async function moqParseUnknown(readerStream: any) {
 
 // PARSE MESSAGES
 
-export async function moqParseMsg(readerStream: any) {
+export async function moqParseMsg(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<MoqMessage> {
   const msgType = await varIntToNumberOrThrow(readerStream);
-  let data: any = null;
+  let data: MoqMessageData = null as unknown as MoqMessageData;
   if (msgType === MOQ_MESSAGE_SUBSCRIBE) {
     data = await moqParseSubscribe(readerStream);
   } else if (msgType === MOQ_MESSAGE_UNSUBSCRIBE) {
@@ -783,8 +996,8 @@ function moqCreateSubgroupHeaderBytes(
   trackAlias: number,
   groupSeq: number,
   publisherPriority: number,
-) {
-  const msg = [];
+): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   const type = getSubgroupHeaderType(true, false, true, false);
   // Message type
@@ -797,8 +1010,8 @@ function moqCreateSubgroupHeaderBytes(
   return concatBuffer(msg);
 }
 
-function moqCreateObjectEndOfGroupBytes(objSeq: number, extensionHeaders: any[]) {
-  const msg = [];
+function moqCreateObjectEndOfGroupBytes(objSeq: number, extensionHeaders: KvPair[]): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   msg.push(numberToVarInt(objSeq)); // Object ID
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
@@ -812,8 +1025,12 @@ function moqCreateObjectEndOfGroupBytes(objSeq: number, extensionHeaders: any[])
   return concatBuffer(msg);
 }
 
-function moqCreateObjectSubgroupBytes(objSeqDelta: number, data: any, extensionHeaders: any[]) {
-  const msg = [];
+function moqCreateObjectSubgroupBytes(
+  objSeqDelta: number,
+  data: BufferSource | undefined,
+  extensionHeaders: KvPair[],
+): Uint8Array {
+  const msg: Array<Uint8Array | BufferSource> = [];
 
   msg.push(numberToVarInt(objSeqDelta)); // Object ID delta
   if (extensionHeaders == undefined || extensionHeaders.length <= 0) {
@@ -836,11 +1053,11 @@ function moqCreateObjectPerDatagramBytes(
   groupSeq: number,
   objSeq: number,
   publisherPriority: number,
-  data: any,
-  extensionHeaders: any[],
+  data: BufferSource | undefined,
+  extensionHeaders: KvPair[],
   isEndOfFGroup: boolean,
-) {
-  const msg = [];
+): Uint8Array {
+  const msg: Array<Uint8Array | BufferSource> = [];
   const hasHeaders = extensionHeaders != undefined && extensionHeaders.length > 0;
   const hasData = data != undefined && data.byteLength > 0;
 
@@ -865,11 +1082,11 @@ function moqCreateObjectPerDatagramBytes(
 }
 
 export function moqSendSubgroupHeader(
-  writer: any,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
   trackAlias: number,
   groupSeq: number,
   publisherPriority: number,
-) {
+): Promise<void> {
   return moqSendToWriter(
     writer,
     moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority),
@@ -877,20 +1094,20 @@ export function moqSendSubgroupHeader(
 }
 
 export function moqSendObjectSubgroupToWriter(
-  writer: any,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
   objSeqDelta: number,
-  data: any,
-  extensionHeaders: any[],
-) {
+  data: BufferSource | undefined,
+  extensionHeaders: KvPair[],
+): Promise<void> {
   return moqSendToWriter(writer, moqCreateObjectSubgroupBytes(objSeqDelta, data, extensionHeaders));
 }
 
 export function moqSendObjectEndOfGroupToWriter(
-  writer: any,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
   objSeq: number,
-  extensionHeaders: any[],
+  extensionHeaders: KvPair[],
   closeStream?: boolean,
-) {
+): Promise<void> {
   return moqSendToWriter(
     writer,
     moqCreateObjectEndOfGroupBytes(objSeq, extensionHeaders),
@@ -899,15 +1116,15 @@ export function moqSendObjectEndOfGroupToWriter(
 }
 
 export function moqSendObjectPerDatagramToWriter(
-  writer: any,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
   trackAlias: number,
   groupSeq: number,
   objSeq: number,
   publisherPriority: number,
-  data: any,
-  extensionHeaders: any[],
+  data: BufferSource | undefined,
+  extensionHeaders: KvPair[],
   isEndOfFGroup: boolean,
-) {
+): Promise<void> {
   return moqSendToWriter(
     writer,
     moqCreateObjectPerDatagramBytes(
@@ -922,19 +1139,21 @@ export function moqSendObjectPerDatagramToWriter(
   );
 }
 
-export async function moqParseObjectHeader(readerStream: any) {
+export async function moqParseObjectHeader(
+  readerStream: ReadableStream<Uint8Array>,
+): Promise<ObjectHeader> {
   const type = await varIntToNumberOrThrow(readerStream);
   if (!isMoqObjectStreamHeaderType(type) && !isMoqObjectDatagramType(type)) {
     throw new Error(`OBJECT is not any known object type, got ${type}`);
   }
 
-  let ret: any = undefined;
+  let ret = undefined as unknown as ObjectHeader;
   if (isMoqObjectDatagramType(type)) {
-    ret = { type };
+    ret = { type } as ObjectHeader;
     ret.options = moqDecodeDatagramType(type);
     ret.trackAlias = await varIntToNumberOrThrow(readerStream);
     ret.groupSeq = await varIntToNumberOrThrow(readerStream);
-    if (ret.options.isObjIdPresent) {
+    if ((ret.options as DatagramTypeOptions).isObjIdPresent) {
       ret.objSeq = await varIntToNumberOrThrow(readerStream);
     }
     ret.publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
@@ -942,11 +1161,11 @@ export async function moqParseObjectHeader(readerStream: any) {
       ret.extensionHeaders = await moqReadHeaderExtensions(readerStream);
     }
   } else if (isMoqObjectStreamHeaderType(type)) {
-    ret = { type };
+    ret = { type } as ObjectHeader;
     ret.options = moqDecodeStreamHeaderType(type);
     ret.trackAlias = await varIntToNumberOrThrow(readerStream);
     ret.groupSeq = await varIntToNumberOrThrow(readerStream);
-    if (ret.options.subGroupIdPresent) {
+    if ((ret.options as StreamHeaderOptions).subGroupIdPresent) {
       ret.subGroupSeq = await varIntToNumberOrThrow(readerStream);
     }
     ret.publisherPriority = await moqIntReadBytesOrThrow(readerStream, 1);
@@ -954,16 +1173,19 @@ export async function moqParseObjectHeader(readerStream: any) {
   return ret;
 }
 
-export async function moqParseObjectFromSubgroupHeader(readerStream: any, type: number) {
+export async function moqParseObjectFromSubgroupHeader(
+  readerStream: ReadableStream<Uint8Array>,
+  type: number,
+): Promise<SubgroupObject> {
   const typeDecoded = moqDecodeStreamHeaderType(type);
 
   const objSeq = await varIntToNumberOrThrow(readerStream);
-  let extensionHeaders: any[] = [];
+  let extensionHeaders: KvPair[] = [];
   if (typeDecoded.extensionsPresent) {
     extensionHeaders = await moqReadHeaderExtensions(readerStream);
   }
   const payloadLength = await varIntToNumberOrThrow(readerStream);
-  const ret: any = { objSeq, payloadLength, extensionHeaders };
+  const ret: SubgroupObject = { objSeq, payloadLength, extensionHeaders };
   if (payloadLength == 0) {
     ret.status = await varIntToNumberOrThrow(readerStream);
   }
@@ -972,18 +1194,18 @@ export async function moqParseObjectFromSubgroupHeader(readerStream: any, type: 
 
 // Helpers
 
-export function getTrackFullName(namespace: string, trackName: string) {
+export function getTrackFullName(namespace: string, trackName: string): string {
   return namespace + trackName;
 }
 
-function moqCreateStringBytes(str: string) {
+function moqCreateStringBytes(str: string): Uint8Array {
   const dataStrBytes = new TextEncoder().encode(str);
   const dataStrLengthBytes = numberToVarInt(dataStrBytes.byteLength);
   return concatBuffer([dataStrLengthBytes, dataStrBytes]);
 }
 
-function moqCreateTupleBytes(arr: string[]) {
-  const msg = [];
+function moqCreateTupleBytes(arr: string[]): Uint8Array {
+  const msg: Uint8Array[] = [];
   if (arr.length > MOQ_MAX_TUPLE_PARAMS) {
     throw new Error(`We only support up to ${MOQ_MAX_TUPLE_PARAMS} items in an MOQ tuple`);
   }
@@ -994,12 +1216,12 @@ function moqCreateTupleBytes(arr: string[]) {
   return concatBuffer(msg);
 }
 
-export function moqCreateKvPair(name: number, val: any) {
+export function moqCreateKvPair(name: number, val: KvPairValue): KvPair {
   return { name: name, val: val };
 }
 
-function moqCreateParametersBytes(kv_params: any[]) {
-  const msg = [];
+function moqCreateParametersBytes(kv_params: KvPair[]): Uint8Array {
+  const msg: Uint8Array[] = [];
   msg.push(numberToVarInt(kv_params.length));
   for (let i = 0; i < kv_params.length; i++) {
     const param = kv_params[i];
@@ -1008,8 +1230,8 @@ function moqCreateParametersBytes(kv_params: any[]) {
   return concatBuffer(msg);
 }
 
-function moqCreateExtensionsBytes(kv_params: any[]) {
-  const msg = [];
+function moqCreateExtensionsBytes(kv_params: KvPair[]): Uint8Array {
+  const msg: Uint8Array[] = [];
   for (let i = 0; i < kv_params.length; i++) {
     const param = kv_params[i];
     msg.push(moqCreateKvParamBytes(param.name, param.val, true));
@@ -1020,8 +1242,12 @@ function moqCreateExtensionsBytes(kv_params: any[]) {
   return concatBuffer([numberToVarInt(lengthBytes), ...msg]);
 }
 
-function moqCreateKvParamBytes(name: number, val: any, isExtensionHeaders: boolean) {
-  const msg = [];
+function moqCreateKvParamBytes(
+  name: number,
+  val: KvPairValue,
+  isExtensionHeaders: boolean,
+): Uint8Array {
+  const msg: Array<Uint8Array | BufferSource> = [];
   msg.push(numberToVarInt(name));
   if (typeof val === 'number') {
     if (name % 2 != 0) {
@@ -1040,7 +1266,7 @@ function moqCreateKvParamBytes(name: number, val: any, isExtensionHeaders: boole
     !isExtensionHeaders &&
     name === MOQ_PARAMETER_AUTHORIZATION_TOKEN
   ) {
-    msg.push(moqCreateTokenBytes(val));
+    msg.push(moqCreateTokenBytes(val as Token));
   } else if (typeof val === 'object' && isExtensionHeaders) {
     if (name % 2 == 0) {
       // Odd types are followed by varint or buffer
@@ -1057,7 +1283,7 @@ function moqCreateKvParamBytes(name: number, val: any, isExtensionHeaders: boole
   return concatBuffer(msg);
 }
 
-async function moqStringReadOrThrow(readerStream: any) {
+async function moqStringReadOrThrow(readerStream: ReadableStream<Uint8Array>): Promise<string> {
   const size = await varIntToNumberOrThrow(readerStream);
   const ret = await buffRead(readerStream, size);
   if (ret.eof) {
@@ -1066,7 +1292,10 @@ async function moqStringReadOrThrow(readerStream: any) {
   return new TextDecoder().decode(ret.buff);
 }
 
-async function moqIntReadBytesOrThrow(readerStream: any, length: number): Promise<number> {
+async function moqIntReadBytesOrThrow(
+  readerStream: ReadableStream<Uint8Array>,
+  length: number,
+): Promise<number> {
   if (length > 4 || length < 0 || !Number.isInteger(length))
     throw new Error(`We can NOT read ints of length ${length}, only ints from 1 to 4 bytes`);
 
@@ -1079,8 +1308,8 @@ async function moqIntReadBytesOrThrow(readerStream: any, length: number): Promis
   if (length > 2) return new DataView(ret.buff, 0, length).getUint32(0, MOQ_USE_LITTLE_ENDIAN);
 }
 
-async function moqTupleReadOrThrow(readerStream: any) {
-  const ret = [];
+async function moqTupleReadOrThrow(readerStream: ReadableStream<Uint8Array>): Promise<string[]> {
+  const ret: string[] = [];
   const size = await varIntToNumberOrThrow(readerStream);
   let i = 0;
   while (i < size) {
@@ -1091,8 +1320,8 @@ async function moqTupleReadOrThrow(readerStream: any) {
   return ret;
 }
 
-async function moqReadParameters(readerStream: any) {
-  const ret = [];
+async function moqReadParameters(readerStream: ReadableStream<Uint8Array>): Promise<KvPair[]> {
+  const ret: KvPair[] = [];
   const count = await varIntToNumberOrThrow(readerStream);
   for (let i = 0; i < count; i++) {
     const param = await moqReadKeyValuePair(readerStream, false);
@@ -1101,8 +1330,8 @@ async function moqReadParameters(readerStream: any) {
   return ret;
 }
 
-async function moqReadHeaderExtensions(readerStream: any) {
-  const ret = [];
+async function moqReadHeaderExtensions(readerStream: ReadableStream<Uint8Array>): Promise<KvPair[]> {
+  const ret: KvPair[] = [];
   let remainingBytes = await varIntToNumberOrThrow(readerStream);
   while (remainingBytes > 0) {
     const param = await moqReadKeyValuePair(readerStream, true);
@@ -1113,8 +1342,11 @@ async function moqReadHeaderExtensions(readerStream: any) {
   return ret;
 }
 
-async function moqReadKeyValuePair(readerStream: any, isExtensionHeaders: boolean) {
-  const param: any = { val: undefined, byteLength: 0 };
+async function moqReadKeyValuePair(
+  readerStream: ReadableStream<Uint8Array>,
+  isExtensionHeaders: boolean,
+): Promise<{ val: KvPair; byteLength: number }> {
+  const param: { val: KvPair; byteLength: number } = { val: undefined as unknown as KvPair, byteLength: 0 };
 
   const name = await varIntToNumberAndLengthOrThrow(readerStream);
   param.byteLength = param.byteLength + name.byteLength;
@@ -1144,7 +1376,7 @@ async function moqReadKeyValuePair(readerStream: any, isExtensionHeaders: boolea
   return param;
 }
 
-function moqCreateUseValueTokenFromString(str: string) {
+function moqCreateUseValueTokenFromString(str: string): Token {
   return {
     aliasType: MOQ_TOKEN_USE_VALUE,
     tokenType: MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND,
@@ -1152,8 +1384,8 @@ function moqCreateUseValueTokenFromString(str: string) {
   };
 }
 
-function moqCreateTokenBytes(token: any) {
-  const msg = [];
+function moqCreateTokenBytes(token: Token): Uint8Array {
+  const msg: Array<Uint8Array | BufferSource> = [];
 
   if (token.aliasType != MOQ_TOKEN_USE_VALUE) {
     throw new Error('Only USE_VALUE token supported');
@@ -1172,8 +1404,11 @@ function moqCreateTokenBytes(token: any) {
   return concatBuffer([numberToVarInt(totalLength), ...msg]);
 }
 
-async function moqParseTokenBytes(readerStream: any, total_size: number) {
-  const token: any = {};
+async function moqParseTokenBytes(
+  readerStream: ReadableStream<Uint8Array>,
+  total_size: number,
+): Promise<Token> {
+  const token = {} as Token;
   let remaining_size = total_size;
   const read_data_aliasType = await varIntToNumberAndLengthOrThrow(readerStream);
   token.aliasType = read_data_aliasType.num;
@@ -1201,14 +1436,22 @@ async function moqParseTokenBytes(readerStream: any, total_size: number) {
   return token;
 }
 
-async function moqSendToStream(writerStream: any, dataBytes: any, closeStream?: boolean) {
+async function moqSendToStream(
+  writerStream: WritableStream<Uint8Array>,
+  dataBytes: Uint8Array,
+  closeStream?: boolean,
+): Promise<void> {
   const writer = writerStream.getWriter();
   await moqSendToWriter(writer, dataBytes, closeStream);
   await writer.ready;
   writer.releaseLock();
 }
 
-async function moqSendToWriter(writer: any, dataBytes: any, closeStream?: boolean) {
+async function moqSendToWriter(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  dataBytes: Uint8Array,
+  closeStream?: boolean,
+): Promise<void> {
   return writer.write(dataBytes).then(() => {
     if (closeStream) {
       return writer.close();
@@ -1218,17 +1461,17 @@ async function moqSendToWriter(writer: any, dataBytes: any, closeStream?: boolea
   });
 }
 
-export function getFullTrackName(ns: string[], name: string) {
+export function getFullTrackName(ns: string[], name: string): string {
   return `[${ns.join('/')}]/${name}`;
 }
 
-export function getAuthInfofromParameters(parameters: any[]) {
+export function getAuthInfofromParameters(parameters: KvPair[]): string | undefined {
   let ret: string | undefined = undefined;
   let i = 0;
   while (ret == undefined && i < parameters.length) {
     const param = parameters[i];
     if (param.name == MOQ_PARAMETER_AUTHORIZATION_TOKEN) {
-      const token = param.val;
+      const token = param.val as Token;
       if (
         token.aliasType == MOQ_TOKEN_USE_VALUE &&
         token.tokenType == MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND
@@ -1241,7 +1484,7 @@ export function getAuthInfofromParameters(parameters: any[]) {
   return ret;
 }
 
-export function moqDecodeDatagramType(type: number) {
+export function moqDecodeDatagramType(type: number): DatagramTypeOptions {
   if (!isMoqObjectDatagramType(type)) {
     throw new Error(`No valid datagram type ${type}, it can NOT be decoded`);
   }
@@ -1268,15 +1511,19 @@ export function moqDecodeDatagramType(type: number) {
   return ret;
 }
 
-export function isMoqObjectDatagramType(type: number) {
+export function isMoqObjectDatagramType(type: number): boolean {
   return MOQ_MESSAGE_OBJECT_DATAGRAM_TYPES.includes(type);
 }
 
-export function isMoqObjectStreamHeaderType(type: number) {
+export function isMoqObjectStreamHeaderType(type: number): boolean {
   return MOQ_MESSAGE_STREAM_HEADER_SUBGROUP_TYPES.includes(type);
 }
 
-function getDatagramType(isStatus: boolean, hasExternsionHeaders: boolean, isEndOfGroup: boolean) {
+function getDatagramType(
+  isStatus: boolean,
+  hasExternsionHeaders: boolean,
+  isEndOfGroup: boolean,
+): number {
   let type = 0;
 
   if (isStatus) {
@@ -1299,7 +1546,7 @@ function getSubgroupHeaderType(
   isEndOfGroup: boolean,
   subGroupIdPresent: boolean,
   isSubgroupIdFirstObjectId: boolean,
-) {
+): number {
   let type = 0x10;
   if (isEndOfGroup) {
     type = type | 0x8;
@@ -1319,7 +1566,7 @@ function getSubgroupHeaderType(
   return type;
 }
 
-export function moqDecodeStreamHeaderType(type: number) {
+export function moqDecodeStreamHeaderType(type: number): StreamHeaderOptions {
   if (!isMoqObjectStreamHeaderType(type)) {
     throw new Error(`No valid stream header type ${type}, it can NOT be decoded`);
   }
@@ -1347,8 +1594,8 @@ export function moqDecodeStreamHeaderType(type: number) {
   return ret;
 }
 
-async function moqDecodeFilterLocation(readerStream: any) {
-  const ret: any = {};
+async function moqDecodeFilterLocation(readerStream: ReadableStream<Uint8Array>): Promise<Filter> {
+  const ret = {} as Filter;
 
   ret.type = await varIntToNumberOrThrow(readerStream);
   if (
@@ -1363,15 +1610,15 @@ async function moqDecodeFilterLocation(readerStream: any) {
     ret.start = await moqDecodeLocation(readerStream);
   }
   if (ret.type === MOQ_FILTER_TYPE_ABSOLUTE_RANGE) {
-    ret.end = {};
+    ret.end = {} as RangeEnd;
     ret.end.group = await varIntToNumberOrThrow(readerStream);
   }
 
   return ret;
 }
 
-async function moqDecodeLocation(readerStream: any) {
-  const ret: any = {};
+async function moqDecodeLocation(readerStream: ReadableStream<Uint8Array>): Promise<Location> {
+  const ret = {} as Location;
 
   ret.group = await varIntToNumberOrThrow(readerStream);
   ret.obj = await varIntToNumberOrThrow(readerStream);
@@ -1379,8 +1626,8 @@ async function moqDecodeLocation(readerStream: any) {
   return ret;
 }
 
-function moqCreateLocationBytes(lastGroupSent: number, lastObjSent: number) {
-  const msg = [];
+function moqCreateLocationBytes(lastGroupSent: number, lastObjSent: number): Uint8Array {
+  const msg: Uint8Array[] = [];
 
   // Final group
   msg.push(numberToVarInt(lastGroupSent));
