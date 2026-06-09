@@ -8,26 +8,52 @@ LICENSE file in the root directory of this source tree.
 -->
 
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="../shared/demo.css">
     <style>
-        .boxed {
-            border: 1px solid black;
+        /* Player page: "Advanced..." toggle and tabbed stats */
+        .link-btn {
+            margin: 6px 0;
+            padding: 2px 0;
+            background: none;
+            color: var(--accent);
+            border-radius: 0;
+        }
+        .link-btn:hover:not(:disabled) {
+            background: none;
+            text-decoration: underline;
         }
 
-        .styleform label {
-            float: left;
-            margin: 5px 10px 5px 10px;
+        .tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
         }
-
-        .styleform input {
-            margin: 5px 10px 5px 10px;
+        .tab-btn {
+            margin: 0;
+            padding: 6px 14px;
+            background-color: var(--bg);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
         }
-
-        /* this gives space for the label on the left */
-        .styleform .clear {
-            clear: both;
+        .tab-btn:hover:not(:disabled) {
+            background-color: var(--field-bg);
+            color: var(--text);
         }
-
-        /* prevent elements from stacking weirdly */
+        .tab-btn.active {
+            color: var(--text);
+            background-color: var(--card-bg);
+            border-color: var(--accent);
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
@@ -38,161 +64,216 @@ LICENSE file in the root directory of this source tree.
     <label>(Encoder audio sampling frequency should be the same than audioContext (player) sampling frequency, this is
         almost guaranteed if you use same browser (computer) for encode and playback. The fix is simple but not done yet
         :-))</label>
+    <!-- Connection / track -->
     <div class="boxed">
         <div class="styleform">
             <form>
                 <h2>Data needed</h2>
+                <div class="clear"></div>
                 <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
-                <div class="clear"></div>                
+                <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
-                <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
-                    Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label>
                 <div class="clear"></div>
-                <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
                 <div class="clear"></div>
-                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
-                (Leave it blank to NOT use it)
-                <div class="clear"></div>
-                <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
-                <label>(it waits until audio buffers this amount to start playback)</label>
-                <div class="clear"></div>
-                <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
-                <label>(this + jitter is the max latency allowed)</label>                
-                <div class="clear"></div>
-                <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
-                        value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
-                <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
-                        value="300" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
-                <div class="clear"></div>
+                <div id="advancedSettings" hidden>
+                    <label>Old Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                    <div class="clear"></div>
+                    <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <div class="clear"></div>
+                    <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
+                    (Leave it blank to NOT use it)
+                    <div class="clear"></div>
+                    <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
+                    <label>(it waits until audio buffers this amount to start playback)</label>
+                    <div class="clear"></div>
+                    <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
+                    <label>(this + jitter is the max latency allowed)</label>
+                    <div class="clear"></div>
+                    <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
+                            value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
+                    <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
+                            value="300" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
+                    <div class="clear"></div>
+                </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
             </form>
         </div>
     </div>
+
+    <!-- Player -->
     <div class="boxed">
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
     </div>
-    <div class="boxed">
-        <h2>Latency</h2>
-        <div class="styleform">
-            <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
-            <div class="clear"></div>
-            <div>
-                <label>Audio latency capture to renderer - approx (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
-            </div>
-            <div>
-                <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
-            </div>
-            <div>
-                <label>Video latency via overlay - exact (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
-            </div>
-    </div>
-    <div class="boxed">
-        <h2>Receiver demuxer</h2>
-        <div class="styleform">
-            <form>
-                <label>Current received audio TS(ms):</label><input id="currentChunkATS" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Current received video TS(ms):</label><input id="currentChunkVTS" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>V-A diff(ms):</label><input id="currentChunkAVTSDiff" type="text" value="" readonly>
-                <div class="clear"></div>
 
-                <label>First audio TS(ms):</label><input id="firstChunkAts" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>First video TS(ms):</label><input id="firstChunkVts" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>V-A start diff(ms):</label><input id="firstChunkVADiff" type="text" value="" readonly>
-                <div class="clear"></div>
-            </form>
-        </div>
+    <!-- Stats (tabbed, defaults to "Latency") -->
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="tabLatency">Latency</button>
+        <button type="button" class="tab-btn" data-tab="tabDemuxer">Receiver demuxer</button>
+        <button type="button" class="tab-btn" data-tab="tabDejitter">Receiver dejitter</button>
+        <button type="button" class="tab-btn" data-tab="tabDecoders">Decoders</button>
+        <button type="button" class="tab-btn" data-tab="tabRenderers">Renderers</button>
+        <button type="button" class="tab-btn" data-tab="tabDropped">Dropped data</button>
     </div>
-    <div class="boxed">
-        <h2>Receiver dejitter</h2>
-        <div class="styleform">
-            <h3>Audio</h3>
-            <form>
-                <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
+    <div class="tab-panels">
+        <div id="tabLatency" class="boxed tab-panel active">
+            <h2>Latency</h2>
+            <div class="styleform">
+                <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
                 <div class="clear"></div>
-                <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
-                <div class="clear"></div>
-            </form>
-            <h3>Video</h3>
-            <form>
-                <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
-                <div class="clear"></div>
-            </form>
+                <div>
+                    <label>Audio latency capture to renderer - approx (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
+                </div>
+                <div>
+                    <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
+                </div>
+                <div>
+                    <label>Video latency via overlay - exact (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
+                </div>
+            </div>
         </div>
-    </div>
-    <div class="boxed">
-        <h2>Decoders</h2>
-        <div class="styleform">
-            <h3>Audio</h3>
-            <form>
-                <label>Current frame TS compensated (ms):</label><input id="currentFrameATS" type="text" value=""
-                    readonly>
-                <div class="clear"></div>
-                <label>Buffer size:</label><input id="currentDecoABuffer" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Timestamp compensation(ms):</label><input id="currentDecoCompAOffset" type="text" value=""
-                    readonly>
-                <label>(The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every
-                    decoded audio sample adds 1/fs (so sample time), that means if we drop and audio packet those
-                    timestamps will be collapsed creating A/V out of sync. We compensate those lost packets with
-                    this)</label>
-                <div class="clear"></div>
-            </form>
-            <h3>Video</h3>
-            <form>
-                <label>Current frame TS(ms):</label><input id="currentFrameVTS" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Buffer size:</label><input id="currentDecoVBuffer" type="text" value="" readonly>
-                <div class="clear"></div>
-            </form>
-            <label>V-A diff(ms):</label><input id="currentFrameAVTSDiff" type="text" value="" readonly>
-            <div class="clear"></div>
+        <div id="tabDemuxer" class="boxed tab-panel">
+            <h2>Receiver demuxer</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current received audio TS(ms):</label><input id="currentChunkATS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Current received video TS(ms):</label><input id="currentChunkVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>V-A diff(ms):</label><input id="currentChunkAVTSDiff" type="text" value="" readonly>
+                    <div class="clear"></div>
+
+                    <label>First audio TS(ms):</label><input id="firstChunkAts" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>First video TS(ms):</label><input id="firstChunkVts" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>V-A start diff(ms):</label><input id="firstChunkVADiff" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+            </div>
         </div>
-    </div>
-    <div class="boxed">
-        <h2>Renderers</h2>
-        <div class="styleform">
-            <h3>Audio</h3>
-            <form>
-                <label>Current frame TS(ms):</label><input id="currentRendererATS" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Buffer size:</label><input id="currentRendererABuffer" type="text" value="" size="48" readonly>
-                <div class="clear"></div>
-                <label>Total silence inserted (ms):</label><input id="currentRendererASilenceInserted" type="text"
-                    value="" readonly>
-                <div class="clear"></div>
-            </form>
-            <h3>Video</h3>
-            <form>
-                <label>Current frame TS(ms):</label><input id="currentRendererVTS" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Buffer size:</label><input id="currentRendererVBuffer" type="text" value="" readonly>
-                <div class="clear"></div>
-                <label>Not printed frames:</label><input id="currentRendererVDiscarded" type="text" value="" readonly>
-                <div class="clear"></div>
-            </form>
-            <label>V-A diff(ms):</label><input id="currentRendererAVTSDiff" type="text" value="" readonly>
-            <div class="clear"></div>
+        <div id="tabDejitter" class="boxed tab-panel">
+            <h2>Receiver dejitter</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+            </div>
         </div>
-    </div>
-    <div class="boxed">
-        <h2>Dropped data (frames / chunks):</h2>
-        <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
-        <ol id="droppedFrames"></ol>
+        <div id="tabDecoders" class="boxed tab-panel">
+            <h2>Decoders</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Current frame TS compensated (ms):</label><input id="currentFrameATS" type="text" value=""
+                        readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentDecoABuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Timestamp compensation(ms):</label><input id="currentDecoCompAOffset" type="text" value=""
+                        readonly>
+                    <label>(The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every
+                        decoded audio sample adds 1/fs (so sample time), that means if we drop and audio packet those
+                        timestamps will be collapsed creating A/V out of sync. We compensate those lost packets with
+                        this)</label>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentFrameVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentDecoVBuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <label>V-A diff(ms):</label><input id="currentFrameAVTSDiff" type="text" value="" readonly>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <div id="tabRenderers" class="boxed tab-panel">
+            <h2>Renderers</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentRendererATS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentRendererABuffer" type="text" value="" size="48" readonly>
+                    <div class="clear"></div>
+                    <label>Total silence inserted (ms):</label><input id="currentRendererASilenceInserted" type="text"
+                        value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentRendererVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentRendererVBuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Not printed frames:</label><input id="currentRendererVDiscarded" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <label>V-A diff(ms):</label><input id="currentRendererAVTSDiff" type="text" value="" readonly>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <div id="tabDropped" class="boxed tab-panel">
+            <h2>Dropped data (frames / chunks):</h2>
+            <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
+            <ol id="droppedFrames"></ol>
+        </div>
     </div>
 </body>
+<script>
+    // UI-only wiring for the "Advanced..." toggle and the stats tabs.
+    // (No player logic here - that lives in the module script below.)
+    (function () {
+        const advBtn = document.getElementById('btnToggleAdvanced');
+        const adv = document.getElementById('advancedSettings');
+        if (advBtn && adv) {
+            advBtn.addEventListener('click', function () {
+                if (adv.hasAttribute('hidden')) {
+                    adv.removeAttribute('hidden');
+                    advBtn.textContent = 'Advanced ▲';
+                } else {
+                    adv.setAttribute('hidden', '');
+                    advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        tabButtons.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const target = btn.getAttribute('data-tab');
+                tabButtons.forEach(function (b) {
+                    b.classList.toggle('active', b === btn);
+                });
+                tabPanels.forEach(function (p) {
+                    p.classList.toggle('active', p.id === target);
+                });
+            });
+        });
+    })();
+</script>
 <script type="module">
     import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"

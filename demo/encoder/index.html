@@ -8,26 +8,87 @@ LICENSE file in the root directory of this source tree.
 -->
 
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="../shared/demo.css">
     <style>
-        .boxed {
-            border: 1px solid black;
+        /* Encoder page: compact layout with two-column encoding params and tabbed stats */
+        body {
+            font-size: 12px;
+        }
+        h1 {
+            font-size: 18px;
+        }
+        h2 {
+            font-size: 14px;
+        }
+        h3 {
+            font-size: 12px;
+        }
+        input[type='text'],
+        select,
+        button {
+            font-size: 12px;
+        }
+        .styleform label,
+        .styleform input,
+        .styleform select {
+            margin: 3px 8px;
         }
 
-        .styleform label {
-            float: left;
-            margin: 5px 10px 5px 10px;
+        /* Two equal columns that stack on narrow screens */
+        .two-col {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .two-col > .boxed {
+            flex: 1 1 320px;
         }
 
-        .styleform input {
-            margin: 5px 10px 5px 10px;
+        /* "Advanced..." toggle styled like a link */
+        .link-btn {
+            margin: 6px 0;
+            padding: 2px 0;
+            background: none;
+            color: var(--accent);
+            border-radius: 0;
+        }
+        .link-btn:hover:not(:disabled) {
+            background: none;
+            text-decoration: underline;
         }
 
-        /* this gives space for the label on the left */
-        .styleform .clear {
-            clear: both;
+        /* Tabbed stats */
+        .tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
         }
-
-        /* prevent elements from stacking weirdly */
+        .tab-btn {
+            margin: 0;
+            padding: 6px 14px;
+            background-color: var(--bg);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+        }
+        .tab-btn:hover:not(:disabled) {
+            background-color: var(--field-bg);
+            color: var(--text);
+        }
+        .tab-btn.active {
+            color: var(--text);
+            background-color: var(--card-bg);
+            border-color: var(--accent);
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs ENCODER (by Jordi Cenzano)</title>
 </head>
@@ -35,6 +96,8 @@ LICENSE file in the root directory of this source tree.
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: ENCODER</h1>
     <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+
+    <!-- Connection / track -->
     <div class="boxed">
         <div class="styleform">
             <form>
@@ -45,124 +108,192 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
-                <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label><label>Old
-                    Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
                 <div class="clear"></div>
-                <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace" checked="true"></label>
+                <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
                 <div class="clear"></div>
-                <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
-                <div class="clear"></div>
-                <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
-                <div class="clear"></div>
-                <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
-                <div class="clear"></div>
-                <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
-                <label>Active: <input type="checkbox" id="useAuthToken"></label>
-                <div class="clear"></div>
-                <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>
-                <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>
-                <div class="clear"></div>
-                <h3>Video encoding params (h264)</h3>
-                <label>Input sources: <select id="videoSources"></select></label>
-                (If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery )
-                <div class="clear"></div>
-                <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
-                <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
-                        size="5"></label>
-                <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
-                <div class="clear"></div>
-                <label>Activate latency tracker (overlays data on video): <input type="checkbox" id="activateLatencyTracker"></label>
-                <div class="clear"></div>
-                <h3>Audio encoding params</h3>
-                <label>Input sources: <select id="audioSources"></select></label>
-                <div class="clear"></div>
-                <label>Codec: <select id="audioCodecOptions"></select></label>
-                <div class="clear"></div>
-                <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
-                <div class="clear"></div>
+                <div id="advancedSettings" hidden>
+                    <label>Old Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                    <div class="clear"></div>
+                    <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace" checked="true"></label>
+                    <div class="clear"></div>
+                    <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <div class="clear"></div>
+                    <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
+                    <div class="clear"></div>
+                    <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
+                    <div class="clear"></div>
+                    <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
+                    <label>Active: <input type="checkbox" id="useAuthToken"></label>
+                    <div class="clear"></div>
+                    <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>
+                    <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>
+                    <div class="clear"></div>
+                </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
             </form>
         </div>
     </div>
-    <div class="boxed">
-        <video height="50%" id="vPreview" autoplay muted></video>
-    </div>
-    <div class="boxed">
-        <h2>Capture(uncompressed domain)</h2>
-        <div class="styleform">
-            <form>
-                <label>First audio TS(ms): <input id="firstAts" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>First video TS(ms): <input id="firstVts" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>V-A start diff(ms): <input id="VAdiff" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>First comp audio TS(ms): <input id="firstCompAts" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>First comp video TS(ms): <input id="firstCompVts" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>V-A comp start diff(ms): <input id="VACompdiff" type="text" value="" readonly></label>
-                <div class="clear"></div>
 
-            </form>
-        </div>
-    </div>
-    <div class="boxed">
-        <h2>Encoder output (chunks)</h2>
-        <div class="styleform">
-            <form>
-                <label>Current audio TS(ms):<input id="encodedAudioTs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>Current comp audio TS(ms):<input id="encodedAudioCompensatedTs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>Encoding audio latency (ms):<input id="encodedAudioLatencyMs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>Current video TS(ms):<input id="encodedVideoTs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>Current comp video TS(ms):<input id="encodedVideoCompensatedTs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-                <label>Encoding video latency (ms):<input id="encodedVideoLatencyMs" type="text" value="" readonly></label>
-                <div class="clear"></div>
-
-                <label>Current V-A TS(ms):<input id="encodedVADelayCompensatedTS" type="text" value="" readonly></label>
-                <div class="clear"></div>
-
-            </form>
-        </div>
-    </div>
-    <div class="boxed">
-        <h2>Muxer sender</h2>
-        <div>
-            <h3>Inflight</h3>
+    <!-- Encoding params (two columns) -->
+    <div class="two-col">
+        <div class="boxed">
             <div class="styleform">
                 <form>
-                    <label>Inflight audio requests:<input id="uploadStatsAudioInflight" type="text" value=""
-                            readonly></label>
+                    <h2>Video encoding params (h264)</h2>
                     <div class="clear"></div>
-                    <label>Inflight video requests:<input id="uploadStatsVideoInflight" type="text" value=""
-                            readonly></label>
+                    <label>Input sources: <select id="videoSources"></select></label>
+                    (If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery )
+                    <div class="clear"></div>
+                    <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                    <div class="clear"></div>
+                    <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
+                            size="5"></label>
+                    <div class="clear"></div>
+                    <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
+                    <div class="clear"></div>
+                    <label>Activate latency tracker (overlays data on video): <input type="checkbox" id="activateLatencyTracker"></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div class="boxed">
+            <div class="styleform">
+                <form>
+                    <h2>Audio encoding params</h2>
+                    <div class="clear"></div>
+                    <label>Input sources: <select id="audioSources"></select></label>
+                    <div class="clear"></div>
+                    <label>Codec: <select id="audioCodecOptions"></select></label>
+                    <div class="clear"></div>
+                    <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
                     <div class="clear"></div>
                 </form>
             </div>
         </div>
     </div>
+
+    <!-- Preview -->
     <div class="boxed">
-        <h2>Dropped data (frames / chunks):</h2>
-        <div class="styleform">
-            <form>
-                <label>Total dropped audio chunks: <input id="totalAudioChunksDropped" type="text" value=""
-                        readonly></label>
-                <div class="clear"></div>
-                <label>Total dropped video chunks: <input id="totalVideoChunksDropped" type="text" value=""
-                        readonly></label>
-                <div class="clear"></div>
-            </form>
+        <video height="50%" id="vPreview" autoplay muted></video>
+    </div>
+
+    <!-- Stats (tabbed, defaults to "Dropped data") -->
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="tabDropped">Dropped data</button>
+        <button type="button" class="tab-btn" data-tab="tabCapture">Capture</button>
+        <button type="button" class="tab-btn" data-tab="tabEncoder">Encoder output</button>
+        <button type="button" class="tab-btn" data-tab="tabMuxer">Muxer sender</button>
+    </div>
+    <div class="tab-panels">
+        <div id="tabDropped" class="boxed tab-panel active">
+            <h2>Dropped data (frames / chunks):</h2>
+            <div class="styleform">
+                <form>
+                    <label>Total dropped audio chunks: <input id="totalAudioChunksDropped" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                    <label>Total dropped video chunks: <input id="totalVideoChunksDropped" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+            <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
+            <ol id="droppedFrames"></ol>
         </div>
-        <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
-        <ol id="droppedFrames"></ol>
+        <div id="tabCapture" class="boxed tab-panel">
+            <h2>Capture(uncompressed domain)</h2>
+            <div class="styleform">
+                <form>
+                    <label>First audio TS(ms): <input id="firstAts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First video TS(ms): <input id="firstVts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>V-A start diff(ms): <input id="VAdiff" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First comp audio TS(ms): <input id="firstCompAts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First comp video TS(ms): <input id="firstCompVts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>V-A comp start diff(ms): <input id="VACompdiff" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabEncoder" class="boxed tab-panel">
+            <h2>Encoder output (chunks)</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current audio TS(ms):<input id="encodedAudioTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current comp audio TS(ms):<input id="encodedAudioCompensatedTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Encoding audio latency (ms):<input id="encodedAudioLatencyMs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current video TS(ms):<input id="encodedVideoTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current comp video TS(ms):<input id="encodedVideoCompensatedTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Encoding video latency (ms):<input id="encodedVideoLatencyMs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+
+                    <label>Current V-A TS(ms):<input id="encodedVADelayCompensatedTS" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabMuxer" class="boxed tab-panel">
+            <h2>Muxer sender</h2>
+            <div>
+                <h3>Inflight</h3>
+                <div class="styleform">
+                    <form>
+                        <label>Inflight audio requests:<input id="uploadStatsAudioInflight" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Inflight video requests:<input id="uploadStatsVideoInflight" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+        </div>
     </div>
 </body>
+<script>
+    // UI-only wiring for the "Advanced..." toggle and the stats tabs.
+    // (No encoder logic here - that lives in the module script below.)
+    (function () {
+        const advBtn = document.getElementById('btnToggleAdvanced');
+        const adv = document.getElementById('advancedSettings');
+        if (advBtn && adv) {
+            advBtn.addEventListener('click', function () {
+                if (adv.hasAttribute('hidden')) {
+                    adv.removeAttribute('hidden');
+                    advBtn.textContent = 'Advanced ▲';
+                } else {
+                    adv.setAttribute('hidden', '');
+                    advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        tabButtons.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const target = btn.getAttribute('data-tab');
+                tabButtons.forEach(function (b) {
+                    b.classList.toggle('active', b === btn);
+                });
+                tabPanels.forEach(function (p) {
+                    p.classList.toggle('active', p.id === target);
+                });
+            });
+        });
+    })();
+</script>
 <script type="module">
     import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
     import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/utils/moqt.js"
