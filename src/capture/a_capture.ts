@@ -1,0 +1,103 @@
+/*
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+*/
+
+import { sendMessageToMain } from '../utils/utils.js';
+
+const WORKER_PREFIX = '[AUDIO-CAP]';
+
+let stopped = false;
+let mainLoopInterval: any;
+let isMainLoopInExecution = false;
+
+function mainLoop(frameReader: any) {
+  return new Promise(function (resolve) {
+    if (isMainLoopInExecution) {
+      return resolve(false);
+    }
+    isMainLoopInExecution = true;
+    if (stopped === true) {
+      if (mainLoopInterval !== undefined) {
+        clearInterval(mainLoopInterval);
+        mainLoopInterval = undefined;
+      }
+      sendMessageToMain(WORKER_PREFIX, 'info', 'Exited!');
+      isMainLoopInExecution = false;
+      return resolve(false);
+    }
+    frameReader
+      .read()
+      .then((result: any) => {
+        if (result.done) {
+          sendMessageToMain(WORKER_PREFIX, 'info', 'Stream is done');
+          return frameReader.cancel('ended');
+        } else {
+          return new Promise(function (resolve) {
+            return resolve(result);
+          });
+        }
+      })
+      .then((result: any) => {
+        if (result === 'ended') {
+          isMainLoopInExecution = false;
+          return resolve(false);
+        } else {
+          const aFrame = result.value;
+          sendMessageToMain(
+            WORKER_PREFIX,
+            'debug',
+            'Read frame format: ' +
+              aFrame.format +
+              ', ts: ' +
+              aFrame.timestamp +
+              ', dur: ' +
+              aFrame.duration +
+              ', fs: ' +
+              aFrame.sampleRate +
+              ', Frames: ' +
+              aFrame.numberOfFrames +
+              ', ch: ' +
+              aFrame.numberOfChannels,
+          );
+
+          // AudioData is NOT transferable: https://github.com/WebAudio/web-audio-api/issues/2390
+          self.postMessage({ type: 'aframe', clkms: Date.now(), data: aFrame.clone() });
+          aFrame.close();
+
+          isMainLoopInExecution = false;
+          return resolve(true);
+        }
+      });
+  });
+}
+
+self.addEventListener('message', async function (e) {
+  const type = e.data.type;
+  if (type === 'stop') {
+    stopped = true;
+    return;
+  }
+  if (type === 'stream') {
+    if (mainLoopInterval !== undefined) {
+      sendMessageToMain(WORKER_PREFIX, 'error', 'Loop already running');
+      return;
+    }
+    const aFrameStream = e.data.aStream;
+    const aFrameReader = aFrameStream.getReader();
+
+    sendMessageToMain(
+      WORKER_PREFIX,
+      'info',
+      'Received streams from main page, starting worker loop',
+    );
+
+    mainLoopInterval = setInterval(mainLoop, 1, aFrameReader);
+
+    return;
+  }
+
+  sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received');
+});
