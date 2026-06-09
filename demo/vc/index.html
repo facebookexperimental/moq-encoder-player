@@ -357,9 +357,9 @@ LICENSE file in the root directory of this source tree.
     </div>   
 </body>
 <script type="module">
-    import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, getFullTrackName } from "../utils/moqt.js"
-    import { getBinaryFile } from "../utils/utils.js"
+    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, getFullTrackName } from "../../dist/utils/moqt.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
     
     // Read & parse QS data
     const queryString = window.location.search;
@@ -472,11 +472,11 @@ LICENSE file in the root directory of this source tree.
 
     // START of player data -----------------
 
-    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
-    import { JitterBuffer } from "../utils/jitter_buffer.js"
-    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-    import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
-    import { MIgetTrackName } from "../packager/mi_packager.js"
+    import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
+    import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
+    import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
+    import { GetVideoCodecStringFromProfileLevel } from "../../dist/utils/media/avc_decoder_configuration_record_parser.js"
+    import { MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -704,15 +704,15 @@ LICENSE file in the root directory of this source tree.
 
     function encoderCreateWorkers() {
         // Create a new workers for video / audio frames capture
-        vStreamWorker = new Worker("../capture/v_capture.js", { type: "module" });
-        aStreamWorker = new Worker("../capture/a_capture.js", { type: "module" });
+        vStreamWorker = new Worker("../../dist/capture/v_capture.js", { type: "module" });
+        aStreamWorker = new Worker("../../dist/capture/a_capture.js", { type: "module" });
 
         // Create a new workers for video / audio frames encode
-        vEncoderWorker = new Worker("../encode/v_encoder.js", { type: "module" });
-        aEncoderWorker = new Worker("../encode/a_encoder.js", { type: "module" });
+        vEncoderWorker = new Worker("../../dist/encode/v_encoder.js", { type: "module" });
+        aEncoderWorker = new Worker("../../dist/encode/a_encoder.js", { type: "module" });
 
         // Create send worker
-        muxerSenderWorker = new Worker("../sender/moq_sender.js", { type: "module" });
+        muxerSenderWorker = new Worker("../../dist/sender/moq_sender.js", { type: "module" });
     }
 
     function encoderClearUI() {
@@ -1202,10 +1202,10 @@ LICENSE file in the root directory of this source tree.
 
     function playerCreateWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
+        muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
         
-        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
+        audioDecoderWorker = new Worker("../../dist/decode/audio_decoder.js", {type: "module"});
+        videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
     }
 
     function playerClearUI() {
@@ -1242,7 +1242,7 @@ LICENSE file in the root directory of this source tree.
                 audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
                 audioCtx.transitioning = false;
                 // Add worklet
-                audioCtx.audioWorklet.addModule('../render/source_buffer_worklet.js')
+                audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
                     .then(data => {
                         sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
                         // AudioWorkletNode can be interoperable with other native AudioNodes.

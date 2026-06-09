@@ -164,12 +164,12 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
-    import { getBinaryFile } from "../utils/utils.js"
-    import { OverlayEncoder } from "../overlay_processor/overlay_encoder.js"
-    import { GetVideoCodecStringFromProfileLevel } from "../utils/media/avc_decoder_configuration_record_parser.js"
-    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
+    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/utils/moqt.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { OverlayEncoder } from "../../dist/overlay_processor/overlay_encoder.js"
+    import { GetVideoCodecStringFromProfileLevel } from "../../dist/utils/media/avc_decoder_configuration_record_parser.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
     // Main vars
     let VERBOSE = false;
@@ -276,15 +276,15 @@ LICENSE file in the root directory of this source tree.
 
     function createWorkers() {
         // Create a new workers for video / audio frames capture
-        vStreamWorker = new Worker("../capture/v_capture.js", { type: "module" });
-        aStreamWorker = new Worker("../capture/a_capture.js", { type: "module" });
+        vStreamWorker = new Worker("../../dist/capture/v_capture.js", { type: "module" });
+        aStreamWorker = new Worker("../../dist/capture/a_capture.js", { type: "module" });
 
         // Create a new workers for video / audio frames encode
-        vEncoderWorker = new Worker("../encode/v_encoder.js", { type: "module" });
-        aEncoderWorker = new Worker("../encode/a_encoder.js", { type: "module" });
+        vEncoderWorker = new Worker("../../dist/encode/v_encoder.js", { type: "module" });
+        aEncoderWorker = new Worker("../../dist/encode/a_encoder.js", { type: "module" });
 
         // Create send worker
-        muxerSenderWorker = new Worker("../sender/moq_sender.js", { type: "module" });
+        muxerSenderWorker = new Worker("../../dist/sender/moq_sender.js", { type: "module" });
     }
 
     function clearUI() {

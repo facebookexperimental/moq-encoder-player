@@ -194,13 +194,13 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
 
-    import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
-    import { JitterBuffer } from "../utils/jitter_buffer.js"
-    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-    import { getBinaryFile } from "../utils/utils.js"
-    import { MOQ_CURRENT_VERSION } from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
+    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
+    import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
+    import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
+    import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { MOQ_CURRENT_VERSION } from "../../dist/utils/moqt.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
     const streamData = {
         title: "unknown",
@@ -363,10 +363,10 @@ LICENSE file in the root directory of this source tree.
 
     function playerCreateWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
+        muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
         
-        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
+        audioDecoderWorker = new Worker("../../dist/decode/audio_decoder.js", {type: "module"});
+        videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
     }
 
     function playerClearUI() {
@@ -403,7 +403,7 @@ LICENSE file in the root directory of this source tree.
                 audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
                 audioCtx.transitioning = false;
                 // Add worklet
-                audioCtx.audioWorklet.addModule('../render/source_buffer_worklet.js')
+                audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
                     .then(data => {
                         sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
                         // AudioWorkletNode can be interoperable with other native AudioNodes.

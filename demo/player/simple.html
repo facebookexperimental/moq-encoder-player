@@ -59,9 +59,9 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { getBinaryFile } from "../utils/utils.js"
-    import { MOQ_CURRENT_VERSION } from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION } from "../packager/mi_packager.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { MOQ_CURRENT_VERSION } from "../../dist/utils/moqt.js"
+    import { MI_PACKAGER_VERSION } from "../../dist/packager/mi_packager.js"
     
     // Main vars
     let VERBOSE = true;
@@ -145,7 +145,7 @@ LICENSE file in the root directory of this source tree.
 
     function createWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
+        muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
     }
 
     function addReceivedMessage(data) {

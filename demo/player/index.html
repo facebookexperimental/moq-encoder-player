@@ -194,14 +194,14 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { VideoRenderBuffer } from "../render/video_render_buffer.js"
-    import { JitterBuffer } from "../utils/jitter_buffer.js"
-    import { TimeBufferChecker } from "../utils/time_buffer_checker.js"
-    import { CicularAudioSharedBuffer } from "../render/audio_circular_buffer.js"
-    import { OverlayDecoder } from "../overlay_processor/overlay_decoder.js"
-    import { getBinaryFile } from "../utils/utils.js"
-    import { MOQ_CURRENT_VERSION, getFullTrackName } from "../utils/moqt.js"
-    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../packager/mi_packager.js"
+    import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
+    import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
+    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
+    import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
+    import { OverlayDecoder } from "../../dist/overlay_processor/overlay_decoder.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/utils/moqt.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
     // Audio states (controls the player buffer)
     const AUDIO_STOPPED = 0;
@@ -504,10 +504,10 @@ LICENSE file in the root directory of this source tree.
 
     function createWorkers() {
         // Create a worker to download chunk
-        muxerDownloaderWorker = new Worker("../receiver/moq_demuxer_downloader.js", {type: "module"});
+        muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
         
-        audioDecoderWorker = new Worker("../decode/audio_decoder.js", {type: "module"});
-        videoDecoderWorker = new Worker("../decode/video_decoder.js", {type: "module"});
+        audioDecoderWorker = new Worker("../../dist/decode/audio_decoder.js", {type: "module"});
+        videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
     }
 
     function clearUI() {
@@ -547,7 +547,7 @@ LICENSE file in the root directory of this source tree.
                 audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
                 audioCtx.transitioning = false;
                 // Add worklet
-                audioCtx.audioWorklet.addModule('../render/source_buffer_worklet.js')
+                audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
                     .then(data => {
                         sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
                         // AudioWorkletNode can be interoperable with other native AudioNodes.
