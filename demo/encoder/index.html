@@ -995,8 +995,11 @@ LICENSE file in the root directory of this source tree.
             }
             currentAudioTs = aFrame.timestamp;
             audioTimeChecker.AddItem({ ts: currentAudioTs, compensatedTs: currentAudioTs + audioOffsetTS, estimatedDuration: estimatedDuration, clkms: e.data.clkms });
-            // Encode audio frame
+            // Encode audio frame. AudioData is not transferable, so postMessage structured-clones
+            // it (the worker references the same backing samples). Close our handle right after to
+            // avoid leaking one AudioData per captured audio frame.
             aEncoderWorker.postMessage({ type: "aframe", aframe: aFrame });
+            aFrame.close();
 
             // DROPPED
         } else if (e.data.type === "dropped") {

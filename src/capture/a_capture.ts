@@ -64,7 +64,10 @@ function mainLoop(frameReader: any) {
           );
 
           // AudioData is NOT transferable: https://github.com/WebAudio/web-audio-api/issues/2390
-          self.postMessage({ type: 'aframe', clkms: Date.now(), data: aFrame.clone() });
+          // It is structured-cloned instead, which makes the receiver reference the same
+          // backing samples (a refcount, not a PCM copy). The clone completes synchronously
+          // during postMessage, so we can close our handle right after to release it promptly.
+          self.postMessage({ type: 'aframe', clkms: Date.now(), data: aFrame });
           aFrame.close();
 
           isMainLoopInExecution = false;
