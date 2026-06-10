@@ -330,7 +330,7 @@ LICENSE file in the root directory of this source tree.
 </body>
 <script type="module">
     import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, getFullTrackName } from "../../dist/utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, getFullTrackName } from "../../dist/moq/moqt.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     
     // Read & parse QS data
@@ -648,7 +648,7 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
 
         // Initialize muxer - sender
-        muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
+        muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
 
         // Transfer the readable stream to the worker.
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
@@ -811,7 +811,7 @@ LICENSE file in the root directory of this source tree.
                 encoderUpdateEncodedVideoTSUI(chunk.timestamp, itemTsClk.compensatedTs);          
                 encoderUpdateEncodingVideoLatencyUI(Date.now()  - itemTsClk.clkms);
             }
-            muxerSenderWorker.postMessage({ type: "video", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, estimatedDuration: itemTsClk.estimatedDuration, seqId: seqId, chunk: chunk, metadata: metadata, timebase });
+            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, estimatedDuration: itemTsClk.estimatedDuration, seqId: seqId, chunk: chunk, metadata: metadata, timebase });
         } else if (e.data.type === "achunk") {
             const chunk = e.data.chunk;
             const metadata = e.data.metadata;
@@ -828,7 +828,7 @@ LICENSE file in the root directory of this source tree.
                 encoderUpdateEncodedAudioTSUI(chunk.timestamp, itemTsClk.compensatedTs);
                 encoderUpdateEncodingAudioLatencyUI(Date.now()  - itemTsClk.clkms);                
             }
-            muxerSenderWorker.postMessage({ type: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
+            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", firstFrameClkms: itemTsClk.clkms, compensatedTs: itemTsClk.compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
             encoderUpdateUploadStats(currentAudioTs, currentVideoTs, e.data.inFlightReq);

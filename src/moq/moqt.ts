@@ -6,7 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { numberToVarInt, varIntToNumberOrThrow, varIntToNumberAndLengthOrThrow } from './varint.js';
-import { numberTo2BytesArray, numberToSingleByteArray } from './utils.js';
+import { numberTo2BytesArray, numberToSingleByteArray } from './byte_utils.js';
 import {
   concatBuffer,
   buffRead,
@@ -373,12 +373,20 @@ export async function moqClose(moqt: MoqtState): Promise<void> {
   }
 
   if (moqt.controlWriter != null) {
-    await moqt.controlWriter.close();
+    // The writer may still be locked (an in-flight send). Closing the
+    // WebTransport session below tears it down regardless.
+    if (!moqt.controlWriter.locked) {
+      await moqt.controlWriter.close();
+    }
     moqt.controlWriter = null;
   }
   // TODO: We need to cancel the reader (https://developer.mozilla.org/en-US/docs/Web/API/ReadableStreamBYOBReader)
   if (moqt.controlReader != null) {
-    await moqt.controlReader.cancel('Closing!');
+    // The control loop holds a reader lock while blocked in read(); skip the
+    // cancel in that case and let wt.close() error the pending read.
+    if (!moqt.controlReader.locked) {
+      await moqt.controlReader.cancel('Closing!');
+    }
     moqt.controlReader = null;
   }
   if (moqt.wt != null) {
@@ -410,13 +418,13 @@ export async function moqCreateControlStream(moqt: MoqtState): Promise<void> {
 
 // SETUP CLIENT
 
-function moqCreateClientSetupMessageBytes(): Uint8Array {
+function moqCreateClientSetupMessageBytes(version: number): Uint8Array {
   const msg: Uint8Array[] = [];
 
   // Number of supported versions
   msg.push(numberToVarInt(1));
   // Version[0]
-  msg.push(numberToVarInt(MOQ_CURRENT_VERSION));
+  msg.push(numberToVarInt(version));
   const kv_params = [moqCreateKvPair(MOQ_SETUP_PARAMETER_MAX_REQUEST_ID, MOQ_MAX_REQUEST_ID_NUM)];
   msg.push(moqCreateParametersBytes(kv_params));
 
@@ -432,8 +440,9 @@ function moqCreateClientSetupMessageBytes(): Uint8Array {
 
 export async function moqSendClientSetup(
   writerStream: WritableStream<Uint8Array>,
+  version: number = MOQ_CURRENT_VERSION,
 ): Promise<void> {
-  return moqSendToStream(writerStream, moqCreateClientSetupMessageBytes());
+  return moqSendToStream(writerStream, moqCreateClientSetupMessageBytes(version));
 }
 
 // SETUP SERVER

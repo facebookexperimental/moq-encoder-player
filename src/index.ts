@@ -17,8 +17,6 @@ LICENSE file in the root directory of this source tree.
 
 // Generic utilities
 export * from './utils/utils.js';
-export * from './utils/varint.js';
-export * from './utils/buffer_utils.js';
 export * from './utils/ts_queue.js';
 export * from './utils/time_buffer_checker.js';
 export * from './utils/jitter_buffer.js';
@@ -27,8 +25,14 @@ export * from './utils/jitter_buffer.js';
 export * from './utils/media/avcc_parser.js';
 export * from './utils/media/avc_decoder_configuration_record_parser.js';
 
-// Media over QUIC transport + Media Interop packager
-export * from './utils/moqt.js';
+// Media over QUIC transport: low-level protocol + high-level API
+export * from './moq/byte_utils.js';
+export * from './moq/varint.js';
+export * from './moq/buffer_utils.js';
+export * from './moq/moqt.js';
+export * from './moq/moq.js';
+
+// Media Interop packager
 export * from './packager/mi_packager.js';
 
 // Render buffers

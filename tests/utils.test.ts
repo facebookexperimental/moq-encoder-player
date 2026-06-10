@@ -5,13 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import {
-  numberToSingleByteArray,
-  numberTo2BytesArray,
-  compareArrayBuffer,
-  convertTimestamp,
-  buf2hex,
-} from '../src/utils/utils.js';
+import { numberToSingleByteArray, numberTo2BytesArray } from '../src/moq/byte_utils.js';
+import { compareArrayBuffer, convertTimestamp, buf2hex } from '../src/utils/utils.js';
 
 describe('numberToSingleByteArray', () => {
   it('encodes a value in [0, 255]', () => {

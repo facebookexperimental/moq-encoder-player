@@ -57,7 +57,7 @@ LICENSE file in the root directory of this source tree.
     </div>
 </body>
 <script type="module">
-    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION } from "../../dist/utils/moqt.js"
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION } from "../../dist/moq/moqt.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MI_PACKAGER_VERSION } from "../../dist/packager/mi_packager.js"
 
@@ -228,13 +228,13 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["data"].newSubgroupEvery = parseInt(document.getElementById('moqNewSubgroup').value);
         
         // Initialize muxer - sender
-        muxerSenderWorker.postMessage({ type: "muxersendini", muxerSenderConfig: muxerSenderConfig });
+        muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
     }
 
     function send() {
         const data = new TextEncoder("utf-8").encode(document.getElementById('objPayload').value);
         const moqMapping = document.getElementById('moqQuicMapping').value;
-        muxerSenderWorker.postMessage({ type: "data", chunk: data, seqId: msgSeqId++, moqMapping: moqMapping});
+        muxerSenderWorker.postMessage({ type: "chunk", mediaType: "data", chunk: data, seqId: msgSeqId++, moqMapping: moqMapping});
     }
 
     // Add listeners from HTML

@@ -28,7 +28,7 @@ import {
   getFullTrackName,
   isMoqObjectDatagramType,
   moqDecodeDatagramType,
-} from '../utils/moqt.js';
+} from '../moq/moqt.js';
 import { MIPackager, MIPayloadTypeEnum } from '../packager/mi_packager.js';
 import { ContainsNALUSliceIDR, DEFAULT_AVCC_HEADER_LENGTH } from '../utils/media/avcc_parser.js';
 

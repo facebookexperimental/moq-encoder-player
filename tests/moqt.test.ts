@@ -65,10 +65,10 @@ import {
   MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_TOKEN_DELETE,
-} from '../src/utils/moqt.js';
-import { numberToVarInt, varIntToNumbeFromBuffer } from '../src/utils/varint.js';
-import { numberTo2BytesArray, numberToSingleByteArray } from '../src/utils/utils.js';
-import { concatBuffer, getArrayBufferByteLength } from '../src/utils/buffer_utils.js';
+} from '../src/moq/moqt.js';
+import { numberToVarInt, varIntToNumbeFromBuffer } from '../src/moq/varint.js';
+import { numberTo2BytesArray, numberToSingleByteArray } from '../src/moq/byte_utils.js';
+import { concatBuffer, getArrayBufferByteLength } from '../src/moq/buffer_utils.js';
 
 // The subgroup header type the encoder always emits:
 // getSubgroupHeaderType(extensions=true, endOfGroup=false, subGroupId=true, firstObjId=false)

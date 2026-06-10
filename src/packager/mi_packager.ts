@@ -7,8 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 // Follows "draft-cenzano-moq-media-interop/": https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/
 
-import { numberToVarInt, varIntToNumbeFromBuffer } from '../utils/varint.js';
-import { buffRead, concatBuffer, readUntilEof } from '../utils/buffer_utils.js';
+import { numberToVarInt, varIntToNumbeFromBuffer } from '../moq/varint.js';
+import { buffRead, concatBuffer, readUntilEof } from '../moq/buffer_utils.js';
 import {
   MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE,
   MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA,
@@ -17,7 +17,7 @@ import {
   MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA,
   MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA,
   moqCreateKvPair,
-} from '../utils/moqt.js';
+} from '../moq/moqt.js';
 
 export const MI_PACKAGER_VERSION = '03';
 
