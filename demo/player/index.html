@@ -358,6 +358,8 @@ LICENSE file in the root directory of this source tree.
     let sourceBufferAudioWorklet = null;
     let systemAudioLatencyMs = 0;
     let audioSharedBuffer = null;
+    // Set once if the browser does not honor the requested AudioContext sample rate
+    let audioSampleRateWarned = false;
 
     // Video renderer ----
 
@@ -520,6 +522,7 @@ LICENSE file in the root directory of this source tree.
         }
         audioCtx = null;
         sourceBufferAudioWorklet = null;
+        audioSampleRateWarned = false;
         if (audioSharedBuffer != null) {
             audioSharedBuffer.Clear();
             audioSharedBuffer = null;
@@ -611,10 +614,9 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function initializeAudioContext(desiredSampleRate) {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             if (audioCtx == null) {
                 audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
-                audioCtx.transitioning = false;
                 // Add worklet
                 audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
                     .then(data => {
@@ -817,15 +819,25 @@ LICENSE file in the root directory of this source tree.
             } 
             // If audioSharedBuffer not initialized and is in start (render) state -> Initialize
             if (audioCtx != null && sourceBufferAudioWorklet != null && audioSharedBuffer === null) {
-                buffersInfo.renderer.audio.sizeMs = Math.max(playerMaxBufferMs, playerBufferMs * 2, 100);
-                const bufferSizeSamples = Math.floor((buffersInfo.renderer.audio.sizeMs * aFrame.sampleRate) / 1000);
+                // Playback is 1:1 (no resampling). All target browsers honor the
+                // AudioContext sample-rate constructor option; if this one does not,
+                // disable audio gracefully (log once) instead of failing per frame.
+                if (audioCtx.sampleRate !== aFrame.sampleRate) {
+                    if (!audioSampleRateWarned) {
+                        console.error(`Audio disabled: browser did not honor requested sample rate. Capture: ${aFrame.sampleRate} Hz, AudioContext: ${audioCtx.sampleRate} Hz (resampling not implemented).`);
+                        audioSampleRateWarned = true;
+                    }
+                } else {
+                    buffersInfo.renderer.audio.sizeMs = Math.max(playerMaxBufferMs, playerBufferMs * 2, 100);
+                    const bufferSizeSamples = Math.floor((buffersInfo.renderer.audio.sizeMs * aFrame.sampleRate) / 1000);
 
-                audioSharedBuffer = new CicularAudioSharedBuffer();
-                audioSharedBuffer.Init(aFrame.numberOfChannels, bufferSizeSamples, audioCtx.sampleRate);
-                audioSharedBuffer.SetCallbacks(updateListDroppedFrame);
+                    audioSharedBuffer = new CicularAudioSharedBuffer();
+                    audioSharedBuffer.Init(aFrame.numberOfChannels, bufferSizeSamples, audioCtx.sampleRate);
+                    audioSharedBuffer.SetCallbacks(updateListDroppedFrame);
 
-                // Set the audio context sampling freq, and pass buffers
-                sourceBufferAudioWorklet.port.postMessage({ type: 'iniabuffer', config: { contextSampleFrequency: audioCtx.sampleRate, circularBufferSizeSamples: bufferSizeSamples, cicularAudioSharedBuffers: audioSharedBuffer.GetSharedBuffers(), sampleFrequency: aFrame.sampleRate } });
+                    // Set the audio context sampling freq, and pass buffers
+                    sourceBufferAudioWorklet.port.postMessage({ type: 'iniabuffer', config: { contextSampleFrequency: audioCtx.sampleRate, circularBufferSizeSamples: bufferSizeSamples, cicularAudioSharedBuffers: audioSharedBuffer.GetSharedBuffers() } });
+                }
             }
 
             if (audioSharedBuffer != null) {

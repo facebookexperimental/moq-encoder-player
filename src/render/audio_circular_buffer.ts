@@ -5,6 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+// PAIRED CONTRACT: this layout MUST stay identical to the SharedStates map in
+// source_buffer_worklet.ts (the reader). Both index the same Int32Array.
 const SharedStates = {
   AUDIO_BUFF_START: 0, // The reader only modifies this pointer
   AUDIO_BUFF_END: 1, // The writer (this) only modifies this pointer
@@ -14,8 +16,12 @@ const SharedStates = {
   IS_PLAYING: 3, // Indicates playback state
 };
 
-// Keep only last 30 audio frames in the TS index
-const MAX_ITEMS_IN_TS_INDEX = 30;
+// Lower bound for the TS index size. The actual cap is derived from the ring
+// capacity in Init() so it can always map every frame the buffer can hold.
+const MIN_ITEMS_IN_TS_INDEX = 30;
+
+// Conservative smallest audio frame assumed when sizing the TS index (5 ms).
+const MIN_FRAME_DURATION_S = 0.005;
 
 export class CicularAudioSharedBuffer {
   sampleIndexToTS: Array<{ sampleIndex: number; ts: number }> | null;
@@ -26,10 +32,7 @@ export class CicularAudioSharedBuffer {
   sharedStates: Int32Array;
   onDropped: ((info: any) => void) | null;
   lastTimestamp: number | undefined;
-
-  // Referenced (always undefined in original) in an error message below.
-  sampleFrequency?: any;
-  contextSampleFrequency?: any;
+  maxIndexItems: number;
 
   constructor() {
     this.sampleIndexToTS = null; // In Us
@@ -45,6 +48,7 @@ export class CicularAudioSharedBuffer {
     this.sharedStates = new Int32Array(this.sharedCommBuffer);
 
     this.onDropped = null;
+    this.maxIndexItems = MIN_ITEMS_IN_TS_INDEX;
 
     // Initialize |States| buffer.
     Atomics.store(this.sharedStates, SharedStates.AUDIO_BUFF_START, -1);
@@ -82,6 +86,12 @@ export class CicularAudioSharedBuffer {
     this.size = numSamples;
     this.sampleIndexToTS = [];
 
+    // Cap the TS index so it can map every frame the ring can hold (plus the
+    // MIN_ITEMS floor). Prevents losing the cursor->PTS mapping when the writer
+    // races far ahead of GetStats() (e.g. background tab).
+    const minFrameSamples = Math.max(1, Math.floor(contextFrequency * MIN_FRAME_DURATION_S));
+    this.maxIndexItems = Math.max(MIN_ITEMS_IN_TS_INDEX, Math.ceil(numSamples / minFrameSamples));
+
     Atomics.store(this.sharedStates, SharedStates.AUDIO_BUFF_START, 0);
     Atomics.store(this.sharedStates, SharedStates.AUDIO_BUFF_END, 0);
   }
@@ -96,14 +106,9 @@ export class CicularAudioSharedBuffer {
         `Channels diffent than expected, expected ${this.sharedAudiobuffers.length}, passed: ${aFrame.numberOfChannels}`,
       );
     }
-    if (aFrame.sampleRate !== this.contextFrequency) {
-      throw new Error(
-        'Error sampling frequency received does NOT match local audio renderer. sampleFrequency: ' +
-          this.sampleFrequency +
-          ', contextSampleFrequency: ' +
-          this.contextSampleFrequency,
-      );
-    }
+    // Playback is 1:1 (no resampling): the AudioContext is created at the capture
+    // rate and the player verifies aFrame.sampleRate === audioCtx.sampleRate before
+    // constructing this buffer, so contextFrequency always matches here.
 
     const samplesToAdd = aFrame.numberOfFrames;
 
@@ -175,32 +180,8 @@ export class CicularAudioSharedBuffer {
     const start = Atomics.load(this.sharedStates, SharedStates.AUDIO_BUFF_START); // Reader
     const end = Atomics.load(this.sharedStates, SharedStates.AUDIO_BUFF_END); // Writer
 
-    // Find the last sent timestamp
-    let retIndexTs;
-    let n = 0;
-    let bExit = false;
-    while (n < this.sampleIndexToTS.length && !bExit) {
-      if (this._isSentSample(this.sampleIndexToTS[n].sampleIndex, start, end)) {
-        retIndexTs = n;
-      } else {
-        if (retIndexTs !== undefined) {
-          bExit = true;
-        }
-      }
-      n++;
-    }
-    if (retIndexTs !== undefined) {
-      const lastFrameTimestampSent = this.sampleIndexToTS[retIndexTs].ts;
-      const extraSamplesSent = start - this.sampleIndexToTS[retIndexTs].sampleIndex;
-
-      // Adjust at sample level
-      // Assume ts in nanosec
-      this.lastTimestamp =
-        lastFrameTimestampSent + (extraSamplesSent * 1000 * 1000) / this.contextFrequency;
-
-      // Remove old indexes (already sent)
-      this.sampleIndexToTS = this.sampleIndexToTS.slice(retIndexTs + 1);
-    }
+    // Update the PTS estimate of the sample currently under the read cursor.
+    this._updateCurrentTimestamp(start, end);
 
     const sizeSamples = this._getUsedSlots(start, end);
     const sizeMs = Math.floor((sizeSamples * 1000) / this.contextFrequency);
@@ -250,8 +231,39 @@ export class CicularAudioSharedBuffer {
     if (this.sampleIndexToTS == null) {
       return;
     }
-    while (this.sampleIndexToTS.length > MAX_ITEMS_IN_TS_INDEX) {
+    while (this.sampleIndexToTS.length > this.maxIndexItems) {
       this.sampleIndexToTS.shift();
+    }
+  }
+
+  // Estimates the PTS of the sample currently under the read cursor (`start`) and
+  // prunes index entries the reader has already passed. Finds the most recent
+  // frame whose start the reader has consumed, then extrapolates at sample
+  // granularity within that frame. Keeps that anchor frame so the clock keeps
+  // advancing smoothly between frame boundaries on subsequent calls.
+  _updateCurrentTimestamp(start: number, end: number) {
+    if (this.sampleIndexToTS == null) {
+      return;
+    }
+    let anchorIndex;
+    for (let n = 0; n < this.sampleIndexToTS.length; n++) {
+      if (this._isSentSample(this.sampleIndexToTS[n].sampleIndex, start, end)) {
+        anchorIndex = n;
+      } else if (anchorIndex !== undefined) {
+        break; // Entries are ordered: once we pass the sent region we are done.
+      }
+    }
+    if (anchorIndex === undefined) {
+      return;
+    }
+    const anchor = this.sampleIndexToTS[anchorIndex];
+    const extraSamplesSent = start - anchor.sampleIndex;
+    // Assume ts in microseconds.
+    this.lastTimestamp = anchor.ts + (extraSamplesSent * 1000 * 1000) / this.contextFrequency;
+
+    // Drop entries older than the anchor (already consumed); keep the anchor.
+    if (anchorIndex > 0) {
+      this.sampleIndexToTS = this.sampleIndexToTS.slice(anchorIndex);
     }
   }
 

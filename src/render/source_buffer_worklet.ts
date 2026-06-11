@@ -5,9 +5,11 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+// PAIRED CONTRACT: this layout MUST stay identical to the SharedStates map in
+// audio_circular_buffer.ts (the writer). Both index the same Int32Array.
 const SharedStates = {
-  AUDIO_BUFF_START: 0, // The reader only modifies this pointer
-  AUDIO_BUFF_END: 1, // The writer (this) only modifies this pointer
+  AUDIO_BUFF_START: 0, // The reader (this) only modifies this pointer
+  AUDIO_BUFF_END: 1, // The writer only modifies this pointer
 
   AUDIO_INSERTED_SILENCE_MS: 2,
 
