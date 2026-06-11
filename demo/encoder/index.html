@@ -45,6 +45,10 @@ LICENSE file in the root directory of this source tree.
         .two-col > .boxed {
             flex: 1 1 320px;
         }
+        /* Ensure [hidden] beats .two-col's display:flex */
+        [hidden] {
+            display: none !important;
+        }
 
         /* "Advanced..." toggle styled like a link */
         .link-btn {
@@ -136,8 +140,10 @@ LICENSE file in the root directory of this source tree.
         </div>
     </div>
 
-    <!-- Encoding params (two columns) -->
-    <div class="two-col">
+    <!-- Encoding params (collapsible, two columns) -->
+    <div class="boxed">
+        <button id="btnToggleEncodingSettings" type="button" class="link-btn">Encoding settings ▼</button>
+        <div id="encodingSettings" class="two-col" hidden>
         <div class="boxed">
             <div class="styleform">
                 <form>
@@ -169,6 +175,7 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                 </form>
             </div>
+        </div>
         </div>
     </div>
 
@@ -273,6 +280,20 @@ LICENSE file in the root directory of this source tree.
                 } else {
                     adv.setAttribute('hidden', '');
                     advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const encBtn = document.getElementById('btnToggleEncodingSettings');
+        const enc = document.getElementById('encodingSettings');
+        if (encBtn && enc) {
+            encBtn.addEventListener('click', function () {
+                if (enc.hasAttribute('hidden')) {
+                    enc.removeAttribute('hidden');
+                    encBtn.textContent = 'Encoding settings ▲';
+                } else {
+                    enc.setAttribute('hidden', '');
+                    encBtn.textContent = 'Encoding settings ▼';
                 }
             });
         }
