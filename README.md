@@ -23,21 +23,22 @@ The source code is written in [TypeScript](https://www.typescriptlang.org/) and 
 moq-encoder-player/
 ├── demo/                   # Browser demos (HTML). They load the compiled code from dist/
 │   ├── encoder/            #   index.html (full encoder), simple.html
-│   ├── player/             #   index.html (full player), simple.html, event.html
-│   └── vc/                 #   index.html (video-call: encoder + player in one page)
+│   └── player/             #   index.html (full player), simple.html
 ├── src/                    # TypeScript source code
 │   ├── index.ts            #   Library entry point (re-exports the reusable modules)
 │   ├── capture/            #   a_capture.ts, v_capture.ts        (Web Workers)
 │   ├── encode/             #   a_encoder.ts, v_encoder.ts        (Web Workers)
 │   ├── decode/             #   audio_decoder.ts, video_decoder.ts (Web Workers)
-│   ├── sender/             #   moq_sender.ts                     (Web Worker, MOQT publisher)
-│   ├── receiver/           #   moq_demuxer_downloader.ts         (Web Worker, MOQT subscriber)
+│   ├── moq/                #   moq.ts (high-level Moq/Track/Subscription client),
+│   │                       #   moqt.ts (wire protocol), varint.ts, byte_utils.ts, buffer_utils.ts
+│   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
+│   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
 │   ├── packager/           #   mi_packager.ts                    (media-interop packager)
 │   ├── render/             #   audio_circular_buffer.ts, video_render_buffer.ts,
 │   │                       #   source_buffer_worklet.ts          (AudioWorklet)
 │   ├── overlay_processor/  #   overlay_encoder.ts, overlay_decoder.ts
-│   ├── utils/              #   moqt.ts, varint.ts, buffer_utils.ts, jitter_buffer.ts,
-│   │   └── media/          #   ts_queue.ts, time_buffer_checker.ts, utils.ts ...
+│   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, time_buffer_checker.ts, utils.ts,
+│   │   └── media/          #   avcc_parser.ts ...
 │   └── types/              #   globals.d.ts (ambient types for WebTransport / AudioWorklet)
 ├── tests/                  # Jest unit tests for the pure utilities
 ├── dist/                   # Compiled JavaScript + type declarations (generated, git-ignored)
@@ -77,7 +78,6 @@ Then open the demos (see [Testing](#testing-encoder-player-served-from-localhost
 
 - Encoder: <http://localhost:8080/demo/encoder/?local>
 - Player: <http://localhost:8080/demo/player/?local>
-- Video call (encoder + player): <http://localhost:8080/demo/vc/?local>
 
 ### Build for production
 
@@ -263,11 +263,18 @@ To keep the audio and video in-sync the following strategy is applied:
 
 ### src/receiver/moq_demuxer_downloader.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `mi_packager.ts`) from the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) entry point. It is a thin shell that forwards worker messages to the `MoqReceiver` class in `src/receiver/moq/moq_receiver_internals.ts`, mirroring the publisher layout (`src/sender/`).
+
+The MOQT subscriber logic is split in two layers:
+
+- `src/moq/moq.ts` — the high-level, media-free `Moq` client (shared with the publisher). It owns the WebTransport session, the control loop, the SUBSCRIBE handshake (`Moq.subscribe` → `Subscription`), and the incoming stream / datagram receive loops. Received object payloads are routed to the matching `Subscription` by track alias.
+- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and demuxes the received payloads (see `mi_packager.ts`) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline.
+
+It implements MOQT and extracts video and audio packets from the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/):
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
-- Waits for incoming unidirectional (Server -> Player) QUIC streams
+- Waits for incoming unidirectional (Server -> Player) QUIC streams (and datagrams)
 - For every received chunk (QUIC stream) we:
   - Demuxed it (see `mi_packager.ts`)
   - Video: Create `EncodedVideoChunk`
@@ -436,9 +443,6 @@ You should see same UI that is shown in testing section above
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - Accelerate playback if we are over latency budget
-- Fix dropped frames UI on VC player (not properly separated between encoder & player, see TODO in the code)
-- Copy updates from event player to regular one
-  - Better TS logging and video renderer
 - All:
   - Accept B frames (DTS)
 

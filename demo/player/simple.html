@@ -114,7 +114,7 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.moqTracks["data"].name = document.getElementById('trackName').value;
         downloaderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
 
-        muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig });
+        muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
     }
 
     async function stop() {

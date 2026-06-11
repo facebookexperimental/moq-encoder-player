@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Track, MoqMapping } from '../src/moq/moq.js';
+import { Track, Subscription, MoqMapping } from '../src/moq/moq.js';
 import { MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../src/moq/moqt.js';
 
 const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
@@ -99,6 +99,36 @@ describe('Track queue policy', () => {
     expect(obj.getInfo().status).toBe('sent');
     obj.abort();
     expect(obj.getInfo().status).toBe('sent');
+  });
+});
+
+describe('Subscription', () => {
+  it('reports its identity and forwards received objects to the callback', async () => {
+    const { moq } = fakeMoq();
+    const received: Array<{ length?: number }> = [];
+    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, 'secret', async (_r, _e, length) => {
+      received.push({ length });
+      return true; // EOF
+    });
+
+    expect(sub.getInfo()).toEqual({
+      namespace: ['vc'],
+      name: 'a0',
+      subscribeRequestId: 4,
+      trackAlias: 9,
+    });
+
+    const eof = await (sub as any)._deliver({} as any, [], 10);
+    expect(eof).toBe(true);
+    expect(received).toEqual([{ length: 10 }]);
+  });
+
+  it('unsubscribe sends UNSUBSCRIBE once and is idempotent', async () => {
+    const { moq, writes } = fakeMoq();
+    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, undefined, () => false);
+    await sub.unsubscribe();
+    await sub.unsubscribe(); // no-op the second time
+    expect(writes.length).toBe(1);
   });
 });
 

@@ -5,16 +5,26 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-// High-level, media-free MoQ publisher API built on top of the low-level wire
-// protocol in ./moqt.ts. The worker that uses it lives in ../sender/moq/.
+// High-level, media-free MoQ client API built on top of the low-level wire
+// protocol in ./moqt.ts. It handles both roles: publish (Track) and subscribe
+// (Subscription). The workers that use it live in ../sender/moq/ and
+// ../receiver/moq/.
 //
 //   const moq = new Moq();
 //   moq.init(urlHostPort, { serverCertificateHash });   // sync, starts connecting
 //   await moq.setup(MOQ_CURRENT_VERSION);                // CLIENT/SERVER_SETUP
+//
+//   // Publish:
 //   const track = await moq.addTrack(ns, name, maxInFlight, auth, mapping);
 //   const obj = track.sendObject(bytes, { priority }, extHeaders, () => {});  // new group
 //   track.sendObject(moreBytes);                                              // same group
 //   obj.getInfo();   // { objId, groupId, status }
+//
+//   // Subscribe (objects routed to the callback by track alias):
+//   const sub = await moq.subscribe(ns, name, auth, (reader, extHeaders, len) => {
+//     /* demux payload */ return isEof;
+//   });
+//
 //   moq.close();     // sync
 
 import {
@@ -25,12 +35,19 @@ import {
   moqParseMsg,
   moqSendPublish,
   moqSendPublishDone,
+  moqSendSubscribe,
+  moqSendUnSubscribe,
   moqSendSubscribeOk,
   moqSendSubscribeError,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
   moqSendObjectPerDatagramToWriter,
+  moqParseObjectHeader,
+  moqParseObjectFromSubgroupHeader,
+  isMoqObjectStreamHeaderType,
+  isMoqObjectDatagramType,
+  moqDecodeDatagramType,
   getAuthInfofromParameters,
   getTrackFullName,
   MOQ_CURRENT_VERSION,
@@ -39,16 +56,26 @@ import {
   MOQ_MESSAGE_PUBLISH_ERROR,
   MOQ_MESSAGE_MAX_REQUEST_ID,
   MOQ_MESSAGE_SUBSCRIBE,
+  MOQ_MESSAGE_SUBSCRIBE_OK,
+  MOQ_MESSAGE_SUBSCRIBE_ERROR,
+  MOQ_MESSAGE_SUBSCRIBE_DONE,
   MOQ_MESSAGE_SUBSCRIBE_UPDATE,
   MOQ_MESSAGE_UNSUBSCRIBE,
+  MOQ_OBJ_STATUS_END_OF_GROUP,
+  MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP,
+  MOQ_OBJ_STATUS_END_OF_SUBGROUP,
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
   MOQ_SUBSCRIPTION_ERROR_INTERNAL,
   MOQ_STATUS_TRACK_ENDED,
   type MoqtState,
   type KvPair,
+  type ObjectHeader,
 } from './moqt.js';
 
 const LOG_PREFIX = '[MOQ]';
+
+// On SUBSCRIBE_ERROR we wait this long before retrying the subscription.
+const SLEEP_SUBSCRIBE_ERROR_MS = 2000;
 
 // Track alias 0/1 are reserved (1 for keep-alive); real tracks start at 2.
 const KEEPALIVE_TRACK_ALIAS = 1;
@@ -92,6 +119,26 @@ export interface TrackInfo {
 
 export interface MoqInitOptions {
   serverCertificateHash?: Uint8Array | null;
+}
+
+/**
+ * Called for every object received on a subscription. It is handed the raw
+ * payload reader (a `ReadableStream` positioned at the object payload), the
+ * object extension headers, and the payload length (`undefined` means "read to
+ * the end of the datagram"). It returns whether this was the last object
+ * (end of stream). Media decoding lives in the caller, keeping `Moq` media-free.
+ */
+export type ObjectCallback = (
+  reader: ReadableStream<Uint8Array>,
+  extensionHeaders: KvPair[],
+  length?: number,
+) => Promise<boolean> | boolean;
+
+export interface SubscriptionInfo {
+  namespace: string[];
+  name: string;
+  subscribeRequestId: number;
+  trackAlias: number;
 }
 
 /**
@@ -449,6 +496,75 @@ export class Track {
   }
 }
 
+/**
+ * A subscribed track. Created via `Moq.subscribe`. Holds the subscription
+ * identity and the per-object callback the receive loops invoke (routed by
+ * track alias). Symmetric to `Track` on the publisher side.
+ */
+export class Subscription {
+  readonly namespace: string[];
+  readonly name: string;
+  readonly subscribeRequestId: number;
+  readonly trackAlias: number;
+  readonly authInfo: string | undefined;
+
+  private moq: Moq;
+  private onObject: ObjectCallback;
+  private closed = false;
+
+  constructor(
+    moq: Moq,
+    namespace: string[],
+    name: string,
+    subscribeRequestId: number,
+    trackAlias: number,
+    authInfo: string | undefined,
+    onObject: ObjectCallback,
+  ) {
+    this.moq = moq;
+    this.namespace = namespace;
+    this.name = name;
+    this.subscribeRequestId = subscribeRequestId;
+    this.trackAlias = trackAlias;
+    this.authInfo = authInfo;
+    this.onObject = onObject;
+  }
+
+  /** Snapshot of the subscription's identity. */
+  getInfo(): SubscriptionInfo {
+    return {
+      namespace: this.namespace,
+      name: this.name,
+      subscribeRequestId: this.subscribeRequestId,
+      trackAlias: this.trackAlias,
+    };
+  }
+
+  /** Stop the subscription (best-effort UNSUBSCRIBE). */
+  async unsubscribe(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    try {
+      await moqSendUnSubscribe(this.moq._controlWriter(), this.subscribeRequestId);
+    } catch {
+      // Best-effort on teardown.
+    }
+  }
+
+  // ---- internal (called by Moq receive loops) ----------------------------
+
+  // Hand one received object payload to the callback; returns its EOF result.
+  async _deliver(
+    reader: ReadableStream<Uint8Array>,
+    extensionHeaders: KvPair[],
+    length?: number,
+  ): Promise<boolean> {
+    return this.onObject(reader, extensionHeaders, length);
+  }
+}
+
 // Lifecycle of a `Moq` session.
 export enum MoqState {
   Idle, // before init()
@@ -482,6 +598,16 @@ export class Moq {
 
   // Pending addTrack PUBLISH requests, keyed by request id.
   private pendingPublish = new Map<
+    number,
+    { resolve: (data: any) => void; reject: (err: any) => void }
+  >();
+
+  // Subscriber state.
+  private subscriptions: Subscription[] = [];
+  private subscriptionsByAlias = new Map<number, Subscription>();
+  private receiveLoopsStarted = false;
+  // Pending subscribe SUBSCRIBE requests, keyed by request id.
+  private pendingSubscribe = new Map<
     number,
     { resolve: (data: any) => void; reject: (err: any) => void }
   >();
@@ -583,7 +709,63 @@ export class Moq {
     return track;
   }
 
-  /** Drop queues, close tracks and the transport (best-effort, async teardown). */
+  /**
+   * Subscribe to a track (sends SUBSCRIBE, resolves on SUBSCRIBE_OK). Objects
+   * received for the track are routed to `onObject` by the negotiated track
+   * alias. A SUBSCRIBE_ERROR is retried after `SLEEP_SUBSCRIBE_ERROR_MS`.
+   */
+  async subscribe(
+    namespace: string[],
+    name: string,
+    authInfo: string | undefined,
+    onObject: ObjectCallback,
+  ): Promise<Subscription> {
+    if (this._state !== MoqState.Running) {
+      if (this._state === MoqState.Idle) {
+        throw new Error('subscribe() called before init()/setup()');
+      }
+      await this.connecting;
+    }
+
+    // Make sure the incoming stream / datagram receive loops are running before
+    // any objects can arrive.
+    this.ensureReceiveLoops();
+
+    // Retry on SUBSCRIBE_ERROR with a fresh request id, mirroring the relay
+    // race handling the legacy downloader had.
+    for (;;) {
+      const requestId = this.allocateClientReqId();
+      const answered = new Promise<any>((resolve, reject) => {
+        this.pendingSubscribe.set(requestId, { resolve, reject });
+      });
+      await moqSendSubscribe(this.controlWriter(), requestId, namespace, name, authInfo);
+      try {
+        const resp = await answered;
+        const sub = new Subscription(
+          this,
+          namespace,
+          name,
+          requestId,
+          resp.trackAlias,
+          authInfo,
+          onObject,
+        );
+        this.subscriptions.push(sub);
+        this.subscriptionsByAlias.set(resp.trackAlias, sub);
+        console.log(
+          `${LOG_PREFIX} SUBSCRIBE_OK for ${getTrackFullName(namespace as any, name)} (alias ${resp.trackAlias})`,
+        );
+        return sub;
+      } catch (err) {
+        console.warn(
+          `${LOG_PREFIX} SUBSCRIBE_ERROR for ${getTrackFullName(namespace as any, name)}: ${err}. Retrying in ${SLEEP_SUBSCRIBE_ERROR_MS}ms`,
+        );
+        await new Promise((r) => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
+      }
+    }
+  }
+
+  /** Drop queues, close tracks/subscriptions and the transport (best-effort, async teardown). */
   close(): void {
     if (this._state === MoqState.Closed) {
       return;
@@ -597,7 +779,14 @@ export class Moq {
     // locked and close() throws "Cannot close a locked stream".
     const tracks = this.tracks;
     this.tracks = [];
+    const subscriptions = this.subscriptions;
+    this.subscriptions = [];
+    this.subscriptionsByAlias.clear();
     void (async () => {
+      // Unsubscribe sequentially so we never hold two control-writer locks.
+      for (const sub of subscriptions) {
+        await sub.unsubscribe();
+      }
       await Promise.allSettled(tracks.map((track) => track.close()));
       await moqClose(this.moqt);
     })();
@@ -672,6 +861,17 @@ export class Moq {
           console.log(`${LOG_PREFIX} received PUBLISH_ERROR ${JSON.stringify(msg.data)}`);
           this.resolvePublish(msg.data, false);
           break;
+        case MOQ_MESSAGE_SUBSCRIBE_OK:
+          console.log(`${LOG_PREFIX} received SUBSCRIBE_OK ${JSON.stringify(msg.data)}`);
+          this.resolveSubscribe(msg.data, true);
+          break;
+        case MOQ_MESSAGE_SUBSCRIBE_ERROR:
+          console.log(`${LOG_PREFIX} received SUBSCRIBE_ERROR ${JSON.stringify(msg.data)}`);
+          this.resolveSubscribe(msg.data, false);
+          break;
+        case MOQ_MESSAGE_SUBSCRIBE_DONE:
+          console.log(`${LOG_PREFIX} received SUBSCRIBE_DONE ${JSON.stringify(msg.data)}`);
+          break;
         case MOQ_MESSAGE_SUBSCRIBE:
           console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE ${JSON.stringify(msg.data)}`);
           await this.onSubscribe(msg.data);
@@ -703,6 +903,19 @@ export class Moq {
     }
     this.pendingPublish.delete(data.reqId);
     ok ? pending.resolve(data) : pending.reject(new Error(`PUBLISH_ERROR: ${JSON.stringify(data)}`));
+  }
+
+  // Resolve/reject a pending subscribe. SUBSCRIBE_OK/ERROR with an unknown
+  // request id is ignored (e.g. a late answer after we already retried).
+  private resolveSubscribe(data: any, ok: boolean): void {
+    const pending = this.pendingSubscribe.get(data?.requestId);
+    if (pending === undefined) {
+      return;
+    }
+    this.pendingSubscribe.delete(data.requestId);
+    ok
+      ? pending.resolve(data)
+      : pending.reject(new Error(`SUBSCRIBE_ERROR: ${JSON.stringify(data)}`));
   }
 
   private async onSubscribe(subscribe: any): Promise<void> {
@@ -767,6 +980,114 @@ export class Moq {
     }
   }
 
+  // ---- receive loops (subscriber) ----------------------------------------
+
+  // Start the incoming unidirectional-stream and datagram receive loops once.
+  // They run in the background until close(); errors after close are expected.
+  private ensureReceiveLoops(): void {
+    if (this.receiveLoopsStarted) {
+      return;
+    }
+    this.receiveLoopsStarted = true;
+    this.runStreamReceiveLoop().catch((err) => {
+      if (this._state === MoqState.Running) {
+        console.error(`${LOG_PREFIX} Stream receive loop error: ${err}`);
+      }
+    });
+    this.runDatagramReceiveLoop().catch((err) => {
+      if (this._state === MoqState.Running) {
+        console.error(`${LOG_PREFIX} Datagram receive loop error: ${err}`);
+      }
+    });
+  }
+
+  // Accept incoming unidirectional QUIC streams (one subgroup per stream).
+  private async runStreamReceiveLoop(): Promise<void> {
+    const reader = this._wt().incomingUnidirectionalStreams.getReader();
+    while (this._state === MoqState.Running) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const header = await moqParseObjectHeader(value);
+      if (!isMoqObjectStreamHeaderType(header.type)) {
+        console.warn(`${LOG_PREFIX} Unsupported incoming stream type ${header.type}`);
+        continue;
+      }
+      // No await on purpose: drain this subgroup stream concurrently with the
+      // next incoming stream.
+      void this.receiveSubgroupStream(value, header);
+    }
+  }
+
+  // Read every object out of one subgroup stream, routing payloads to the
+  // matching subscription by track alias.
+  private async receiveSubgroupStream(
+    readerStream: ReadableStream<Uint8Array>,
+    header: ObjectHeader,
+  ): Promise<void> {
+    const sub = this.subscriptionsByAlias.get(header.trackAlias);
+    if (sub === undefined) {
+      // No subscription for this alias: nothing to route the objects to.
+      return;
+    }
+    let isEOF = false;
+    let numObjRead = 0;
+    while (this._state === MoqState.Running && !isEOF) {
+      try {
+        const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
+        isEOF = isEndOfGroupStatus(objHeader.status);
+        if (!isEOF && objHeader.payloadLength > 0) {
+          isEOF = await sub._deliver(readerStream, objHeader.extensionHeaders, objHeader.payloadLength);
+        }
+        numObjRead++;
+      } catch (err: any) {
+        // A reader on a closed stream throws. Objects with a single
+        // subgroup/group do not always send an end-of-group marker, so once we
+        // have read at least one object we treat a read error as EOF.
+        if (
+          numObjRead > 0 ||
+          (err instanceof WebTransportError && err.message.includes('The session is closed'))
+        ) {
+          isEOF = true;
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  // Accept incoming datagrams (one object per datagram).
+  private async runDatagramReceiveLoop(): Promise<void> {
+    const reader = this._wt().datagrams.readable.getReader();
+    while (this._state === MoqState.Running) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      // Wrap the whole datagram in a BYOB-capable reader for the parsers.
+      const readable = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(value);
+          controller.close();
+        },
+        type: 'bytes',
+      } as any);
+
+      const header = await moqParseObjectHeader(readable);
+      if (!isMoqObjectDatagramType(header.type)) {
+        throw new Error(`Received a non datagram-encoded object ${JSON.stringify(header)}`);
+      }
+      const sub = this.subscriptionsByAlias.get(header.trackAlias);
+      if (sub === undefined) {
+        continue;
+      }
+      // Status datagrams carry no payload (length 0 still decodes headers).
+      const length = moqDecodeDatagramType(header.type).isStatus ? 0 : undefined;
+      await sub._deliver(readable, header.extensionHeaders ?? [], length);
+    }
+  }
+
   // ---- helpers -----------------------------------------------------------
 
   private controlWriter(): WritableStream<Uint8Array> {
@@ -791,6 +1112,15 @@ export class Moq {
   private allocateTrackAlias(): number {
     return this.nextAliasValue++;
   }
+}
+
+// True when an object header status marks the end of a subgroup/group/track.
+function isEndOfGroupStatus(status: number | undefined): boolean {
+  return (
+    status === MOQ_OBJ_STATUS_END_OF_GROUP ||
+    status === MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP ||
+    status === MOQ_OBJ_STATUS_END_OF_SUBGROUP
+  );
 }
 
 // Auth passes when the track has no authInfo, or the parameters carry a match.

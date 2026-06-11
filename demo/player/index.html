@@ -504,7 +504,7 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
-        muxerDownloaderWorker.postMessage({ type: "downloadersendini", downloaderConfig: downloaderConfig });
+        muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
     }
 
     async function stop() {
