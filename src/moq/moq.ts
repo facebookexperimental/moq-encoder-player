@@ -665,21 +665,28 @@ export class Moq {
       const msg = await moqParseMsg(this.controlReader());
       switch (msg.type) {
         case MOQ_MESSAGE_PUBLISH_OK:
+          console.log(`${LOG_PREFIX} received PUBLISH_OK ${JSON.stringify(msg.data)}`);
           this.resolvePublish(msg.data, true);
           break;
         case MOQ_MESSAGE_PUBLISH_ERROR:
+          console.log(`${LOG_PREFIX} received PUBLISH_ERROR ${JSON.stringify(msg.data)}`);
           this.resolvePublish(msg.data, false);
           break;
         case MOQ_MESSAGE_SUBSCRIBE:
+          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE ${JSON.stringify(msg.data)}`);
           await this.onSubscribe(msg.data);
           break;
         case MOQ_MESSAGE_SUBSCRIBE_UPDATE:
+          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE_UPDATE ${JSON.stringify(msg.data)}`);
           this.onSubscribeUpdate(msg.data);
           break;
         case MOQ_MESSAGE_UNSUBSCRIBE:
+          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_UNSUBSCRIBE ${JSON.stringify(msg.data)}`);
           this.onUnsubscribe(msg.data);
           break;
         case MOQ_MESSAGE_MAX_REQUEST_ID:
+          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_MAX_REQUEST_ID ${JSON.stringify(msg.data)}`);
+
           break; // informational
         default:
           console.warn(`${LOG_PREFIX} Unexpected control message type ${msg.type}, ignoring`);
@@ -746,6 +753,8 @@ export class Moq {
     }
     if (update.forward === 1) {
       track._addSubscriber(update.subscriptionRequestId, 1, update.parameters);
+    } else {
+      track._removeSubscribersByRequestId(update.subscriptionRequestId);
     }
   }
 
