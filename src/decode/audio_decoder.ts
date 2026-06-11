@@ -106,6 +106,14 @@ self.addEventListener('message', async function (e) {
           numberOfChannels: e.data.numChannels,
         };
       }
+      if (config === undefined) {
+        sendMessageToMain(
+          WORKER_PREFIX,
+          'error',
+          `audio-${e.data.seqId} Unsupported audio packager type: ${e.data.packagerType}, can NOT configure decoder`,
+        );
+        return;
+      }
       initializeDecoder(config);
     }
 

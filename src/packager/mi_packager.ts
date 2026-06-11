@@ -69,9 +69,6 @@ export class MIPackager {
   isDelta: boolean | undefined;
   eof: boolean;
 
-  // Referenced (always undefined in original) in a few validity checks below.
-  name: number | undefined;
-
   READ_BLOCK_SIZE: number;
 
   constructor() {
@@ -216,24 +213,24 @@ export class MIPackager {
       }
     }
 
-    if (this.name === MIPayloadTypeEnum.RAWData) {
+    if (this.type === MIPayloadTypeEnum.RAWData) {
       if (!extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA)) {
         throw new Error(`Type RAWData needs MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA`);
       }
     }
-    if (this.name === MIPayloadTypeEnum.VideoH264AVCCWCP) {
+    if (this.type === MIPayloadTypeEnum.VideoH264AVCCWCP) {
       if (!extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA)) {
         throw new Error(
           `Type VideoH264AVCCWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA`,
         );
       }
     }
-    if (this.name === MIPayloadTypeEnum.AudioOpusWCP) {
+    if (this.type === MIPayloadTypeEnum.AudioOpusWCP) {
       if (!extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA)) {
         throw new Error(`Type AudioOpusWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA`);
       }
     }
-    if (this.name === MIPayloadTypeEnum.AudioAACMP4LCWCP) {
+    if (this.type === MIPayloadTypeEnum.AudioAACMP4LCWCP) {
       if (!extTypeRead.includes(MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA)) {
         throw new Error(
           `Type AudioAACMP4LCWCP needs MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA`,

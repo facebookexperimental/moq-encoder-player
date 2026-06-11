@@ -15,7 +15,6 @@ export class JitterBuffer {
   numTotalGaps: number;
   numTotalLostStreams: number;
   lastCorrectSeqId: number | undefined;
-  lastSeqIdDelivered: number | undefined;
 
   constructor(maxSizeMs?: number, droppedCallback?: (info: any) => void) {
     this.bufferSizeMs = DEFAULT_BUFFER_SIZE_MS;
@@ -109,7 +108,7 @@ export class JitterBuffer {
     this.totalLengthMs = 0;
     this.numTotalGaps = 0;
     this.numTotalLostStreams = 0;
-    this.lastSeqIdDelivered = undefined;
+    this.lastCorrectSeqId = undefined;
   }
 
   UpdateMaxSize(bufferSizeMs: number) {

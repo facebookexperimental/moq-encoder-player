@@ -38,7 +38,3 @@ export * from './packager/mi_packager.js';
 // Render buffers
 export * from './render/video_render_buffer.js';
 export * from './render/audio_circular_buffer.js';
-
-// Overlay (in-band data) processors
-export * from './overlay_processor/overlay_encoder.js';
-export * from './overlay_processor/overlay_decoder.js';

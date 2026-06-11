@@ -153,8 +153,6 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
                     <div class="clear"></div>
-                    <label>Activate latency tracker (overlays data on video): <input type="checkbox" id="activateLatencyTracker"></label>
-                    <div class="clear"></div>
                 </form>
             </div>
         </div>
@@ -297,7 +295,6 @@ LICENSE file in the root directory of this source tree.
 <script type="module">
     import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
-    import { OverlayEncoder } from "../../dist/overlay_processor/overlay_encoder.js"
     import { GetVideoCodecStringFromProfileLevel } from "../../dist/utils/media/avc_decoder_configuration_record_parser.js"
     import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
@@ -374,9 +371,6 @@ LICENSE file in the root directory of this source tree.
         }
         return ret;
     }
-
-    // Used in case we use latency tracker
-    const overlayEncoder = new OverlayEncoder();
 
     const muxerSenderConfig = {
         urlHostPort: '',
@@ -970,17 +964,8 @@ LICENSE file in the root directory of this source tree.
                 updateFirstTS("video", vFrame.timestamp, compensatedTsFor(vFrame.timestamp));
             }
 
-             // Modify pixels
-            let vNewFrame = vFrame
-            if (document.getElementById('activateLatencyTracker').checked) {
-                vNewFrame = overlayEncoder.Encode(vFrame, e.data.clkms)
-                if (VERBOSE) {
-                    console.debug(`[OVERLAY] Added overlay to frame ts ${vNewFrame.timestamp}, clk: ${e.data.clkms}`)
-                }
-            }
-
             // Encode video frame
-            vEncoderWorker.postMessage({ type: "vframe", vframe: vNewFrame }, [ vNewFrame ]);
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame }, [ vFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the shared capture clock on the first frame of either stream.

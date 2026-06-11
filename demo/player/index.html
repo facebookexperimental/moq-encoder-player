@@ -131,9 +131,6 @@ LICENSE file in the root directory of this source tree.
                 <div>
                     <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
                 </div>
-                <div>
-                    <label>Video latency via overlay - exact (ms):</label><input id="latencyVideoOverlayMs" type="text" value="" readonly>
-                </div>
             </div>
         </div>
         <div id="tabDemuxer" class="boxed tab-panel">
@@ -279,7 +276,6 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
     import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
-    import { OverlayDecoder } from "../../dist/overlay_processor/overlay_decoder.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
@@ -389,9 +385,6 @@ LICENSE file in the root directory of this source tree.
     // Used to check latency
     let latencyAudioChecker = null;
     let latencyVideoChecker = null;
-    
-    // Used in case we use latency tracker
-    const overlayDecoder = new OverlayDecoder();
 
     // Read & parse QS data
     const queryString = window.location.search;
@@ -464,8 +457,8 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnJitterAudioUpdate").disabled = false;
         document.getElementById("btnJitterVideoUpdate").disabled = false;
 
-        playerBufferMs = document.getElementById('playerBufferMs').value;
-        playerMaxBufferMs = document.getElementById('playerMaxBufferMs').value;
+        playerBufferMs = Number(document.getElementById('playerBufferMs').value);
+        playerMaxBufferMs = Number(document.getElementById('playerMaxBufferMs').value);
 
         createVideoRendererBuffer();
 
@@ -522,7 +515,9 @@ LICENSE file in the root directory of this source tree.
         videoDecoderWorker.postMessage(stopMsg);
         audioDecoderWorker.postMessage(stopMsg);
 
-        await audioCtx.close();
+        if (audioCtx != null) {
+            await audioCtx.close();
+        }
         audioCtx = null;
         sourceBufferAudioWorklet = null;
         if (audioSharedBuffer != null) {
@@ -565,8 +560,8 @@ LICENSE file in the root directory of this source tree.
 
     function createJitterBuffers() {
         // Jitter buffers
-        wtVideoJitterBuffer = new JitterBuffer(document.getElementById('videoJitterBufferMs').value, jitterVideoDroppedCallback);
-        wtAudioJitterBuffer = new JitterBuffer(document.getElementById('audioJitterBufferMs').value, jitterAudioDroppedCallback);
+        wtVideoJitterBuffer = new JitterBuffer(Number(document.getElementById('videoJitterBufferMs').value), jitterVideoDroppedCallback);
+        wtAudioJitterBuffer = new JitterBuffer(Number(document.getElementById('audioJitterBufferMs').value), jitterAudioDroppedCallback);
     }
     function clearJitterBuffers() {
         wtVideoJitterBuffer = null;
@@ -591,13 +586,6 @@ LICENSE file in the root directory of this source tree.
         videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
     }
 
-    function clearUI() {
-        document.getElementById('firstVts').value = "";
-        document.getElementById('firstAts').value = "";
-
-        document.getElementById('droppedFrames').innerHTML = '';
-    }
-
     function clearTimingInfo() {
         timingInfo.muxer.currentAudioTs = -1;
         timingInfo.muxer.currentVideoTs = -1;
@@ -605,8 +593,8 @@ LICENSE file in the root directory of this source tree.
         timingInfo.decoder.currentAudioTs = -1;
         timingInfo.decoder.currentVideoTs = -1;
 
-        timingInfo.renderer.currentAudioTs = -1;
-        timingInfo.renderer.currentVideoTs = -1;
+        timingInfo.renderer.currentAudioTS = -1;
+        timingInfo.renderer.currentVideoTS = -1;
     }
 
     function clearBufferInfo() {
@@ -727,14 +715,6 @@ LICENSE file in the root directory of this source tree.
 
     function updateVideoLatencyUI(latencyMs) {
         document.getElementById('latencyVideoMs').value = `${latencyMs.toFixed(0)} ms`;
-    }
-
-    function updateVideoLatencyOverlayUI(latencyMs) {
-        if (Number.isInteger(latencyMs)) {
-            document.getElementById('latencyVideoOverlayMs').value = `${latencyMs} ms`;
-        } else {
-            document.getElementById('latencyVideoOverlayMs').value = "";
-        }
     }
 
     function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
@@ -865,18 +845,13 @@ LICENSE file in the root directory of this source tree.
 
             updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
 
-            const decoded = overlayDecoder.Decode(vFrame)
-            if (decoded.confidence > 0.3) {
-                vFrame.overlayClk = decoded.val                
+            if (videoRendererBuffer != null) {
+                if (videoRendererBuffer.AddItem(vFrame) === false) {
+                    console.warn("Dropped video frame because video renderer is full");
+                    vFrame.close();
+                }
             } else {
-                updateVideoLatencyOverlayUI()
-            }
-            if (VERBOSE) {
-                console.debug(`[OVERLAY] overlay decoded. ts: ${vFrame.timestamp}, val: ${decoded.val} (conf: ${decoded.confidence})}`)
-            }
-               
-            if (videoRendererBuffer != null && videoRendererBuffer.AddItem(vFrame) === false) {
-                console.warn("Dropped video frame because video renderer is full");
+                // No renderer (e.g. message in flight after stop): avoid leaking the frame
                 vFrame.close();
             }
             // Downloader STATS
@@ -948,7 +923,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateAudioState() {
-        if (buffersInfo.renderer.audio.lengthMs >= playerBufferMs & buffersInfo.renderer.audio.state === AUDIO_STOPPED) {
+        if (buffersInfo.renderer.audio.lengthMs >= playerBufferMs && buffersInfo.renderer.audio.state === AUDIO_STOPPED) {
             audioSharedBuffer.Play();
         }
     }
@@ -978,11 +953,6 @@ LICENSE file in the root directory of this source tree.
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
-                    if ('overlayClk' in retData.vFrame) {
-                        const currentLatencyMs = (Date.now() - Number(retData.vFrame.overlayClk));
-                        updateVideoLatencyOverlayUI(currentLatencyMs);
-                    } 
-                    // Legacy                        
                     if (latencyVideoChecker != null) {
                         const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
                         if (frameClosestData.valid) {
