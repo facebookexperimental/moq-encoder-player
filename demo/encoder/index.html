@@ -184,6 +184,18 @@ LICENSE file in the root directory of this source tree.
         <video height="50%" id="vPreview" autoplay muted></video>
     </div>
 
+    <!-- Inflight requests timeline (last 20s) -->
+    <div class="boxed">
+        <h2>Inflight requests timeline (last 20s)</h2>
+        <canvas id="inflightTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio inflight</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video inflight</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio packet loss</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video packet loss</label>
+        </div>
+    </div>
+
     <!-- Stats (tabbed, defaults to "Dropped data") -->
     <div class="tabs">
         <button type="button" class="tab-btn active" data-tab="tabDropped">Dropped data</button>
@@ -429,6 +441,164 @@ LICENSE file in the root directory of this source tree.
     let vEncoderWorker = null;
     let aEncoderWorker = null;
     let muxerSenderWorker = null;
+
+    // Inflight requests timeline
+    const TIMELINE_WINDOW_MS = 20000; // 20s shown on X axis
+    const TIMELINE_AUDIO_COLOR = '#d62728';
+    const TIMELINE_VIDEO_COLOR = '#1f77b4';
+    let timelineSamples = []; // { tMs, audio, video } relative to session start
+    let timelineDrops = [];   // { tMs, mediaType, cum } one entry per dropped packet
+    let dropCum = { audio: 0, video: 0 }; // running session totals of dropped packets
+    let timelineStartMs = -1; // Date.now() when start was pressed
+    let timelineYMax = 1;     // max(maxInflightVideo, maxInflightAudio)
+    let timelineAnimFrame = null;
+
+    function startTimeline() {
+        // Clear and restart on every Start press
+        timelineSamples = [];
+        timelineDrops = [];
+        dropCum = { audio: 0, video: 0 };
+        timelineStartMs = Date.now();
+        const maxV = parseInt(document.getElementById('maxInflightVideoRequests').value) || 0;
+        const maxA = parseInt(document.getElementById('maxInflightAudioRequests').value) || 0;
+        timelineYMax = Math.max(maxV, maxA, 1);
+        if (timelineAnimFrame === null) {
+            timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        }
+    }
+
+    function stopTimeline() {
+        if (timelineAnimFrame != null) {
+            cancelAnimationFrame(timelineAnimFrame);
+            timelineAnimFrame = null;
+        }
+    }
+
+    function addTimelineSample(audioInflight, videoInflight) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        timelineSamples.push({ tMs: Date.now() - timelineStartMs, audio: audioInflight, video: videoInflight });
+    }
+
+    function addTimelineDrop(mediaType) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        dropCum[mediaType]++;
+        timelineDrops.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: dropCum[mediaType] });
+    }
+
+    function drawTimelineDrops(ctx, w, h, nowMs, rightYMax) {
+        for (let i = 0; i < timelineDrops.length; i++) {
+            const d = timelineDrops[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - d.tMs) / TIMELINE_WINDOW_MS);
+            // Height encodes the cumulative packet loss for this media type, scaled to the right axis
+            const barH = (d.cum / rightYMax) * h;
+            const barW = 3;
+            ctx.fillStyle = d.mediaType === 'audio' ? TIMELINE_AUDIO_COLOR : TIMELINE_VIDEO_COLOR;
+            ctx.globalAlpha = 0.45;
+            ctx.fillRect(x - barW / 2, h - barH, barW, barH);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    function drawTimelineSeries(ctx, w, h, nowMs, key, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            const s = timelineSamples[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / timelineYMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    function drawTimeline() {
+        const canvas = document.getElementById('inflightTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Drop samples that scrolled off the left edge
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
+            timelineSamples.shift();
+        }
+        while (timelineDrops.length > 0 && timelineDrops[0].tMs < oldestVisible) {
+            timelineDrops.shift();
+        }
+
+        // Right axis scale: 0 .. max(audio packet loss, video packet loss)
+        const rightYMax = Math.max(dropCum.audio, dropCum.video, 1);
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.fillText(timelineYMax.toString(), 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0', 2, h - 2);
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-20s', 2, h - 12);
+
+        // Right axis labels (packet loss). Drawn slightly inset from the right edge.
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('loss ' + rightYMax, w - 2, 2);
+
+        // Packet-loss bars (one per dropped packet, height = cumulative loss for its media type)
+        drawTimelineDrops(ctx, w, h, nowMs, rightYMax);
+
+        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR);
+        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR);
+
+        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
 
     // Read & parse QS data
     const queryString = window.location.search;
@@ -945,6 +1115,8 @@ LICENSE file in the root directory of this source tree.
     function stop() {
         enableUI("readyToPublish");
 
+        stopTimeline();
+
         document.getElementById("oldTrackName").value = document.getElementById("trackName").value;
         initStreamIDUI();
 
@@ -1004,6 +1176,10 @@ LICENSE file in the root directory of this source tree.
             // DROPPED
         } else if (e.data.type === "dropped") {
             updateDroppedFrame(e.data.data);
+            // Paint a packet-loss bar on the timeline (chunks only, seqId >= 0)
+            if (e.data.data && e.data.data.seqId >= 0) {
+                addTimelineDrop(e.data.data.mediaType);
+            }
 
             // CHUNKS
         } else if (e.data.type === "vchunk") {
@@ -1050,20 +1226,18 @@ LICENSE file in the root directory of this source tree.
     function updateUploadStats(inFlightReq) {
         document.getElementById('uploadStatsAudioInflight').value = `${inFlightReq["audio"]} (${returnMax('inFlightAudioReqNum', inFlightReq["audio"])})`;
         document.getElementById('uploadStatsVideoInflight').value = `${inFlightReq["video"]} (${returnMax('inFlightVideoReqNum', inFlightReq["video"])})`;
+
+        addTimelineSample(inFlightReq["audio"], inFlightReq["video"]);
     }
 
     function updateDroppedFrame(droppedFrameData) {
-        if (!document.getElementById('chkLogDroppedFrames').checked) {
-            return
-        }
-        const list = document.getElementById('droppedFrames');
-
         const clkms = droppedFrameData.clkms;
         const ts = droppedFrameData.ts;
         const seqId = droppedFrameData.seqId;
         const msg = droppedFrameData.msg;
         const mediaType = droppedFrameData.mediaType;
 
+        // Always keep the running totals up to date, regardless of UI logging
         if (seqId >= 0) {
             // Is a chunk
             if (!(mediaType in dropChunksTotals)) {
@@ -1077,6 +1251,12 @@ LICENSE file in the root directory of this source tree.
                 document.getElementById('totalAudioChunksDropped').value = dropChunksTotals[mediaType]
             }
         }
+
+        // Per-item list logging can be CPU intense, so gate it behind the checkbox
+        if (!document.getElementById('chkLogDroppedFrames').checked) {
+            return
+        }
+        const list = document.getElementById('droppedFrames');
 
         const str = new Date(clkms).toISOString() + " (" + seqId + ")(" + ts + ") " + msg;
 
@@ -1120,6 +1300,8 @@ LICENSE file in the root directory of this source tree.
         enableUI("publishing");
 
         clearUI();
+
+        startTimeline();
 
         createWorkers();
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
