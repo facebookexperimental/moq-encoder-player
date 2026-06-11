@@ -844,6 +844,10 @@ LICENSE file in the root directory of this source tree.
                 // Uses compensated TS
                 audioSharedBuffer.Add(aFrame, timingInfo.decoder.currentAudioTs);
 
+                // Gate playback start here too (not only in the rAF loop), so audio can
+                // start even if the page is hidden during startup.
+                maybeStartAudioPlayback();
+
                 if (animFrame === null) {
                     animFrame = requestAnimationFrame(audioTimestamps);
                 }
@@ -857,11 +861,13 @@ LICENSE file in the root directory of this source tree.
 
             updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
 
-            if (videoRendererBuffer != null) {
-                if (videoRendererBuffer.AddItem(vFrame) === false) {
-                    console.warn("Dropped video frame because video renderer is full");
-                    vFrame.close();
-                }
+            if (document.hidden) {
+                // Page hidden: the rAF render loop is paused so the canvas is not being
+                // drawn. Don't buffer invisible video - close decoder outputs immediately
+                // to keep the VideoDecoder draining (no backpressure, no stale backlog).
+                vFrame.close();
+            } else if (videoRendererBuffer != null) {
+                videoRendererBuffer.AddItem(vFrame);
             } else {
                 // No renderer (e.g. message in flight after stop): avoid leaking the frame
                 vFrame.close();
@@ -940,6 +946,20 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    // Starts playback once enough audio is buffered. Driven from the aframe message
+    // handler (in addition to the rAF loop) so playback can begin even when the page is
+    // hidden during startup - requestAnimationFrame is paused while hidden, but message
+    // handlers and the AudioWorklet keep running. Play() is idempotent.
+    function maybeStartAudioPlayback() {
+        if (audioSharedBuffer == null) {
+            return;
+        }
+        const stats = audioSharedBuffer.GetStats();
+        if (!stats.isPlaying && stats.queueLengthMs >= playerBufferMs) {
+            audioSharedBuffer.Play();
+        }
+    }
+
     function audioTimestamps(wcTimestamp) {
         const wcInterval = wcTimestamp - wcLastRender;
 
@@ -1001,4 +1021,14 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
+
+    // When the page becomes hidden the rAF render loop pauses but the decoder keeps
+    // producing. Release any frames the renderer is holding so the VideoDecoder is not
+    // backpressured while hidden (the vframe handler then drops new frames until we are
+    // visible again). Audio keeps playing on its own (AudioWorklet) thread.
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden && videoRendererBuffer != null) {
+            videoRendererBuffer.Clear();
+        }
+    });
 </script>

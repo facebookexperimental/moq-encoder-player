@@ -20,16 +20,21 @@ export class VideoRenderBuffer {
   }
 
   AddItem(vFrame: any) {
-    let r = true;
-    if (this.elementsList.length < MAX_ELEMENTS_RENDERER) {
-      // Add at the end (ordered by timestamp)
-      this.elementsList.push(vFrame);
-
-      this.totalLengthMs += vFrame.duration / 1000;
-    } else {
-      r = false;
+    // When full, evict the OLDEST frame so the buffer always holds the most recent
+    // frames. This matters when the rAF render loop is paused (e.g. the page is
+    // hidden) while the decoder keeps producing: keeping the newest frames means the
+    // buffered content stays aligned with the advancing audio clock instead of
+    // getting stuck on a backlog of stale frames.
+    if (this.elementsList.length >= MAX_ELEMENTS_RENDERER) {
+      const oldFrame = this.elementsList.shift();
+      this.totalLengthMs -= oldFrame.duration / 1000;
+      this.totalDiscarded++;
+      oldFrame.close();
     }
-    return r;
+    // Add at the end (ordered by timestamp)
+    this.elementsList.push(vFrame);
+    this.totalLengthMs += vFrame.duration / 1000;
+    return true;
   }
 
   GetFirstElement() {
