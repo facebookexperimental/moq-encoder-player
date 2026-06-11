@@ -110,6 +110,18 @@ LICENSE file in the root directory of this source tree.
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
     </div>
 
+    <!-- Renderer buffer / gaps timeline (last 60s) -->
+    <div class="boxed">
+        <h2>Renderer buffer &amp; gaps timeline (last 60s)</h2>
+        <canvas id="bufferTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio renderer buffer (ms)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video renderer buffer (ms)</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio gaps</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video gaps</label>
+        </div>
+    </div>
+
     <!-- Stats (tabbed, defaults to "Latency") -->
     <div class="tabs">
         <button type="button" class="tab-btn active" data-tab="tabLatency">Latency</button>
@@ -388,6 +400,171 @@ LICENSE file in the root directory of this source tree.
     let latencyAudioChecker = null;
     let latencyVideoChecker = null;
 
+    // Renderer buffer / gaps timeline
+    const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
+    const TIMELINE_AUDIO_COLOR = '#d62728';
+    const TIMELINE_VIDEO_COLOR = '#1f77b4';
+    let timelineSamples = []; // { tMs, audio, video } renderer buffer length (ms) relative to session start
+    let timelineGaps = [];    // { tMs, mediaType, cum } one entry per detected gap
+    let gapCum = { audio: 0, video: 0 }; // running session totals of detected gaps
+    let timelineStartMs = -1; // Date.now() when start was pressed
+    let timelineAnimFrame = null;
+
+    function startTimeline() {
+        // Clear and restart on every Start press
+        timelineSamples = [];
+        timelineGaps = [];
+        gapCum = { audio: 0, video: 0 };
+        timelineStartMs = Date.now();
+        if (timelineAnimFrame === null) {
+            timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        }
+    }
+
+    function stopTimeline() {
+        if (timelineAnimFrame != null) {
+            cancelAnimationFrame(timelineAnimFrame);
+            timelineAnimFrame = null;
+        }
+    }
+
+    function addTimelineGap(mediaType, totalGaps) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        // Jitter buffer reports the cumulative gap count, only add a bar when it grows
+        if (totalGaps <= gapCum[mediaType]) {
+            return;
+        }
+        gapCum[mediaType] = totalGaps;
+        timelineGaps.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: totalGaps });
+    }
+
+    function drawTimelineGaps(ctx, w, h, nowMs, rightYMax) {
+        for (let i = 0; i < timelineGaps.length; i++) {
+            const g = timelineGaps[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - g.tMs) / TIMELINE_WINDOW_MS);
+            // Height encodes the cumulative gaps for this media type, scaled to the right axis
+            const barH = (g.cum / rightYMax) * h;
+            const barW = 3;
+            ctx.fillStyle = g.mediaType === 'audio' ? TIMELINE_AUDIO_COLOR : TIMELINE_VIDEO_COLOR;
+            ctx.globalAlpha = 0.45;
+            ctx.fillRect(x - barW / 2, h - barH, barW, barH);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    function drawTimelineSeries(ctx, w, h, nowMs, key, color, leftYMax) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            const s = timelineSamples[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / leftYMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    function drawTimeline() {
+        const canvas = document.getElementById('bufferTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Sample the current renderer buffer lengths (ms) for audio and video
+        if (timelineStartMs >= 0) {
+            const aMs = buffersInfo.renderer.audio.lengthMs >= 0 ? buffersInfo.renderer.audio.lengthMs : 0;
+            const vMs = buffersInfo.renderer.video.lengthMs >= 0 ? buffersInfo.renderer.video.lengthMs : 0;
+            timelineSamples.push({ tMs: nowMs, audio: aMs, video: vMs });
+        }
+
+        // Drop samples that scrolled off the left edge
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
+            timelineSamples.shift();
+        }
+        while (timelineGaps.length > 0 && timelineGaps[0].tMs < oldestVisible) {
+            timelineGaps.shift();
+        }
+
+        // Left axis scale: 0 .. max(Max audio player buffer (ms), max observed buffer)
+        let leftYMax = buffersInfo.renderer.audio.sizeMs > 0 ? buffersInfo.renderer.audio.sizeMs : playerMaxBufferMs;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            leftYMax = Math.max(leftYMax, timelineSamples[i].audio, timelineSamples[i].video);
+        }
+        leftYMax = Math.max(leftYMax, 1);
+
+        // Right axis scale: 0 .. max(audio gaps, video gaps)
+        const rightYMax = Math.max(gapCum.audio, gapCum.video, 1);
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillText(Math.round(leftYMax) + ' ms', 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0', 2, h - 2);
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-60s', 2, h - 12);
+
+        // Right axis labels (gaps). Drawn slightly inset from the right edge.
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('gaps ' + rightYMax, w - 2, 2);
+
+        // Gap bars (one per detected gap, height = cumulative gaps for its media type)
+        drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
+
+        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
+        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
+
+        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
+
     // Read & parse QS data
     const queryString = window.location.search;
     console.log("Read querystring: " + queryString);
@@ -470,6 +647,8 @@ LICENSE file in the root directory of this source tree.
 
         createWorkers();
 
+        startTimeline();
+
         muxerDownloaderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
@@ -506,6 +685,8 @@ LICENSE file in the root directory of this source tree.
         if (animFrame != null) {
             cancelAnimationFrame(animFrame);
         }
+
+        stopTimeline();
 
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
@@ -659,6 +840,8 @@ LICENSE file in the root directory of this source tree.
         document.getElementById(elementNameSize).value = data.size;
         document.getElementById(elementNameGaps).value = `${data.numTotalGaps} (${data.numTotalLostStreams} streams lost)`;
         document.getElementById(elementMaxSize).value = `${data.currentMaSizeMs} ms`;
+
+        addTimelineGap(mediaType, data.numTotalGaps);
     }
 
     function updateFirstChunkTSUI(mediaType, ts) {

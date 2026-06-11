@@ -184,9 +184,9 @@ LICENSE file in the root directory of this source tree.
         <video height="50%" id="vPreview" autoplay muted></video>
     </div>
 
-    <!-- Inflight requests timeline (last 20s) -->
+    <!-- Inflight requests timeline (last 60s) -->
     <div class="boxed">
-        <h2>Inflight requests timeline (last 20s)</h2>
+        <h2>Inflight requests timeline (last 60s)</h2>
         <canvas id="inflightTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio inflight</label>
@@ -443,7 +443,7 @@ LICENSE file in the root directory of this source tree.
     let muxerSenderWorker = null;
 
     // Inflight requests timeline
-    const TIMELINE_WINDOW_MS = 20000; // 20s shown on X axis
+    const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
     const TIMELINE_AUDIO_COLOR = '#d62728';
     const TIMELINE_VIDEO_COLOR = '#1f77b4';
     let timelineSamples = []; // { tMs, audio, video } relative to session start
@@ -584,7 +584,7 @@ LICENSE file in the root directory of this source tree.
         ctx.textAlign = 'right';
         ctx.fillText('now', w - 2, h - 2);
         ctx.textAlign = 'left';
-        ctx.fillText('-20s', 2, h - 12);
+        ctx.fillText('-60s', 2, h - 12);
 
         // Right axis labels (packet loss). Drawn slightly inset from the right edge.
         ctx.textAlign = 'right';
