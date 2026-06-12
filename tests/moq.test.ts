@@ -45,7 +45,7 @@ describe('Track sequencing', () => {
   it('assigns group/object ids, starting a new group when newGroupOptions is passed', () => {
     const { moq } = fakeMoq({ hangStream: true });
     const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
-    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
+    track._setForwarding(true); // Forward State 1, so objects are sent
     const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     const o2 = track.sendObject(new Uint8Array([2]));
     const o3 = track.sendObject(new Uint8Array([3]), { priority: BASE_PRI });
@@ -59,7 +59,7 @@ describe('Track object delivery (datagram)', () => {
   it('writes the object, marks it sent and fires the callback', async () => {
     const { moq, writes } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
-    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
+    track._setForwarding(true); // Forward State 1, so objects are sent
     let cbObj: any = null;
     const obj = track.sendObject(new Uint8Array([1, 2, 3]), { priority: BASE_PRI }, [], (o) => {
       cbObj = o;
@@ -76,7 +76,7 @@ describe('Track queue policy', () => {
     // Subgroup stream creation hangs, so the queue stays full.
     const { moq } = fakeMoq({ hangStream: true });
     const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 2);
-    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
+    track._setForwarding(true); // Forward State 1, so objects are sent
     const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // drains, stalls on stream open
     await flush();
     const o2 = track.sendObject(new Uint8Array([2])); // queued
@@ -97,7 +97,7 @@ describe('Track queue policy', () => {
   it('abort() is a no-op once an object has been sent', async () => {
     const { moq } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
-    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
+    track._setForwarding(true); // Forward State 1, so objects are sent
     const obj = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     await flush();
     expect(obj.getInfo().status).toBe('sent');
@@ -159,39 +159,43 @@ describe('Track forward-state gating', () => {
     const { moq, writes } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
 
-    // No subscribers yet (Forward State 0) -> dropped, nothing written.
+    // Forward State 0 (default) -> dropped, nothing written.
     const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     await flush();
     expect(o1.getInfo().status).toBe('dropped');
     expect(writes.length).toBe(0);
 
-    // Relay sets Forward State 1 (modeled as a subscriber entry).
-    track._addSubscriber(7, 1, []);
+    // Relay sets Forward State 1.
+    track._setForwarding(true);
     const o2 = track.sendObject(new Uint8Array([2]), { priority: BASE_PRI });
     await flush();
     expect(o2.getInfo().status).toBe('sent');
     expect(writes.length).toBeGreaterThan(0);
   });
 
-  it('finishes the started group after forwarding stops, then gates the next group (subgroup)', async () => {
+  it('pauses on Forward State 0 and resumes on a fresh group (subgroup)', async () => {
     const { moq } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
-    track._addSubscriber(7, 1, []);
+    track._setForwarding(true);
 
-    const key = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // start group
+    const key = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     await flush();
     expect(key.getInfo().status).toBe('sent');
+    expect(key.getInfo().groupId).toBe(0);
 
-    // Forwarding stops mid-group; the rest of the already-started group still goes out.
-    track._removeSubscribersByRequestId(7);
-    const delta = track.sendObject(new Uint8Array([2])); // same group (no newGroup)
+    // Forwarding stops: objects are dropped while paused.
+    track._setForwarding(false);
+    const paused = track.sendObject(new Uint8Array([2]));
     await flush();
-    expect(delta.getInfo().status).toBe('sent');
+    expect(paused.getInfo().status).toBe('dropped');
 
-    // The next group must not start while not forwarding.
-    const nextKey = track.sendObject(new Uint8Array([3]), { priority: BASE_PRI });
+    // Forwarding resumes: the next object starts a fresh group (not reusing
+    // group 0), even though it is not flagged as a new group by the caller.
+    track._setForwarding(true);
+    const resumed = track.sendObject(new Uint8Array([3]));
     await flush();
-    expect(nextKey.getInfo().status).toBe('dropped');
+    expect(resumed.getInfo().status).toBe('sent');
+    expect(resumed.getInfo().groupId).toBe(1);
   });
 });
 

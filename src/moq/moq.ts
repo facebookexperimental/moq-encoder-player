@@ -238,9 +238,14 @@ export class Track {
   private queue: ObjData[] = [];
   private draining = false;
   private closed = false;
-  // Whether the current group is being written to the wire. Set at each new
-  // group from the forward state; see sendObject for the gating rationale.
-  private sendingGroup = false;
+  // Forward State for this subscription (draft-16). The relay toggles it via
+  // REQUEST_UPDATE; objects are only sent while it is true. Starts false: the
+  // relay's PUBLISH_OK parks new tracks at Forward State 0 until a subscriber
+  // appears.
+  private forwarding = false;
+  // Set when forwarding resumes (0 -> 1), so the next object starts a fresh
+  // group on a new subgroup stream rather than reusing a stopped one.
+  private resumeNeedsNewGroup = false;
 
   private firstObjectSent = false;
   private currentGroupSeq = 0;
@@ -294,18 +299,12 @@ export class Track {
       return new ObjData(this, -1, -1, 'dropped', this.currentGroupPriority);
     }
 
-    const newGroup = newGroupOptions !== undefined;
+    let newGroup = newGroupOptions !== undefined;
 
     // Forward-state gating (draft-16 §5.1): the publisher does not send Objects
-    // while Forward State is 0. We decide at each group boundary whether to send
-    // the group based on whether the subscription is currently being forwarded
-    // (the relay toggles this via REQUEST_UPDATE; see Moq.onRequestUpdate). Once
-    // a group has begun we finish it so subgroups stay well-formed, and we only
-    // (re)start sending at the next new group (keyframe).
-    if (newGroup) {
-      this.sendingGroup = this.isForwarding();
-    }
-    if (!this.sendingGroup) {
+    // while Forward State is 0. The relay toggles this via REQUEST_UPDATE (see
+    // Moq.onRequestUpdate -> Track._setForwarding).
+    if (!this.forwarding) {
       return new ObjData(
         this,
         this.currentGroupSeq,
@@ -313,6 +312,15 @@ export class Track {
         'dropped',
         this.currentGroupPriority,
       );
+    }
+
+    // When forwarding resumes, start a fresh group. Streams opened before the
+    // pause were reset (by us) and/or STOP_SENDING'd by the relay, so we must
+    // open new subgroup streams and must not reuse Object IDs within an
+    // already-sent group (which would make the track malformed).
+    if (this.resumeNeedsNewGroup) {
+      newGroup = true;
+      this.resumeNeedsNewGroup = false;
     }
 
     // Drop when the pending queue is full.
@@ -399,11 +407,39 @@ export class Track {
 
   // ---- internal (called by Moq / ObjData) --------------------------------
 
-  // True when the subscription is being forwarded: the relay set Forward State 1
-  // (tracked as a subscriber entry via REQUEST_UPDATE), or a direct subscriber
-  // exists. Drives whether sendObject writes a group to the wire.
+  // True when the subscription is being forwarded (Forward State 1).
   isForwarding(): boolean {
-    return this.subscribers.length > 0;
+    return this.forwarding;
+  }
+
+  // Update Forward State. On 1->0 we proactively reset the open subgroup streams
+  // (the relay will also STOP_SENDING them); on 0->1 we flag that the next object
+  // must start a fresh group so we open new streams. See sendObject/writeObject.
+  _setForwarding(forwarding: boolean): void {
+    if (forwarding === this.forwarding) {
+      return;
+    }
+    this.forwarding = forwarding;
+    if (forwarding) {
+      this.resumeNeedsNewGroup = true;
+    } else {
+      void this.resetStreams();
+    }
+  }
+
+  // Reset and forget all open subgroup streams (best-effort). Used when
+  // forwarding stops, so stale streams don't linger to be STOP_SENDING'd.
+  private async resetStreams(): Promise<void> {
+    const streams = this.streams;
+    this.streams = new Map();
+    this.groupLastObj.clear();
+    for (const writer of streams.values()) {
+      try {
+        await writer.abort('forward paused');
+      } catch {
+        // Best-effort: the relay may have already reset the stream.
+      }
+    }
   }
 
   _addSubscriber(subscriptionRequestId: number, forward: number, parameters: KvPair[]): void {
@@ -512,12 +548,20 @@ export class Track {
       throw new Error(`Unexpected MOQ - QUIC mapping: ${this.moqMapping}`);
     }
 
-    // Close any open stream from a previous group (the group rolled).
+    // Close any open stream from a previous group (the group rolled). The
+    // end-of-group object is one past the last object on this single per-group
+    // stream, i.e. Object ID Delta 0. This is best-effort: the relay may have
+    // already reset the stream (e.g. after the subscriber went away), so an
+    // error here must not wedge the track — always drop the stream from the map.
     for (const [groupId, writer] of this.streams) {
       if (groupId !== obj.groupId) {
-        const lastObj = this.groupLastObj.get(groupId) ?? 0;
-        await moqSendObjectEndOfGroupToWriter(writer, lastObj + 1, [], true);
+        try {
+          await moqSendObjectEndOfGroupToWriter(writer, 0, [], true);
+        } catch {
+          // Stream was likely stopped/reset by the peer; just forget it.
+        }
         this.streams.delete(groupId);
+        this.groupLastObj.delete(groupId);
       }
     }
 
@@ -532,7 +576,16 @@ export class Track {
     }
 
     // Object id delta is always 0: one stream per group, ids tracked locally.
-    await moqSendObjectSubgroupToWriter(writer, 0, obj.data, obj.extensionHeaders);
+    try {
+      await moqSendObjectSubgroupToWriter(writer, 0, obj.data, obj.extensionHeaders);
+    } catch (err) {
+      // The stream was stopped/reset (e.g. the relay sent STOP_SENDING when the
+      // subscriber left). Abandon it so we don't keep writing to a dead stream;
+      // a later object (after forwarding resumes) opens a fresh one.
+      this.streams.delete(obj.groupId);
+      this.groupLastObj.delete(obj.groupId);
+      throw err;
+    }
     this.groupLastObj.set(obj.groupId, obj.objId);
   }
 }
@@ -747,9 +800,12 @@ export class Moq {
       moqMapping,
     );
     // FORWARD defaults to 1 when the parameter is absent (draft-16 §9.2.2.8).
-    if (forwardFromParameters(resp?.parameters ?? []) !== 0) {
+    // Relays typically PUBLISH_OK with Forward State 0 until a subscriber exists.
+    const forwarding = forwardFromParameters(resp?.parameters ?? []) !== 0;
+    if (forwarding) {
       track._addSubscriber(requestId, MOQ_FORWARD_TRUE, resp?.parameters ?? []);
     }
+    track._setForwarding(forwarding);
     this.tracks.push(track);
     return track;
   }
@@ -1004,6 +1060,7 @@ export class Moq {
     }
 
     track._addSubscriber(subscribe.requestId, MOQ_FORWARD_TRUE, subscribe.parameters);
+    track._setForwarding(true);
     const last = track._lastSent();
     await moqSendSubscribeOk(
       this.controlWriter(),
@@ -1028,8 +1085,10 @@ export class Moq {
     const forward = forwardFromParameters(update.parameters);
     if (forward === MOQ_FORWARD_TRUE) {
       track._addSubscriber(update.existingRequestId, MOQ_FORWARD_TRUE, update.parameters);
+      track._setForwarding(true);
     } else if (forward === 0) {
       track._removeSubscribersByRequestId(update.existingRequestId);
+      track._setForwarding(false);
     }
   }
 
@@ -1038,7 +1097,10 @@ export class Moq {
       return;
     }
     for (const track of this.tracks) {
-      track._removeSubscribersByRequestId(unsubscribe.requestId);
+      const removed = track._removeSubscribersByRequestId(unsubscribe.requestId);
+      if (removed.length > 0 && track.subscribers.length === 0) {
+        track._setForwarding(false);
+      }
     }
   }
 
