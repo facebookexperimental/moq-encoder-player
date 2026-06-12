@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    /* Output: browser-ready native ES modules that mirror the src/ tree. */
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+
+    "rootDir": "src",
+    "outDir": "dist",
+
+    /* The library/worker code only relies on the built-in libs above and the
+       ambient declarations in src/types. Don't auto-include every @types/*
+       package (jest, node, ...) into the browser build. */
+    "types": [],
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    /* Interop / module behaviour */
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "useDefineForClassFields": false,
+    "skipLibCheck": true,
+
+    /* Type-checking. Gradual-typing friendly so the emitted JavaScript stays
+       byte-for-byte equivalent to the original code while still being typed. */
+    "strict": true,
+    "noImplicitAny": false,
+    "strictNullChecks": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

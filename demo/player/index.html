@@ -1,0 +1,1217 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="../shared/demo.css">
+    <style>
+        /* Player page: "Advanced..." toggle and tabbed stats */
+        .link-btn {
+            margin: 6px 0;
+            padding: 2px 0;
+            background: none;
+            color: var(--accent);
+            border-radius: 0;
+        }
+        .link-btn:hover:not(:disabled) {
+            background: none;
+            text-decoration: underline;
+        }
+
+        .tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .tab-btn {
+            margin: 0;
+            padding: 6px 14px;
+            background-color: var(--bg);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+        }
+        .tab-btn:hover:not(:disabled) {
+            background-color: var(--field-bg);
+            color: var(--text);
+        }
+        .tab-btn.active {
+            color: var(--text);
+            background-color: var(--card-bg);
+            border-color: var(--accent);
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+    </style>
+    <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
+</head>
+
+<body>
+    <h1>MOQT Test Ultra low latency with Webcodecs: PLAYER</h1>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+    <label>(Encoder audio sampling frequency should be the same than audioContext (player) sampling frequency, this is
+        almost guaranteed if you use same browser (computer) for encode and playback. The fix is simple but not done yet
+        :-))</label>
+    <!-- Connection / track -->
+    <div class="boxed">
+        <div class="styleform">
+            <form>
+                <h2>Data needed</h2>
+                <div class="clear"></div>
+                <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
+                        value="https://localhost:4433/moq" size="64"></label>
+                <div class="clear"></div>
+                <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
+                <div class="clear"></div>
+                <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <div class="clear"></div>
+                <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
+                <div class="clear"></div>
+                <div id="advancedSettings" hidden>
+                    <label>Old Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                    <div class="clear"></div>
+                    <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <div class="clear"></div>
+                    <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
+                    (Leave it blank to NOT use it)
+                    <div class="clear"></div>
+                    <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
+                    <label>(it waits until audio buffers this amount to start playback)</label>
+                    <div class="clear"></div>
+                    <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
+                    <label>(this + jitter is the max latency allowed)</label>
+                    <div class="clear"></div>
+                    <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
+                            value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
+                    <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
+                            value="300" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
+                    <div class="clear"></div>
+                </div>
+                <button id="btnStart" type="button">Start</button>
+                <button id="btnStop" type="button" disabled>Stop</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Player -->
+    <div class="boxed">
+        <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
+    </div>
+
+    <!-- Renderer buffer / gaps timeline (last 60s) -->
+    <div class="boxed">
+        <h2>Renderer buffer &amp; gaps timeline (last 60s)</h2>
+        <canvas id="bufferTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio renderer buffer (ms)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video renderer buffer (ms)</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio gaps</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video gaps</label>
+        </div>
+    </div>
+
+    <!-- Stats (tabbed, defaults to "Latency") -->
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="tabLatency">Latency</button>
+        <button type="button" class="tab-btn" data-tab="tabDemuxer">Receiver demuxer</button>
+        <button type="button" class="tab-btn" data-tab="tabDejitter">Receiver dejitter</button>
+        <button type="button" class="tab-btn" data-tab="tabDecoders">Decoders</button>
+        <button type="button" class="tab-btn" data-tab="tabRenderers">Renderers</button>
+        <button type="button" class="tab-btn" data-tab="tabDropped">Dropped data</button>
+    </div>
+    <div class="tab-panels">
+        <div id="tabLatency" class="boxed tab-panel active">
+            <h2>Latency</h2>
+            <div class="styleform">
+                <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
+                <div class="clear"></div>
+                <div>
+                    <label>Audio latency capture to renderer - approx (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
+                </div>
+                <div>
+                    <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
+                </div>
+            </div>
+        </div>
+        <div id="tabDemuxer" class="boxed tab-panel">
+            <h2>Receiver demuxer</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current received audio TS(ms):</label><input id="currentChunkATS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Current received video TS(ms):</label><input id="currentChunkVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>V-A diff(ms):</label><input id="currentChunkAVTSDiff" type="text" value="" readonly>
+                    <div class="clear"></div>
+
+                    <label>First audio TS(ms):</label><input id="firstChunkAts" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>First video TS(ms):</label><input id="firstChunkVts" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>V-A start diff(ms):</label><input id="firstChunkVADiff" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabDejitter" class="boxed tab-panel">
+            <h2>Receiver dejitter</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabDecoders" class="boxed tab-panel">
+            <h2>Decoders</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Current frame TS compensated (ms):</label><input id="currentFrameATS" type="text" value=""
+                        readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentDecoABuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Timestamp compensation(ms):</label><input id="currentDecoCompAOffset" type="text" value=""
+                        readonly>
+                    <label>(The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every
+                        decoded audio sample adds 1/fs (so sample time), that means if we drop and audio packet those
+                        timestamps will be collapsed creating A/V out of sync. We compensate those lost packets with
+                        this)</label>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentFrameVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentDecoVBuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <label>V-A diff(ms):</label><input id="currentFrameAVTSDiff" type="text" value="" readonly>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <div id="tabRenderers" class="boxed tab-panel">
+            <h2>Renderers</h2>
+            <div class="styleform">
+                <h3>Audio</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentRendererATS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentRendererABuffer" type="text" value="" size="48" readonly>
+                    <div class="clear"></div>
+                    <label>Total silence inserted (ms):</label><input id="currentRendererASilenceInserted" type="text"
+                        value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <h3>Video</h3>
+                <form>
+                    <label>Current frame TS(ms):</label><input id="currentRendererVTS" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Buffer size:</label><input id="currentRendererVBuffer" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Not printed frames:</label><input id="currentRendererVDiscarded" type="text" value="" readonly>
+                    <div class="clear"></div>
+                </form>
+                <label>V-A diff(ms):</label><input id="currentRendererAVTSDiff" type="text" value="" readonly>
+                <div class="clear"></div>
+            </div>
+        </div>
+        <div id="tabDropped" class="boxed tab-panel">
+            <h2>Dropped data (frames / chunks):</h2>
+            <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
+            <ol id="droppedFrames"></ol>
+        </div>
+    </div>
+</body>
+<script>
+    // UI-only wiring for the "Advanced..." toggle and the stats tabs.
+    // (No player logic here - that lives in the module script below.)
+    (function () {
+        const advBtn = document.getElementById('btnToggleAdvanced');
+        const adv = document.getElementById('advancedSettings');
+        if (advBtn && adv) {
+            advBtn.addEventListener('click', function () {
+                if (adv.hasAttribute('hidden')) {
+                    adv.removeAttribute('hidden');
+                    advBtn.textContent = 'Advanced ▲';
+                } else {
+                    adv.setAttribute('hidden', '');
+                    advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        tabButtons.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const target = btn.getAttribute('data-tab');
+                tabButtons.forEach(function (b) {
+                    b.classList.toggle('active', b === btn);
+                });
+                tabPanels.forEach(function (p) {
+                    p.classList.toggle('active', p.id === target);
+                });
+            });
+        });
+    })();
+</script>
+<script type="module">
+    import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
+    import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
+    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
+    import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
+
+    // Audio states (controls the player buffer)
+    const AUDIO_STOPPED = 0;
+    const AUDIO_PLAYING = 1;
+
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+
+    // Main vars
+    let VERBOSE = true;
+    let IS_LOCALHOST = false;
+
+    const downloaderConfig = {
+        urlHostPort: '',
+        urlPath: '',
+
+        certificateHash: null,
+
+        moqTracks: {
+            "audio": {
+                alias: 0,
+                namespace: ["vc"],
+                name: "audio0",
+                authInfo: "secret"
+            },
+            "video": {
+                alias: 1,
+                namespace: ["vc"],
+                name: "video0",
+                authInfo: "secret"
+            }
+        },
+    }
+
+    // We will start playback when this amount of data is in the audio rendered buffer
+    let playerBufferMs = 100;
+
+    // This + jitter is the max latency allowed
+    let playerMaxBufferMs = 300;
+
+    // Current workers
+    let muxerDownloaderWorker = null;
+    let audioDecoderWorker = null;
+    let videoDecoderWorker = null;
+
+    // TS info
+    const timingInfo = {
+        muxer: {
+            currentAudioTs: -1,
+            currentVideoTs: -1,
+        },
+        decoder: {
+            currentAudioTs: -1,
+            currentVideoTs: -1,
+        },
+        renderer: {
+            // Estimated audio PTS (assumed PTS is microseconds, and audio and video uses same timescale)
+            currentAudioTS: -1,
+            currentVideoTS: -1,
+        }
+    };
+
+    const buffersInfo = {
+        decoder: {
+            audio: { size: -1, lengthMs: -1, timestampCompensationOffset: -1 },
+            video: { size: -1, lengthMs: -1 },
+        },
+        renderer: {
+            audio: { size: -1, lengthMs: -1, sizeMs: -1, state: AUDIO_STOPPED },
+            video: { size: -1, lengthMs: -1, },
+        },
+    }
+
+    // Audio renderer ----
+
+    // Audio vars
+    let audioCtx = null;
+    let sourceBufferAudioWorklet = null;
+    let systemAudioLatencyMs = 0;
+    let audioSharedBuffer = null;
+    // Set once if the browser does not honor the requested AudioContext sample rate
+    let audioSampleRateWarned = false;
+
+    // Video renderer ----
+
+    // Video player ctx
+    let videoPlayerCtx = null;
+
+    const currentVideoSize = {
+        width: -1,
+        height: -1
+    }
+
+    // Used to paint video frames
+    let animFrame = null;
+
+    // Last render time
+    let wcLastRender = 0;
+    const RENDER_VIDEO_EVERY_MS = 10;
+
+    let videoRendererBuffer = null;
+
+    // Jitter buffers
+    let wtVideoJitterBuffer = null;
+    let wtAudioJitterBuffer = null;
+
+    // Used to check latency
+    let latencyAudioChecker = null;
+    let latencyVideoChecker = null;
+
+    // Renderer buffer / gaps timeline
+    const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
+    const TIMELINE_AUDIO_COLOR = '#d62728';
+    const TIMELINE_VIDEO_COLOR = '#1f77b4';
+    let timelineSamples = []; // { tMs, audio, video } renderer buffer length (ms) relative to session start
+    let timelineGaps = [];    // { tMs, mediaType, cum } one entry per detected gap
+    let gapCum = { audio: 0, video: 0 }; // running session totals of detected gaps
+    let timelineStartMs = -1; // Date.now() when start was pressed
+    let timelineAnimFrame = null;
+
+    function startTimeline() {
+        // Clear and restart on every Start press
+        timelineSamples = [];
+        timelineGaps = [];
+        gapCum = { audio: 0, video: 0 };
+        timelineStartMs = Date.now();
+        if (timelineAnimFrame === null) {
+            timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        }
+    }
+
+    function stopTimeline() {
+        if (timelineAnimFrame != null) {
+            cancelAnimationFrame(timelineAnimFrame);
+            timelineAnimFrame = null;
+        }
+    }
+
+    function addTimelineGap(mediaType, totalGaps) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        // Jitter buffer reports the cumulative gap count, only add a bar when it grows
+        if (totalGaps <= gapCum[mediaType]) {
+            return;
+        }
+        gapCum[mediaType] = totalGaps;
+        timelineGaps.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: totalGaps });
+    }
+
+    function drawTimelineGaps(ctx, w, h, nowMs, rightYMax) {
+        for (let i = 0; i < timelineGaps.length; i++) {
+            const g = timelineGaps[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - g.tMs) / TIMELINE_WINDOW_MS);
+            // Height encodes the cumulative gaps for this media type, scaled to the right axis
+            const barH = (g.cum / rightYMax) * h;
+            const barW = 3;
+            ctx.fillStyle = g.mediaType === 'audio' ? TIMELINE_AUDIO_COLOR : TIMELINE_VIDEO_COLOR;
+            ctx.globalAlpha = 0.45;
+            ctx.fillRect(x - barW / 2, h - barH, barW, barH);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    function drawTimelineSeries(ctx, w, h, nowMs, key, color, leftYMax) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            const s = timelineSamples[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / leftYMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    function drawTimeline() {
+        const canvas = document.getElementById('bufferTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Sample the current renderer buffer lengths (ms) for audio and video
+        if (timelineStartMs >= 0) {
+            const aMs = buffersInfo.renderer.audio.lengthMs >= 0 ? buffersInfo.renderer.audio.lengthMs : 0;
+            const vMs = buffersInfo.renderer.video.lengthMs >= 0 ? buffersInfo.renderer.video.lengthMs : 0;
+            timelineSamples.push({ tMs: nowMs, audio: aMs, video: vMs });
+        }
+
+        // Drop samples that scrolled off the left edge
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
+            timelineSamples.shift();
+        }
+        while (timelineGaps.length > 0 && timelineGaps[0].tMs < oldestVisible) {
+            timelineGaps.shift();
+        }
+
+        // Left axis scale: 0 .. max(Max audio player buffer (ms), max observed buffer)
+        let leftYMax = buffersInfo.renderer.audio.sizeMs > 0 ? buffersInfo.renderer.audio.sizeMs : playerMaxBufferMs;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            leftYMax = Math.max(leftYMax, timelineSamples[i].audio, timelineSamples[i].video);
+        }
+        leftYMax = Math.max(leftYMax, 1);
+
+        // Right axis scale: 0 .. max(audio gaps, video gaps)
+        const rightYMax = Math.max(gapCum.audio, gapCum.video, 1);
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillText(Math.round(leftYMax) + ' ms', 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0', 2, h - 2);
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-60s', 2, h - 12);
+
+        // Right axis labels (gaps). Drawn slightly inset from the right edge.
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('gaps ' + rightYMax, w - 2, 2);
+
+        // Gap bars (one per detected gap, height = cumulative gaps for its media type)
+        drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
+
+        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
+        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
+
+        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
+
+    // Read & parse QS data
+    const queryString = window.location.search;
+    console.log("Read querystring: " + queryString);
+    const qsParams = new URLSearchParams(queryString);
+
+    // Check setting to use SharedArrayBuffer
+    if (crossOriginIsolated) {
+        console.log("crossOriginIsolated enabled, we can use SharedArrayBuffer");
+    } else {
+        console.warn("crossOriginIsolated NOT enabled, we can NOT use SharedArrayBuffer");
+    }
+
+    // To update track names
+    namespace.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+    trackName.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+
+    function initFromQS() {
+        const qsHost = qsParams.get('host')
+        if (qsHost != undefined) {
+            document.getElementById("wtServerUrl").value = qsHost;
+        }
+        const verbose_logging = qsParams.get('verbose')
+        if (verbose_logging != undefined && verbose_logging === "1") {
+            VERBOSE = true
+        }
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
+        }
+        const now = new Date().toISOString();
+
+        updateFullTrackNameUI();
+        initVersions();
+    }
+
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION;
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
+    }
+
+    function updateFullTrackNameUI() {
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, true))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, false))}`
+
+        document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
+    }
+
+    async function updateJitterAudio() {
+        const maxSizeMs = Number(document.getElementById('audioJitterBufferMs').value);
+        if (wtAudioJitterBuffer != null) {
+            wtAudioJitterBuffer.UpdateMaxSize(maxSizeMs);
+        }
+    }
+
+    async function updateJitterVideo() {
+        const maxSizeMs = Number(document.getElementById('videoJitterBufferMs').value);
+        if (wtVideoJitterBuffer != null) {
+            wtVideoJitterBuffer.UpdateMaxSize(maxSizeMs);
+        }
+    }
+
+    async function start() {
+        document.getElementById("btnStart").disabled = true;
+        document.getElementById("btnStop").disabled = false;
+        document.getElementById("btnJitterAudioUpdate").disabled = false;
+        document.getElementById("btnJitterVideoUpdate").disabled = false;
+
+        playerBufferMs = Number(document.getElementById('playerBufferMs').value);
+        playerMaxBufferMs = Number(document.getElementById('playerMaxBufferMs').value);
+
+        createVideoRendererBuffer();
+
+        createJitterBuffers();
+
+        createLatencyChecker();
+
+        createWorkers();
+
+        startTimeline();
+
+        muxerDownloaderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        videoDecoderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        audioDecoderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+
+        // Ini downloaderConfig
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`;
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)
+        }
+        // Get url data
+        downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+
+        const orignal_ns = document.getElementById('namespace').value;
+        const ns_tuples = orignal_ns.split("/");
+
+        downloaderConfig.moqTracks["video"].namespace = ns_tuples
+        downloaderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
+        downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
+
+        downloaderConfig.moqTracks["audio"].namespace = ns_tuples
+        downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
+        downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+
+        muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
+    }
+
+    async function stop() {
+        if (animFrame != null) {
+            cancelAnimationFrame(animFrame);
+        }
+
+        stopTimeline();
+
+        document.getElementById("btnStart").disabled = false
+        document.getElementById("btnStop").disabled = true
+        document.getElementById("btnJitterAudioUpdate").disabled = true;
+        document.getElementById("btnJitterVideoUpdate").disabled = true;
+
+        const stopMsg = { type: "stop" };
+        muxerDownloaderWorker.postMessage(stopMsg);
+        videoDecoderWorker.postMessage(stopMsg);
+        audioDecoderWorker.postMessage(stopMsg);
+
+        if (audioCtx != null) {
+            await audioCtx.close();
+        }
+        audioCtx = null;
+        sourceBufferAudioWorklet = null;
+        audioSampleRateWarned = false;
+        if (audioSharedBuffer != null) {
+            audioSharedBuffer.Clear();
+            audioSharedBuffer = null;
+        }
+
+        clearTimingInfo();
+
+        clearBufferInfo();
+
+        currentVideoSize.width = -1;
+        currentVideoSize.height = -1;
+
+        videoPlayerCtx = null;
+        animFrame = null;
+
+        clearJitterBuffers();
+        clearLatencyChecker();
+        clearVideoRendererBuffer();
+    }
+
+    function createVideoRendererBuffer() {
+        videoRendererBuffer = new VideoRenderBuffer();
+    }
+
+    function clearVideoRendererBuffer() {
+        if (videoRendererBuffer != null) {
+            videoRendererBuffer.Clear();
+        }
+        videoRendererBuffer = null;
+    }
+
+    function jitterAudioDroppedCallback(data) {
+        console.warn(`[AUDIO-JITTER] Dropped late audio frame. seqId: ${data.seqId}, currentSeqId:${data.firstBufferSeqId}`);
+    }
+    function jitterVideoDroppedCallback(data) {
+        console.warn(`[VIDEO-JITTER] Dropped late video frame. seqId: ${data.seqId}, currentSeqId:${data.firstBufferSeqId}`);
+    }
+
+    function createJitterBuffers() {
+        // Jitter buffers
+        wtVideoJitterBuffer = new JitterBuffer(Number(document.getElementById('videoJitterBufferMs').value), jitterVideoDroppedCallback);
+        wtAudioJitterBuffer = new JitterBuffer(Number(document.getElementById('audioJitterBufferMs').value), jitterAudioDroppedCallback);
+    }
+    function clearJitterBuffers() {
+        wtVideoJitterBuffer = null;
+        wtAudioJitterBuffer = null;
+    }
+
+    function createLatencyChecker() {
+        latencyAudioChecker = new TimeBufferChecker("audio");
+        latencyVideoChecker = new TimeBufferChecker("video");
+
+    }
+    function clearLatencyChecker() {
+        latencyAudioChecker = null;
+        latencyVideoChecker = null;
+    }
+
+    function createWorkers() {
+        // Create a worker to download chunk
+        muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
+
+        audioDecoderWorker = new Worker("../../dist/decode/audio_decoder.js", {type: "module"});
+        videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
+    }
+
+    function clearTimingInfo() {
+        timingInfo.muxer.currentAudioTs = -1;
+        timingInfo.muxer.currentVideoTs = -1;
+
+        timingInfo.decoder.currentAudioTs = -1;
+        timingInfo.decoder.currentVideoTs = -1;
+
+        timingInfo.renderer.currentAudioTS = -1;
+        timingInfo.renderer.currentVideoTS = -1;
+    }
+
+    function clearBufferInfo() {
+        buffersInfo.decoder.audio.size = -1;
+        buffersInfo.decoder.audio.lengthMs = -1;
+        buffersInfo.decoder.video.size = -1;
+        buffersInfo.decoder.video.lengthMs = -1;
+
+        buffersInfo.renderer.audio.size = -1;
+        buffersInfo.renderer.audio.lengthMs = -1;
+        buffersInfo.renderer.audio.state = AUDIO_STOPPED;
+        buffersInfo.renderer.video.size = -1;
+        buffersInfo.renderer.video.lengthMs = -1;
+    }
+
+    async function initializeAudioContext(desiredSampleRate) {
+        return new Promise((resolve) => {
+            if (audioCtx == null) {
+                audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
+                // Add worklet
+                audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
+                    .then(data => {
+                        sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
+                        // AudioWorkletNode can be interoperable with other native AudioNodes.
+
+                        sourceBufferAudioWorklet.port.onmessage = (e) => {
+                            // Handling data from the processor.
+                            processWorkerMessage(e);
+                        };
+                        sourceBufferAudioWorklet.onprocessorerror = (event) => {
+                            console.error('Audio worklet error. Err: ' + JSON.stringify(event));
+                        };
+
+                        // Connect to audio renderer
+                        sourceBufferAudioWorklet.connect(audioCtx.destination);
+
+                        systemAudioLatencyMs = (audioCtx.outputLatency + audioCtx.baseLatency) * 1000;
+                        console.debug('Audio system latency (ms): ' + systemAudioLatencyMs);
+
+                        return resolve(null);
+                    });
+            }
+            else {
+                return resolve(null);
+            }
+        });
+    }
+
+    function updateJitterStatsUI(mediaType, data) {
+        let elementMaxSize = 'videoJitterCurrentMaxSize'
+        let elementNameSize = 'videoJitterSize';
+        let elementNameGaps = 'videoJitterGaps';
+        if (mediaType === 'audio') {
+            elementMaxSize = 'audioJitterCurrentMaxSize'
+            elementNameSize = 'audioJitterSize';
+            elementNameGaps = 'audioJitterGaps';
+        }
+
+        document.getElementById(elementNameSize).value = data.size;
+        document.getElementById(elementNameGaps).value = `${data.numTotalGaps} (${data.numTotalLostStreams} streams lost)`;
+        document.getElementById(elementMaxSize).value = `${data.currentMaSizeMs} ms`;
+
+        addTimelineGap(mediaType, data.numTotalGaps);
+    }
+
+    function updateFirstChunkTSUI(mediaType, ts) {
+        let elementName = 'firstChunkVts';
+        if (mediaType === 'audio') {
+            elementName = 'firstChunkAts';
+        }
+        document.getElementById(elementName).value = (ts / 1000).toFixed(0);
+        document.getElementById('firstChunkVADiff').value = `${document.getElementById('firstChunkVts').value - document.getElementById('firstChunkAts').value} ms`;
+    }
+
+    function updateChunkTSUI(mediaType, ts) {
+        let elementName = 'currentChunkVTS';
+        if (mediaType === 'audio') {
+            elementName = 'currentChunkATS';
+        }
+        document.getElementById(elementName).value = (ts / 1000).toFixed(0);
+
+        document.getElementById('currentChunkAVTSDiff').value = `${document.getElementById('currentChunkVTS').value - document.getElementById('currentChunkATS').value} ms`;
+    }
+
+    function updateDecoderUI(mediaType, ts, bufferInfo) {
+        let elementTsName = 'currentFrameVTS';
+        let elementBufferName = 'currentDecoVBuffer';
+        let elementCompOffset = '';
+        if (mediaType === 'audio') {
+            elementTsName = 'currentFrameATS';
+            elementBufferName = 'currentDecoABuffer';
+            elementCompOffset = 'currentDecoCompAOffset';
+        }
+        document.getElementById(elementTsName).value = (ts / 1000).toFixed(0);
+        document.getElementById('currentFrameAVTSDiff').value = `${document.getElementById('currentFrameVTS').value - document.getElementById('currentFrameATS').value} ms`;
+
+        document.getElementById(elementBufferName).value = `${bufferInfo.size} (${bufferInfo.lengthMs.toFixed(0)} ms)`;
+
+        if (elementCompOffset != '') {
+            document.getElementById(elementCompOffset).value = `${(bufferInfo.timestampCompensationOffset / 1000).toFixed(0)} ms`;
+        }
+    }
+
+    function updateRendererAudioUI(ts, bufferInfo, totalSilenceInsertedMs) {
+        document.getElementById('currentRendererATS').value = (ts / 1000).toFixed(0);
+        document.getElementById('currentRendererAVTSDiff').value = `${document.getElementById('currentRendererVTS').value - document.getElementById('currentRendererATS').value} ms`;
+
+        document.getElementById('currentRendererABuffer').value = `${bufferInfo.size} samples (${bufferInfo.lengthMs.toFixed(0)} ms) - Max: ${buffersInfo.renderer.audio.sizeMs} ms`;
+        document.getElementById('currentRendererASilenceInserted').value = totalSilenceInsertedMs.toFixed(0);
+    }
+
+    function updateRendererVideoUI(ts, bufferInfo, totalDiscarded) {
+        document.getElementById('currentRendererVTS').value = (ts / 1000).toFixed(0);
+        document.getElementById('currentRendererAVTSDiff').value = `${document.getElementById('currentRendererVTS').value - document.getElementById('currentRendererATS').value} ms`;
+
+        document.getElementById('currentRendererVBuffer').value = `${bufferInfo.size} (${bufferInfo.lengthMs.toFixed(0)} ms)`;
+        document.getElementById('currentRendererVDiscarded').value = totalDiscarded.toFixed(0);
+    }
+
+    function updateVideoLatencyUI(latencyMs) {
+        document.getElementById('latencyVideoMs').value = `${latencyMs.toFixed(0)} ms`;
+    }
+
+    function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
+        document.getElementById('latencyAudioMs').value = `${totalLatencyMs.toFixed(0)} ms (System: ${systemAudioLatencyMs.toFixed(0)} ms)`;
+    }
+
+    async function processWorkerMessage(e) {
+        // LOGGING
+        if (e.data.type === "debug") {
+            // logging debug
+            if (VERBOSE) {
+                console.debug(e.data.data);
+            }
+        } else if (e.data.type === "info") {
+            // logging info
+            console.log(e.data.data);
+        } else if (e.data.type === "error") {
+            // logging error
+            console.error(e.data.data);
+        } else if (e.data.type === "warning") {
+            // logging warn
+            console.warn(e.data.data);
+
+            // CHUNKS
+        } else if (e.data.type === "videochunk") {
+            const chunk = e.data.chunk;
+            const seqId = e.data.seqId;
+            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
+
+            if (wtVideoJitterBuffer != null) {
+                const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, seqId, extraData);
+                if (orderedVideoData !== undefined) {
+                    if (timingInfo.muxer.currentVideoTs < 0) {
+                        updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
+                    }
+
+                    // Download is sequential
+                    if (orderedVideoData.isDisco) {
+                        console.warn(`VIDEO DISCO detected in seqId: ${orderedVideoData.seqId}`);
+                    }
+                    if (orderedVideoData.repeatedOrBackwards) {
+                        console.warn(`VIDEO Repeated or backwards chunk, discarding, seqId: ${orderedVideoData.seqId}`);
+                    } else {
+                        // Adds pts to wallClk info
+                        latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
+
+                        timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
+                        updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
+                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
+                    }
+                }
+                updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
+            }
+        } else if (e.data.type === "audiochunk") {
+            const chunk = e.data.chunk;
+            const seqId = e.data.seqId;
+            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
+
+            if (wtAudioJitterBuffer != null) {
+                const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
+                if (orderedAudioData !== undefined) {
+                    if (timingInfo.muxer.currentAudioTs < 0) {
+                        updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
+                    }
+
+                    // Download is sequential
+                    if (orderedAudioData.isDisco) {
+                        console.warn(`AUDIO DISCO detected in seqId: ${orderedAudioData.seqId}`);
+                    }
+                    if (orderedAudioData.repeatedOrBackwards) {
+                        console.warn(`AUDIO Repeated or backwards chunk, discarding, seqId: ${orderedAudioData.seqId}`);
+                    } else {
+                        // Adds pts to wallClk info
+                        latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
+
+                        timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
+
+                        updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
+                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
+                    }
+                }
+                updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
+            }
+            // FRAME
+        } else if (e.data.type === "aframe") {
+            const aFrame = e.data.frame;
+
+            // currentAudioTs needs to be compesated with GAPs more info in audio_decoder.js
+            timingInfo.decoder.currentAudioTs = aFrame.timestamp + e.data.timestampCompensationOffset;
+            buffersInfo.decoder.audio.timestampCompensationOffset = e.data.timestampCompensationOffset;
+
+            buffersInfo.decoder.audio.size = e.data.queueSize;
+            buffersInfo.decoder.audio.lengthMs = e.data.queueLengthMs;
+
+            updateDecoderUI('audio', timingInfo.decoder.currentAudioTs, buffersInfo.decoder.audio);
+
+            if (audioCtx == null && aFrame.sampleRate != undefined && aFrame.sampleRate > 0) {
+                // Initialize the audio when we know sampling freq used in the capture
+                await initializeAudioContext(aFrame.sampleRate);
+            }
+            // If audioSharedBuffer not initialized and is in start (render) state -> Initialize
+            if (audioCtx != null && sourceBufferAudioWorklet != null && audioSharedBuffer === null) {
+                // Playback is 1:1 (no resampling). All target browsers honor the
+                // AudioContext sample-rate constructor option; if this one does not,
+                // disable audio gracefully (log once) instead of failing per frame.
+                if (audioCtx.sampleRate !== aFrame.sampleRate) {
+                    if (!audioSampleRateWarned) {
+                        console.error(`Audio disabled: browser did not honor requested sample rate. Capture: ${aFrame.sampleRate} Hz, AudioContext: ${audioCtx.sampleRate} Hz (resampling not implemented).`);
+                        audioSampleRateWarned = true;
+                    }
+                } else {
+                    buffersInfo.renderer.audio.sizeMs = Math.max(playerMaxBufferMs, playerBufferMs * 2, 100);
+                    const bufferSizeSamples = Math.floor((buffersInfo.renderer.audio.sizeMs * aFrame.sampleRate) / 1000);
+
+                    audioSharedBuffer = new CicularAudioSharedBuffer();
+                    audioSharedBuffer.Init(aFrame.numberOfChannels, bufferSizeSamples, audioCtx.sampleRate);
+                    audioSharedBuffer.SetCallbacks(updateListDroppedFrame);
+
+                    // Set the audio context sampling freq, and pass buffers
+                    sourceBufferAudioWorklet.port.postMessage({ type: 'iniabuffer', config: { contextSampleFrequency: audioCtx.sampleRate, circularBufferSizeSamples: bufferSizeSamples, cicularAudioSharedBuffers: audioSharedBuffer.GetSharedBuffers() } });
+                }
+            }
+
+            if (audioSharedBuffer != null) {
+                // Uses compensated TS
+                audioSharedBuffer.Add(aFrame, timingInfo.decoder.currentAudioTs);
+
+                // Gate playback start here too (not only in the rAF loop), so audio can
+                // start even if the page is hidden during startup.
+                maybeStartAudioPlayback();
+
+                if (animFrame === null) {
+                    animFrame = requestAnimationFrame(audioTimestamps);
+                }
+            }
+        } else if (e.data.type === "vframe") {
+            const vFrame = e.data.frame;
+            timingInfo.decoder.currentVideoTs = vFrame.timestamp;
+
+            buffersInfo.decoder.video.size = e.data.queueSize;
+            buffersInfo.decoder.video.lengthMs = e.data.queueLengthMs;
+
+            updateDecoderUI('video', timingInfo.decoder.currentVideoTs, buffersInfo.decoder.video);
+
+            if (document.hidden) {
+                // Page hidden: the rAF render loop is paused so the canvas is not being
+                // drawn. Don't buffer invisible video - close decoder outputs immediately
+                // to keep the VideoDecoder draining (no backpressure, no stale backlog).
+                vFrame.close();
+            } else if (videoRendererBuffer != null) {
+                videoRendererBuffer.AddItem(vFrame);
+            } else {
+                // No renderer (e.g. message in flight after stop): avoid leaking the frame
+                vFrame.close();
+            }
+            // Downloader STATS
+        } else if (e.data.type === "downloaderstats") {
+            const downloaderData = e.data.data;
+
+            // Dropped
+        } else if (e.data.type === "dropped") {
+            updateListDroppedFrame(e.data.data);
+
+            // UNKNOWN
+        } else {
+            console.error("unknown message: " + JSON.stringify(e.data));
+        }
+    }
+
+    function setVideoSize(vFrame) {
+        let needsSet = false;
+
+        if (vFrame.displayWidth != currentVideoSize.width) {
+            currentVideoSize.width = vFrame.displayWidth;
+            needsSet = true;
+        }
+        if (vFrame.displayHeight != currentVideoSize.height) {
+            currentVideoSize.height = vFrame.displayHeight;
+            needsSet = true;
+        }
+        if (needsSet) {
+            document.getElementById('videoPlayer').width = currentVideoSize.width;
+            document.getElementById('videoPlayer').height = currentVideoSize.height;
+
+            // Video player ctx
+            videoPlayerCtx = document.getElementById('videoPlayer').getContext('2d');
+        }
+    }
+
+    function updateListDroppedFrame(droppedFrameData) {
+        if (!document.getElementById('chkLogDroppedFrames').checked) {
+            return
+        }
+        const list = document.getElementById('droppedFrames');
+
+        const clkms = droppedFrameData.clkms;
+        const ts = droppedFrameData.ts;
+        const msg = droppedFrameData.msg;
+        let seqId = droppedFrameData.msg;
+        if ('seqId' in droppedFrameData) {
+            seqId = droppedFrameData.seqId;
+        }
+
+        const str = new Date(clkms).toISOString() + " (" + ts + ")(" + seqId + ") " + msg;
+
+        const entry = document.createElement('li');
+        entry.appendChild(document.createTextNode(str));
+        list.appendChild(entry);
+    }
+
+    function updateAudioStats(data) {
+        // Audio render stats
+        timingInfo.renderer.currentAudioTS = data.currentTimestamp;
+
+        buffersInfo.renderer.audio.size = data.queueSize; // In samples
+        buffersInfo.renderer.audio.lengthMs = data.queueLengthMs; // In ms
+        if (data.isPlaying) {
+            buffersInfo.renderer.audio.state = AUDIO_PLAYING;
+        }
+
+        updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.totalSilenceInsertedMs);
+    }
+
+    function updateAudioState() {
+        if (buffersInfo.renderer.audio.lengthMs >= playerBufferMs && buffersInfo.renderer.audio.state === AUDIO_STOPPED) {
+            audioSharedBuffer.Play();
+        }
+    }
+
+    // Starts playback once enough audio is buffered. Driven from the aframe message
+    // handler (in addition to the rAF loop) so playback can begin even when the page is
+    // hidden during startup - requestAnimationFrame is paused while hidden, but message
+    // handlers and the AudioWorklet keep running. Play() is idempotent.
+    function maybeStartAudioPlayback() {
+        if (audioSharedBuffer == null) {
+            return;
+        }
+        const stats = audioSharedBuffer.GetStats();
+        if (!stats.isPlaying && stats.queueLengthMs >= playerBufferMs) {
+            audioSharedBuffer.Play();
+        }
+    }
+
+    function audioTimestamps(wcTimestamp) {
+        const wcInterval = wcTimestamp - wcLastRender;
+
+        if (audioSharedBuffer != null) {
+            updateAudioStats(audioSharedBuffer.GetStats());
+
+            updateAudioState();
+        }
+
+        // Update every 10ms
+        if ((audioCtx != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
+            wcLastRender = wcTimestamp;
+
+            if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTS >= 0) {
+                // Assuming audioTS in microseconds
+                const compensatedAudioTS = Math.max(0, timingInfo.renderer.currentAudioTS - (systemAudioLatencyMs * 1000));
+                const retData = videoRendererBuffer.GetItemByTs(compensatedAudioTS);
+                if (retData.vFrame != null) {
+                    setVideoSize(retData.vFrame);
+                    videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
+
+                    timingInfo.renderer.currentVideoTS = retData.vFrame.timestamp;
+                    buffersInfo.renderer.video.size = retData.queueSize;
+                    buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
+
+                    if (latencyVideoChecker != null) {
+                        const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
+                        if (frameClosestData.valid) {
+                            const currentLatencyMs = (Date.now() - Number(frameClosestData.clkms));
+                            updateVideoLatencyUI(currentLatencyMs);
+                        }
+                    }
+
+                    retData.vFrame.close();
+                } else {
+                    if (VERBOSE) {
+                        console.debug("NO FRAME to paint");
+                    }
+                }
+
+                updateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
+            }
+        }
+
+        if (latencyAudioChecker != null) {
+            const frameClosestData = latencyAudioChecker.GetItemByTs(Math.floor(timingInfo.renderer.currentAudioTS), false);
+            if (frameClosestData.valid) {
+                const currentLatencyMs = systemAudioLatencyMs + (Date.now() - Number(frameClosestData.clkms));
+                updateAudioLatencyUI(currentLatencyMs, systemAudioLatencyMs);
+            }
+        }
+
+        animFrame = requestAnimationFrame(audioTimestamps);
+    }
+
+    // Add listeners from HTML
+    window.addEventListener("load", (event) => {initFromQS();});
+    document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+    document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
+    document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
+
+    // When the page becomes hidden the rAF render loop pauses but the decoder keeps
+    // producing. Release any frames the renderer is holding so the VideoDecoder is not
+    // backpressured while hidden (the vframe handler then drops new frames until we are
+    // visible again). Audio keeps playing on its own (AudioWorklet) thread.
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden && videoRendererBuffer != null) {
+            videoRendererBuffer.Clear();
+        }
+    });
+</script>

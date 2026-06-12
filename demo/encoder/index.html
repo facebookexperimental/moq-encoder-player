@@ -1,0 +1,1430 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="../shared/demo.css">
+    <style>
+        /* Encoder page: compact layout with two-column encoding params and tabbed stats */
+        body {
+            font-size: 12px;
+        }
+        h1 {
+            font-size: 18px;
+        }
+        h2 {
+            font-size: 14px;
+        }
+        h3 {
+            font-size: 12px;
+        }
+        input[type='text'],
+        select,
+        button {
+            font-size: 12px;
+        }
+        .styleform label,
+        .styleform input,
+        .styleform select {
+            margin: 3px 8px;
+        }
+
+        /* Two equal columns that stack on narrow screens */
+        .two-col {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .two-col > .boxed {
+            flex: 1 1 320px;
+        }
+        /* Ensure [hidden] beats .two-col's display:flex */
+        [hidden] {
+            display: none !important;
+        }
+
+        /* "Advanced..." toggle styled like a link */
+        .link-btn {
+            margin: 6px 0;
+            padding: 2px 0;
+            background: none;
+            color: var(--accent);
+            border-radius: 0;
+        }
+        .link-btn:hover:not(:disabled) {
+            background: none;
+            text-decoration: underline;
+        }
+
+        /* Tabbed stats */
+        .tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .tab-btn {
+            margin: 0;
+            padding: 6px 14px;
+            background-color: var(--bg);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+        }
+        .tab-btn:hover:not(:disabled) {
+            background-color: var(--field-bg);
+            color: var(--text);
+        }
+        .tab-btn.active {
+            color: var(--text);
+            background-color: var(--card-bg);
+            border-color: var(--accent);
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+    </style>
+    <title>Test Ultra low latency with WebCodecs ENCODER (by Jordi Cenzano)</title>
+</head>
+
+<body>
+    <h1>MOQT Test Ultra low latency with Webcodecs: ENCODER</h1>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+
+    <!-- Connection / track -->
+    <div class="boxed">
+        <div class="styleform">
+            <form>
+                <h2>Data needed</h2>
+                <div class="clear"></div>
+                <label id="wtDestData">MOQT WT Relay:<input id="wtServerUrl" type="text"
+                        value="https://localhost:4433/moq" size="64"></label>
+                <div class="clear"></div>
+                <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
+                <div class="clear"></div>
+                <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <div class="clear"></div>
+                <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
+                <div class="clear"></div>
+                <div id="advancedSettings" hidden>
+                    <label>Old Track name:</label><input id="oldTrackName" type="text" value="-" readonly>
+                    <div class="clear"></div>
+                    <label>Use single PUBLISH_NAMESPACE instead of PUBLISH per track: <input type="checkbox" id="usePublishNamespace" checked="true"></label>
+                    <div class="clear"></div>
+                    <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
+                    <div class="clear"></div>
+                    <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
+                    <div class="clear"></div>
+                    <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
+                    <div class="clear"></div>
+                    <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
+                    <label>Active: <input type="checkbox" id="useAuthToken"></label>
+                    <div class="clear"></div>
+                    <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>
+                    <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>
+                    <div class="clear"></div>
+                </div>
+                <button id="btnStart" type="button">Start</button>
+                <button id="btnStop" type="button" disabled>Stop</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Encoding params (collapsible, two columns) -->
+    <div class="boxed">
+        <button id="btnToggleEncodingSettings" type="button" class="link-btn">Encoding settings ▼</button>
+        <div id="encodingSettings" class="two-col" hidden>
+        <div class="boxed">
+            <div class="styleform">
+                <form>
+                    <h2>Video encoding params (h264)</h2>
+                    <div class="clear"></div>
+                    <label>Input sources: <select id="videoSources"></select></label>
+                    (If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery )
+                    <div class="clear"></div>
+                    <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                    <div class="clear"></div>
+                    <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
+                            size="5"></label>
+                    <div class="clear"></div>
+                    <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div class="boxed">
+            <div class="styleform">
+                <form>
+                    <h2>Audio encoding params</h2>
+                    <div class="clear"></div>
+                    <label>Input sources: <select id="audioSources"></select></label>
+                    <div class="clear"></div>
+                    <label>Codec: <select id="audioCodecOptions"></select></label>
+                    <div class="clear"></div>
+                    <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="boxed">
+        <video height="50%" id="vPreview" autoplay muted></video>
+    </div>
+
+    <!-- Inflight requests timeline (last 60s) -->
+    <div class="boxed">
+        <h2>Inflight requests timeline (last 60s)</h2>
+        <canvas id="inflightTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio inflight</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video inflight</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio packet loss</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video packet loss</label>
+        </div>
+    </div>
+
+    <!-- Stats (tabbed, defaults to "Dropped data") -->
+    <div class="tabs">
+        <button type="button" class="tab-btn active" data-tab="tabDropped">Dropped data</button>
+        <button type="button" class="tab-btn" data-tab="tabCapture">Capture</button>
+        <button type="button" class="tab-btn" data-tab="tabEncoder">Encoder output</button>
+        <button type="button" class="tab-btn" data-tab="tabMuxer">Muxer sender</button>
+    </div>
+    <div class="tab-panels">
+        <div id="tabDropped" class="boxed tab-panel active">
+            <h2>Dropped data (frames / chunks):</h2>
+            <div class="styleform">
+                <form>
+                    <label>Total dropped audio chunks: <input id="totalAudioChunksDropped" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                    <label>Total dropped video chunks: <input id="totalVideoChunksDropped" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+            <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
+            <ol id="droppedFrames"></ol>
+        </div>
+        <div id="tabCapture" class="boxed tab-panel">
+            <h2>Capture(uncompressed domain)</h2>
+            <div class="styleform">
+                <form>
+                    <label>First audio TS(ms): <input id="firstAts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First video TS(ms): <input id="firstVts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>V-A start diff(ms): <input id="VAdiff" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First comp audio TS(ms): <input id="firstCompAts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>First comp video TS(ms): <input id="firstCompVts" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>V-A comp start diff(ms): <input id="VACompdiff" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabEncoder" class="boxed tab-panel">
+            <h2>Encoder output (chunks)</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current audio TS(ms):<input id="encodedAudioTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current comp audio TS(ms):<input id="encodedAudioCompensatedTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Encoding audio latency (ms):<input id="encodedAudioLatencyMs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current video TS(ms):<input id="encodedVideoTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Current comp video TS(ms):<input id="encodedVideoCompensatedTs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                    <label>Encoding video latency (ms):<input id="encodedVideoLatencyMs" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+
+                    <label>Current V-A TS(ms):<input id="encodedVADelayCompensatedTS" type="text" value="" readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
+        <div id="tabMuxer" class="boxed tab-panel">
+            <h2>Muxer sender</h2>
+            <div>
+                <h3>Inflight</h3>
+                <div class="styleform">
+                    <form>
+                        <label>Inflight audio requests:<input id="uploadStatsAudioInflight" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Inflight video requests:<input id="uploadStatsVideoInflight" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+<script>
+    // UI-only wiring for the "Advanced..." toggle and the stats tabs.
+    // (No encoder logic here - that lives in the module script below.)
+    (function () {
+        const advBtn = document.getElementById('btnToggleAdvanced');
+        const adv = document.getElementById('advancedSettings');
+        if (advBtn && adv) {
+            advBtn.addEventListener('click', function () {
+                if (adv.hasAttribute('hidden')) {
+                    adv.removeAttribute('hidden');
+                    advBtn.textContent = 'Advanced ▲';
+                } else {
+                    adv.setAttribute('hidden', '');
+                    advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const encBtn = document.getElementById('btnToggleEncodingSettings');
+        const enc = document.getElementById('encodingSettings');
+        if (encBtn && enc) {
+            encBtn.addEventListener('click', function () {
+                if (enc.hasAttribute('hidden')) {
+                    enc.removeAttribute('hidden');
+                    encBtn.textContent = 'Encoding settings ▲';
+                } else {
+                    enc.setAttribute('hidden', '');
+                    encBtn.textContent = 'Encoding settings ▼';
+                }
+            });
+        }
+
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+        tabButtons.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const target = btn.getAttribute('data-tab');
+                tabButtons.forEach(function (b) {
+                    b.classList.toggle('active', b === btn);
+                });
+                tabPanels.forEach(function (p) {
+                    p.classList.toggle('active', p.id === target);
+                });
+            });
+        });
+    })();
+</script>
+<script type="module">
+    import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
+    import { getBinaryFile } from "../../dist/utils/utils.js"
+    import { GetVideoCodecStringFromProfileLevel } from "../../dist/utils/media/avc_decoder_configuration_record_parser.js"
+    import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
+
+    // Main vars
+    let VERBOSE = false;
+    let IS_LOCALHOST = false;
+
+    // Shared capture-time anchor, set once from the first frame of EITHER stream.
+    // Audio and video share the same monotonic capture timebase (same device), so a
+    // single anchor re-bases both streams (compensatedTs) AND lets us reconstruct the
+    // capture wallclock as a linear function of the WebCodecs timestamp. This replaces
+    // the per-frame clkms side-channel and the TimeBufferChecker lookup tables.
+    let anchorTsUs = undefined;    // first frame.timestamp seen (microseconds)
+    let anchorWallMs = undefined;  // Date.now() captured alongside that first frame (ms)
+    let firstVideoFrame = true;    // gate the "first TS" UI update (video)
+    let firstAudioFrame = true;    // gate the "first TS" UI update (audio)
+    let lastVideoChunkTsUs = undefined; // previous video chunk ts, for per-chunk duration
+
+    // Anchor the capture clock on the first frame of either stream.
+    function ensureCaptureAnchor(tsUs, wallMs) {
+        if (anchorTsUs === undefined) {
+            anchorTsUs = tsUs;
+            anchorWallMs = wallMs;
+        }
+    }
+    // A/V-aligned presentation timestamp (microseconds, ~0 origin).
+    function compensatedTsFor(tsUs) {
+        return tsUs - anchorTsUs;
+    }
+    // Reconstructed capture wallclock (integer ms) for a given media timestamp.
+    function captureClkmsFor(tsUs) {
+        return Math.round(anchorWallMs + (tsUs - anchorTsUs) / 1000);
+    }
+
+    // Video encoder config
+    const videoEncoderConfig = {
+        encoderConfig: {
+            codec: 'avc1.42001e', // Baseline = 66, level 30 (see: https://en.wikipedia.org/wiki/Advanced_Video_Coding)
+            width: 320,
+            height: 180,
+            bitrate: 1_000_000, // 1 Mbps
+            framerate: 30,
+            latencyMode: 'realtime', // Sends 1 chunk per frame
+        },
+        encoderMaxQueueSize: 2,
+        keyframeEvery: 60,
+    };
+
+    // Audio encoder config
+    const audioEncoderConfig = {
+        encoderConfig: {
+            codec: 'opus', // To fill later
+            sampleRate: 48000, // To fill later
+            numberOfChannels: 1, // To fill later
+            bitrate: 32000,
+        },
+        encoderMaxQueueSize: 10,
+    };
+
+    // To keep some stats
+    let dropChunksTotals = {};
+    let statsHelper = {};
+
+    function returnMax(varName, val) {
+        let ret = val;
+        if (!(varName in statsHelper)) {
+            statsHelper[varName] = val;
+        } else {
+            if (statsHelper[varName] > val) {
+                ret = statsHelper[varName];
+            } else {
+                statsHelper[varName] = val;
+            }
+        }
+        return ret;
+    }
+
+    const muxerSenderConfig = {
+        urlHostPort: '',
+        urlPath: '',
+
+        keepAlivesEveryMs: 5000,
+
+        certificateHash: null,
+
+        usePublishNamespace: true,
+
+        moqTracks: {
+            "audio": {
+                namespace: ["vc"],
+                name: "audio0",
+                maxInFlightRequests: 100,
+                isHipri: true,
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
+            },
+            "video": {
+                namespace: ["vc"],
+                name: "video0",
+                maxInFlightRequests: 50,
+                isHipri: false,
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
+            }
+        },
+    }
+
+    // Current workers
+    let vStreamWorker = null;
+    let aStreamWorker = null;
+    let vEncoderWorker = null;
+    let aEncoderWorker = null;
+    let muxerSenderWorker = null;
+
+    // Inflight requests timeline
+    const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
+    const TIMELINE_AUDIO_COLOR = '#d62728';
+    const TIMELINE_VIDEO_COLOR = '#1f77b4';
+    let timelineSamples = []; // { tMs, audio, video } relative to session start
+    let timelineDrops = [];   // { tMs, mediaType, cum } one entry per dropped packet
+    let dropCum = { audio: 0, video: 0 }; // running session totals of dropped packets
+    let timelineStartMs = -1; // Date.now() when start was pressed
+    let timelineYMax = 1;     // max(maxInflightVideo, maxInflightAudio)
+    let timelineAnimFrame = null;
+
+    function startTimeline() {
+        // Clear and restart on every Start press
+        timelineSamples = [];
+        timelineDrops = [];
+        dropCum = { audio: 0, video: 0 };
+        timelineStartMs = Date.now();
+        const maxV = parseInt(document.getElementById('maxInflightVideoRequests').value) || 0;
+        const maxA = parseInt(document.getElementById('maxInflightAudioRequests').value) || 0;
+        timelineYMax = Math.max(maxV, maxA, 1);
+        if (timelineAnimFrame === null) {
+            timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        }
+    }
+
+    function stopTimeline() {
+        if (timelineAnimFrame != null) {
+            cancelAnimationFrame(timelineAnimFrame);
+            timelineAnimFrame = null;
+        }
+    }
+
+    function addTimelineSample(audioInflight, videoInflight) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        timelineSamples.push({ tMs: Date.now() - timelineStartMs, audio: audioInflight, video: videoInflight });
+    }
+
+    function addTimelineDrop(mediaType) {
+        if (timelineStartMs < 0) {
+            return;
+        }
+        if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        dropCum[mediaType]++;
+        timelineDrops.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: dropCum[mediaType] });
+    }
+
+    function drawTimelineDrops(ctx, w, h, nowMs, rightYMax) {
+        for (let i = 0; i < timelineDrops.length; i++) {
+            const d = timelineDrops[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - d.tMs) / TIMELINE_WINDOW_MS);
+            // Height encodes the cumulative packet loss for this media type, scaled to the right axis
+            const barH = (d.cum / rightYMax) * h;
+            const barW = 3;
+            ctx.fillStyle = d.mediaType === 'audio' ? TIMELINE_AUDIO_COLOR : TIMELINE_VIDEO_COLOR;
+            ctx.globalAlpha = 0.45;
+            ctx.fillRect(x - barW / 2, h - barH, barW, barH);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    function drawTimelineSeries(ctx, w, h, nowMs, key, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < timelineSamples.length; i++) {
+            const s = timelineSamples[i];
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / timelineYMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    function drawTimeline() {
+        const canvas = document.getElementById('inflightTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Drop samples that scrolled off the left edge
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
+            timelineSamples.shift();
+        }
+        while (timelineDrops.length > 0 && timelineDrops[0].tMs < oldestVisible) {
+            timelineDrops.shift();
+        }
+
+        // Right axis scale: 0 .. max(audio packet loss, video packet loss)
+        const rightYMax = Math.max(dropCum.audio, dropCum.video, 1);
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.fillText(timelineYMax.toString(), 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0', 2, h - 2);
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-60s', 2, h - 12);
+
+        // Right axis labels (packet loss). Drawn slightly inset from the right edge.
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('loss ' + rightYMax, w - 2, 2);
+
+        // Packet-loss bars (one per dropped packet, height = cumulative loss for its media type)
+        drawTimelineDrops(ctx, w, h, nowMs, rightYMax);
+
+        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR);
+        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR);
+
+        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
+
+    // Read & parse QS data
+    const queryString = window.location.search;
+    console.log("Read querystring: " + queryString);
+    const qsParams = new URLSearchParams(queryString);
+
+    function createWorkers() {
+        // Create a new workers for video / audio frames capture
+        vStreamWorker = new Worker("../../dist/capture/v_capture.js", { type: "module" });
+        aStreamWorker = new Worker("../../dist/capture/a_capture.js", { type: "module" });
+
+        // Create a new workers for video / audio frames encode
+        vEncoderWorker = new Worker("../../dist/encode/v_encoder.js", { type: "module" });
+        aEncoderWorker = new Worker("../../dist/encode/a_encoder.js", { type: "module" });
+
+        // Create send worker
+        muxerSenderWorker = new Worker("../../dist/sender/moq_sender.js", { type: "module" });
+    }
+
+    function clearUI() {
+        document.getElementById('uploadStatsAudioInflight').value = "0";
+        document.getElementById('uploadStatsVideoInflight').value = "0";
+
+        document.getElementById('firstVts').value = "";
+        document.getElementById('firstAts').value = "";
+        document.getElementById('VAdiff').value = "";
+
+        document.getElementById('firstCompVts').value = "";
+        document.getElementById('firstCompAts').value = "";
+        document.getElementById('VACompdiff').value = "";
+
+        document.getElementById('droppedFrames').innerHTML = '';
+
+        statsHelper = {};
+        dropChunksTotals = {};
+    }
+
+    // To update track names
+    namespace.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+    trackName.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+
+    function numToStrWithPad(d, length) {
+        let r = d.toString();
+        while (r.length < length) {
+            r = "0" + r;
+        }
+        return r;
+    }
+
+    async function initUI() {
+        initVersions();
+        initMOQMappingModesUI();
+        initStreamIDUI();
+        initFromQS();
+        initEncodingOptionsUI();
+        initAudioCodecOptionsUI();
+        initAudioBitrateOptionsUI(document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data.codec);
+        await populateVideoSourcesUI();
+        await populateAudioSourcesUI();
+
+        // Init preview
+        const currentVideoDeviceIdIndex = document.getElementById('videoSources').selectedIndex;
+        let currentVideoDeviceId = ""
+        if (currentVideoDeviceIdIndex > 0) {
+            currentVideoDeviceId = document.getElementById("videoSources").options[currentVideoDeviceIdIndex].value;
+        }
+
+        const currentAudioDeviceIdIndex = document.getElementById('audioSources').selectedIndex;
+        let currentAudioDeviceId = ""
+        if (currentVideoDeviceIdIndex > 0) {
+            currentAudioDeviceId = document.getElementById("audioSources").options[currentAudioDeviceIdIndex].value;
+        }
+
+        const currentVideoEncodingIndex = document.getElementById('videoEncodingOptions').selectedIndex < 0 ? 0 : document.getElementById('videoEncodingOptions').selectedIndex;
+        const currentVideoEncodingOptions = document.getElementById("videoEncodingOptions").options[currentVideoEncodingIndex].data;
+
+        restartPreviewUI(currentVideoDeviceId, currentAudioDeviceId, currentVideoEncodingOptions.w, currentVideoEncodingOptions.h);
+    }
+
+    function isSelectedVideoSourceScreen() {
+        const currentVideoDeviceIdIndex = document.getElementById('videoSources').selectedIndex;
+        if (currentVideoDeviceIdIndex > 0 && document.getElementById("videoSources").options[currentVideoDeviceIdIndex].value == "screen") {
+            return true;
+        }
+        return false;
+    }
+
+    function updatePreviewVideoSettingsUI(newWidth, newHeight) {
+        if (document.getElementById('vPreview').srcObject == undefined && document.getElementById('vPreview').srcObject == null) {
+            console.error("Preview NOT active yet, we can NOT update video settings");
+            return;
+        }
+
+        enableUI("processingUpdate");
+
+        const videoConstraints = { height: {min: newHeight, ideal: newHeight}, width: {min: newWidth, ideal: newWidth} };
+        const mediaStream = document.getElementById('vPreview').srcObject;
+        // Update video async
+        const videoTracks = mediaStream.getVideoTracks();
+        if (videoTracks.length > 0) {
+            videoTracks[0].applyConstraints(videoConstraints)
+            .then(() => {
+
+                // Set the resolution of preview to encoder resolution
+                document.getElementById('vPreview').width = newWidth;
+                document.getElementById('vPreview').height = newHeight;
+
+                console.info(`Updated video preview. New settings: ${JSON.stringify(videoTracks[0].getSettings())}`);
+            })
+            .catch((err) => {
+                console.error(`Updating video preview. Err: ${JSON.stringify(err)}`);
+            })
+            .finally(() => {
+                enableUI("readyToPublish");
+            });
+        }
+    }
+
+    function getMedia(screen, constraints) {
+        if (screen) {
+            return navigator.mediaDevices.getDisplayMedia(constraints);
+        } else {
+            return navigator.mediaDevices.getUserMedia(constraints);
+        }
+    }
+
+    function refreshEnableAudioSourceUI() {
+        if (isSelectedVideoSourceScreen()) {
+            document.getElementById('audioSources').disabled = true;
+        } else {
+            document.getElementById('audioSources').disabled = true;
+        }
+    }
+
+    function getAudioTrackSettings() {
+        let ret = undefined
+
+        // Assuming 1 track
+        document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
+            if (track.kind == 'audio') {
+                ret = track.getSettings();
+            }
+        });
+
+        return ret;
+    }
+
+    function restartPreviewUI(newVideoDeviceId, newAudioDeviceId, newWidth, newHeight) {
+        enableUI("processingUpdate");
+
+        // Remove old stream
+        if (document.getElementById('vPreview').srcObject != undefined && document.getElementById('vPreview').srcObject != null) {
+            const mediaStream = document.getElementById('vPreview').srcObject;
+            const videoTracks = mediaStream.getVideoTracks();
+            videoTracks.forEach(function(vTrack) {
+                vTrack.stop();
+            });
+            const audioTracks = mediaStream.getAudioTracks();
+            audioTracks.forEach(function(aTrack) {
+                aTrack.stop();
+            });
+            document.getElementById('vPreview').srcObject = null;
+        }
+
+        const shareScreen = (newVideoDeviceId === 'screen');
+        const constraints = { };
+        const videoConstraints = { };
+        const audioConstraints = { };
+        if (shareScreen) {
+            constraints.audio = true;
+        } else {
+            if (newVideoDeviceId != "") {
+                videoConstraints.deviceId = { exact: newVideoDeviceId };
+            }
+            if (newAudioDeviceId != "") {
+                audioConstraints.deviceId = { exact: newAudioDeviceId };
+            }
+        }
+        refreshEnableAudioSourceUI();
+
+        if (newHeight > 0) {
+            videoConstraints.height = {ideal: newHeight};
+        }
+        if (newWidth > 0) {
+            videoConstraints.width = {ideal: newWidth};
+        }
+
+        constraints.video = videoConstraints;
+        constraints.audio = audioConstraints;
+
+        // Start new stream
+        getMedia(shareScreen, constraints)
+        .then(mediaStream => {
+            // Connect the stream to the preview video element.
+            document.getElementById('vPreview').srcObject = mediaStream;
+
+            return mediaStream;
+        })
+        .then(mediaStream => {
+            let videoNumTracks = 0;
+            let audioNumTracks = 0;
+            document.getElementById('vPreview').srcObject.getTracks().forEach(function(track) {
+                if (track.kind == 'video') {
+                    console.info(`Started preview: video: ${newVideoDeviceId} - ${newWidth}x${newHeight} From track: ${JSON.stringify(track.getSettings())}`);
+                    videoNumTracks++;
+                }
+                else if (track.kind == 'audio') {
+                    console.info(`Started preview: Audio: ${newAudioDeviceId} - From track: ${JSON.stringify(track.getSettings())}`);
+                    audioNumTracks++
+                }
+            });
+            if (videoNumTracks != 1 || audioNumTracks != 1) {
+                throw new Error(`"We need just 1 video track and 1 audio track for this to work we got: videoTracks: ${videoNumTracks} and audioTracks: ${audioNumTracks}`);
+            }
+        })
+        .catch(err => {
+            const msg = `Started video preview. Err: ${err}`
+            console.error(msg);
+            alert(msg);
+        })
+        .finally(() => {
+            enableUI("readyToPublish");
+        });
+    }
+
+    function initFromQS() {
+        const qsHost = qsParams.get('host')
+        if (qsHost != undefined) {
+            document.getElementById("wtServerUrl").value = qsHost;
+        }
+        const verbose_logging = qsParams.get('verbose')
+        if (verbose_logging != undefined && verbose_logging === "1") {
+            VERBOSE = true
+        }
+        const local = qsParams.get('local')
+        if (local != undefined) {
+            IS_LOCALHOST = true
+        }
+    }
+
+    function updateEncodingAudioLatencyUI(latencyMs) {
+        if (latencyMs != undefined) {
+            document.getElementById("encodedAudioLatencyMs").value = latencyMs;
+        }
+    }
+
+    function updateEncodingVideoLatencyUI(latencyMs) {
+        if (latencyMs != undefined) {
+            document.getElementById("encodedVideoLatencyMs").value = latencyMs;
+        }
+    }
+
+    function updateEncodedAudioTSUI(audioTS, compensatedAudioTS) {
+        if (audioTS != undefined) {
+            document.getElementById("encodedAudioTs").value = (audioTS / 1000.0).toFixed(0);
+        }
+        if (compensatedAudioTS != undefined) {
+            document.getElementById("encodedAudioCompensatedTs").value = (compensatedAudioTS / 1000.0).toFixed(0);
+        }
+        document.getElementById("encodedVADelayCompensatedTS").value = parseInt(document.getElementById("encodedVideoCompensatedTs").value) - parseInt(document.getElementById("encodedAudioCompensatedTs").value);
+    }
+
+    function updateEncodedVideoTSUI(videoTS, compensatedVideoTS) {
+        if (videoTS != undefined) {
+            document.getElementById("encodedVideoTs").value = (videoTS / 1000.0).toFixed(0);
+        }
+        if (compensatedVideoTS != undefined) {
+            document.getElementById("encodedVideoCompensatedTs").value = (compensatedVideoTS / 1000.0).toFixed(0);
+        }
+        document.getElementById("encodedVADelayCompensatedTS").value = parseInt(document.getElementById("encodedVideoCompensatedTs").value) - parseInt(document.getElementById("encodedAudioCompensatedTs").value);
+    }
+
+    function initAudioBitrateOptionsUI(selectedCodec) {
+        // Remove old elements
+        document.getElementById("audioEncodingBitrateBpsOptions").length = 0;
+        const op = document.getElementById("audioEncodingBitrateBpsOptions");
+        let isSelected = true;
+        if (selectedCodec == "opus") {
+            addAudioCodecBitrateOptionUI(op, "32000", 32000, isSelected);
+            isSelected = false;
+        }
+        // AAC supported 96000, 128000, 160000, 192000
+        addAudioCodecBitrateOptionUI(op, "96000", 96000, isSelected);
+        isSelected = false;
+        addAudioCodecBitrateOptionUI(op, "128000", 128000);
+        addAudioCodecBitrateOptionUI(op, "160000", 160000);
+        addAudioCodecBitrateOptionUI(op, "192000", 192000);
+    }
+
+    function addAudioCodecBitrateOptionUI(optionsElement, desc, bitrateBps, isSelected) {
+        const o = document.createElement("option")
+        o.text = desc
+        o.data = {bitrate: bitrateBps}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function initAudioCodecOptionsUI() {
+        const op = document.getElementById("audioCodecOptions");
+        addAudioCodecOptionUI(op, "Opus", "opus", true);
+        addAudioCodecOptionUI(op, "AAC-LC", "mp4a.40.02");
+    }
+
+    function initEncodingOptionsUI() {
+        const op = document.getElementById("videoEncodingOptions");
+
+        addVideoEncodingOptionUI(op, 320, 180, 15, 12); // 1.2
+        addVideoEncodingOptionUI(op, 320, 180, 30, 13); // 1.3
+        addVideoEncodingOptionUI(op, 854, 480, 15, 30); // 3
+        addVideoEncodingOptionUI(op, 854, 480, 30, 31, true); // 3.1
+        addVideoEncodingOptionUI(op, 1280, 720, 15, 31); // 3.1
+        addVideoEncodingOptionUI(op, 1280, 720, 30, 31); // 3.1
+        addVideoEncodingOptionUI(op, 1920, 1080, 15, 40); // 4
+        addVideoEncodingOptionUI(op, 1920, 1080, 30, 40); // 4
+    }
+
+    function addVideoEncodingOptionUI(optionsElement, width, height, fps, level, isSelected) {
+        const o = document.createElement("option")
+        o.text = `${width}x${height}@${fps}`
+        o.data = {w: width, h: height, fps: fps, level: level}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function addAudioCodecOptionUI(optionsElement, codecDesc, codecStr, isSelected) {
+        const o = document.createElement("option")
+        o.text = codecDesc
+        o.data = {codec: codecStr}
+        if (isSelected) {
+            o.selected = true
+        }
+        optionsElement.options.add(o, 1);
+    }
+
+    function updateFullTrackNameUI() {
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, true))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, false))}`
+
+        document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
+    }
+
+    function initVersions() {
+        document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION
+        document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
+    }
+
+    function initMOQMappingModesUI(selectElement) {
+        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "video");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "audio");
+    }
+
+    function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
+        // Multi object streams (track per stream)
+        const optionObjStream = document.createElement('option');
+        optionObjStream.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+        if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
+            optionObjStream.selected = true;
+        }
+        if (mediaType === "video") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per GOP (AKA: GOP per stream)"));
+            selectElement.appendChild(optionObjStream);
+        } else if (mediaType === "audio") {
+            optionObjStream.appendChild(document.createTextNode("Subgroup per frame"));
+            selectElement.appendChild(optionObjStream);
+
+            // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
+            // Stream per datagram
+            const optionObjTrack = document.createElement('option');
+            optionObjTrack.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
+            if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+                optionObjStream.selected = true;
+            }
+            optionObjTrack.appendChild(document.createTextNode("Object per datagram (AKA: Frame per datagram)"));
+            selectElement.appendChild(optionObjTrack);
+        }
+    }
+
+    function initStreamIDUI() {
+        const d = new Date();
+        const sStr = d.getUTCFullYear().toString() + numToStrWithPad(d.getUTCMonth() + 1, 2) + numToStrWithPad(d.getUTCDate(), 2) + numToStrWithPad(d.getUTCHours(), 2) + numToStrWithPad(d.getUTCMinutes(), 2) + numToStrWithPad(d.getUTCSeconds(), 2);
+        document.getElementById("trackName").value = sStr;
+
+        updateFullTrackNameUI();
+    }
+
+    function addMediaSource(select, deviceId, label, count, isVideo) {
+        const option = document.createElement('option');
+        option.value = deviceId;
+        if (count === 1) option.selected = true;
+        const textNode = document.createTextNode(label);
+        option.appendChild(textNode);
+        select.appendChild(option);
+        const mediaType = (isVideo) ? "Video" : "Audio";
+        console.log(`${mediaType} input device added: ${label}(${option.value})`);
+    }
+
+    async function populateVideoSourcesUI() {
+        const select = document.getElementById('videoSources');
+        select.innerHTML = '';
+        let count = 0;
+        // This requires HTTPS or should be served from localhost
+        await navigator.mediaDevices
+            .enumerateDevices()
+            .then(devices => {
+                devices.forEach(mediaDevice => {
+                    if (mediaDevice.kind === 'videoinput') {
+                        if (mediaDevice.deviceId != "") {
+                            count++;
+                            const label = mediaDevice.label || `Camera ${count}`;
+                            addMediaSource(select, mediaDevice.deviceId, label, count, true);
+                        }
+                    }
+                })
+            }).catch(err => {
+                console.error(`Showing video sources. Err: ${err.name}-${err.message}`);
+            });
+
+        addMediaSource(select, 'screen', 'Screen', ++count, true);
+    }
+
+    async function populateAudioSourcesUI() {
+        const select = document.getElementById('audioSources');
+        select.innerHTML = '';
+        let count = 0;
+        // This does NOT work if you run chrome locally (test mode)
+        await navigator.mediaDevices
+            .enumerateDevices()
+            .then(devices => {
+                devices.forEach(mediaDevice => {
+                    if (mediaDevice.kind === 'audioinput') {
+                        if (mediaDevice.deviceId != "") {
+                            count++;
+                            const label = mediaDevice.label || `Microphone ${count}`;
+                            addMediaSource(select, mediaDevice.deviceId, label, count, false);
+                        }
+                    }
+                })
+            }).catch(err => {
+                console.error(`Showing audio sources. Err: ${err.name}-${err.message}`);
+            });
+    }
+
+    function onVideoSourceChanged(newVideoDeviceId) {
+        // Get selected audio device
+        const audioSourceSelectedIndex = document.getElementById('audioSources').selectedIndex;
+        let selectedAudioSourceDeviceId = '';
+        if (audioSourceSelectedIndex >= 0) {
+            selectedAudioSourceDeviceId = document.getElementById('audioSources').options[audioSourceSelectedIndex].value;
+        }
+
+        // Get new selected video device
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+
+        // Restart preview with new selection
+        restartPreviewUI(newVideoDeviceId, selectedAudioSourceDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
+    }
+
+    function onAudioSourceChanged(newAudioDeviceId) {
+        // Get selected video device
+        const videoSourceSelectedIndex = document.getElementById('videoSources').selectedIndex;
+        let selectedVideoSourceDeviceId = '';
+        if (videoSourceSelectedIndex >= 0) {
+            selectedVideoSourceDeviceId = document.getElementById('videoSources').options[videoSourceSelectedIndex].value;
+        }
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+
+        // Restart preview with new selection
+        restartPreviewUI(selectedVideoSourceDeviceId, newAudioDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
+    }
+
+    function onVideoEncodingsSettingsChanged(newData) {
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+
+        updatePreviewVideoSettingsUI(newData.w, newData.h);
+    }
+
+    function onAudioCodecChanged(newData) {
+        initAudioBitrateOptionsUI(newData.codec);
+    }
+
+    function enableUI(mode) {
+        if ( mode == "readyToPublish") {
+            document.getElementById("btnStart").disabled = false
+            document.getElementById("btnStop").disabled = true
+            document.getElementById("videoEncodingOptions").disabled = false
+            document.getElementById("videoSources").disabled = false
+            document.getElementById("audioSources").disabled = isSelectedVideoSourceScreen();
+        } else if (mode == "publishing") {
+            document.getElementById("btnStart").disabled = true
+            document.getElementById("btnStop").disabled = false
+            document.getElementById("videoEncodingOptions").disabled = true
+            document.getElementById("videoSources").disabled = true
+            document.getElementById("audioSources").disabled = true
+        } else if (mode == "processingUpdate") {
+            // Processing preview update
+            document.getElementById("btnStart").disabled = true
+            document.getElementById("btnStop").disabled = true
+            document.getElementById("videoEncodingOptions").disabled = true
+            document.getElementById("videoSources").disabled = true
+            document.getElementById("audioSources").disabled = true
+        } else {
+            console.error(`enableUI unknown mode ${mode}`);
+        }
+    }
+
+    function stop() {
+        enableUI("readyToPublish");
+
+        stopTimeline();
+
+        document.getElementById("oldTrackName").value = document.getElementById("trackName").value;
+        initStreamIDUI();
+
+        const stopMsg = { type: "stop" };
+        aStreamWorker.postMessage(stopMsg);
+        vStreamWorker.postMessage(stopMsg);
+
+        vEncoderWorker.postMessage(stopMsg);
+        aEncoderWorker.postMessage(stopMsg);
+
+        muxerSenderWorker.postMessage(stopMsg);
+    }
+
+    function processWorkerMessage(e) {
+        // LOGGING
+        if (e.data.type === "debug") {
+            if (VERBOSE) {
+                // logging debug
+                console.debug(e.data.data);
+            }
+        } else if (e.data.type === "info") {
+            // logging info
+            console.log(e.data.data);
+        } else if (e.data.type === "error") {
+            // logging error
+            console.error(e.data.data);
+        } else if (e.data.type === "warning") {
+            // logging warning
+            console.warn(e.data.data);
+
+            // ENCODING
+        } else if (e.data.type === "vframe") {
+            const vFrame = e.data.data;
+            // Anchor the shared capture clock on the first frame of either stream.
+            ensureCaptureAnchor(vFrame.timestamp, e.data.clkms);
+            if (firstVideoFrame) {
+                firstVideoFrame = false;
+                updateFirstTS("video", vFrame.timestamp, compensatedTsFor(vFrame.timestamp));
+            }
+
+            // Encode video frame
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame }, [ vFrame ]);
+        } else if (e.data.type === "aframe") {
+            const aFrame = e.data.data;
+            // Anchor the shared capture clock on the first frame of either stream.
+            ensureCaptureAnchor(aFrame.timestamp, e.data.clkms);
+            if (firstAudioFrame) {
+                firstAudioFrame = false;
+                updateFirstTS("audio", aFrame.timestamp, compensatedTsFor(aFrame.timestamp));
+            }
+            // Encode audio frame. AudioData is not transferable, so postMessage structured-clones
+            // it (the worker references the same backing samples). Close our handle right after to
+            // avoid leaking one AudioData per captured audio frame.
+            aEncoderWorker.postMessage({ type: "aframe", aframe: aFrame });
+            aFrame.close();
+
+            // DROPPED
+        } else if (e.data.type === "dropped") {
+            updateDroppedFrame(e.data.data);
+            // Paint a packet-loss bar on the timeline (chunks only, seqId >= 0)
+            if (e.data.data && e.data.data.seqId >= 0) {
+                addTimelineDrop(e.data.data.mediaType);
+            }
+
+            // CHUNKS
+        } else if (e.data.type === "vchunk") {
+            const chunk = e.data.chunk;
+            const metadata = e.data.metadata;
+            const seqId = e.data.seqId;
+            const timebase = e.data.timebase;
+            // Reconstruct timing from the chunk timestamp + the shared anchor (no lookup table).
+            const compensatedTs = compensatedTsFor(chunk.timestamp);
+            const firstFrameClkms = captureClkmsFor(chunk.timestamp);
+            const estimatedDuration = lastVideoChunkTsUs === undefined ? -1 : chunk.timestamp - lastVideoChunkTsUs;
+            lastVideoChunkTsUs = chunk.timestamp;
+
+            updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
+            updateEncodingVideoLatencyUI(Date.now() - firstFrameClkms);
+
+            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", firstFrameClkms, compensatedTs, estimatedDuration, seqId: seqId, chunk: chunk, metadata, timebase });
+        } else if (e.data.type === "achunk") {
+            const chunk = e.data.chunk;
+            const metadata = e.data.metadata;
+            const seqId = e.data.seqId;
+            const timebase = e.data.timebase;
+            const sampleFreq = e.data.sampleFreq;
+            const numChannels = e.data.numChannels;
+            const codec = e.data.codec;
+            // Reconstruct timing from the chunk timestamp + the shared anchor (no lookup table).
+            const compensatedTs = compensatedTsFor(chunk.timestamp);
+            const firstFrameClkms = captureClkmsFor(chunk.timestamp);
+
+            updateEncodedAudioTSUI(chunk.timestamp, compensatedTs);
+            updateEncodingAudioLatencyUI(Date.now() - firstFrameClkms);
+
+            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", firstFrameClkms, compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
+            // CHUNKS STATS
+        } else if (e.data.type === "sendstats") {
+            updateUploadStats(e.data.inFlightReq);
+
+            // UNKNOWN
+        } else {
+            console.error("unknown message: " + e.data);
+        }
+    }
+
+    function updateUploadStats(inFlightReq) {
+        document.getElementById('uploadStatsAudioInflight').value = `${inFlightReq["audio"]} (${returnMax('inFlightAudioReqNum', inFlightReq["audio"])})`;
+        document.getElementById('uploadStatsVideoInflight').value = `${inFlightReq["video"]} (${returnMax('inFlightVideoReqNum', inFlightReq["video"])})`;
+
+        addTimelineSample(inFlightReq["audio"], inFlightReq["video"]);
+    }
+
+    function updateDroppedFrame(droppedFrameData) {
+        const clkms = droppedFrameData.clkms;
+        const ts = droppedFrameData.ts;
+        const seqId = droppedFrameData.seqId;
+        const msg = droppedFrameData.msg;
+        const mediaType = droppedFrameData.mediaType;
+
+        // Always keep the running totals up to date, regardless of UI logging
+        if (seqId >= 0) {
+            // Is a chunk
+            if (!(mediaType in dropChunksTotals)) {
+                dropChunksTotals[mediaType] = 1;
+            } else {
+                dropChunksTotals[mediaType]++;
+            }
+            if (mediaType == "video") {
+                document.getElementById('totalVideoChunksDropped').value = dropChunksTotals[mediaType]
+            } else if (mediaType == "audio") {
+                document.getElementById('totalAudioChunksDropped').value = dropChunksTotals[mediaType]
+            }
+        }
+
+        // Per-item list logging can be CPU intense, so gate it behind the checkbox
+        if (!document.getElementById('chkLogDroppedFrames').checked) {
+            return
+        }
+        const list = document.getElementById('droppedFrames');
+
+        const str = new Date(clkms).toISOString() + " (" + seqId + ")(" + ts + ") " + msg;
+
+        const entry = document.createElement('li');
+        entry.appendChild(document.createTextNode(str));
+        list.appendChild(entry);
+    }
+
+    function updateFirstTS(type, ts, compensatedTs) {
+        const tsms = (ts / 1000).toFixed(3);
+        const compensatedTsms = (compensatedTs / 1000).toFixed(3);
+
+        if (type === "video") {
+            document.getElementById('firstVts').value = tsms;
+            document.getElementById('firstCompVts').value = compensatedTsms;
+        } else if (type === "audio") {
+            document.getElementById('firstAts').value = tsms;
+            document.getElementById('firstCompAts').value = compensatedTsms;
+        }
+        const diffms = document.getElementById('firstVts').value - document.getElementById('firstAts').value
+        if (Number.isFinite(diffms / 1000)) {
+            document.getElementById('VAdiff').value = (diffms / 1000).toFixed(3);
+        }
+        const diffCompms = document.getElementById('firstCompVts').value - document.getElementById('firstCompAts').value
+        if (Number.isFinite(diffCompms)) {
+            document.getElementById('VACompdiff').value = diffCompms.toFixed(3);
+        }
+    }
+
+    async function UIUseToken(use) {
+        document.getElementById('authInfo').disabled = !use
+    }
+
+    async function start() {
+        anchorTsUs = undefined;
+        anchorWallMs = undefined;
+        lastVideoChunkTsUs = undefined;
+        firstVideoFrame = true;
+        firstAudioFrame = true;
+
+        enableUI("publishing");
+
+        clearUI();
+
+        startTimeline();
+
+        createWorkers();
+        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
+        // Load video encoding settings
+        videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
+        videoEncoderConfig.encoderConfig.height = videoOptionsSelectedElementData.h;
+        videoEncoderConfig.encoderConfig.framerate = videoOptionsSelectedElementData.fps;
+        videoEncoderConfig.encoderConfig.codec = GetVideoCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
+        videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
+        videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
+
+        // Load audio encoding settings
+        const audioOptionsSelectedElementData = document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data;
+        audioEncoderConfig.encoderConfig.codec = audioOptionsSelectedElementData.codec;
+        if (audioEncoderConfig.encoderConfig.codec != "opus") {
+            audioEncoderConfig.encoderConfig.aac = { format: "aac" }
+        } else {
+            audioEncoderConfig.encoderConfig.opus = { // See https://www.w3.org/TR/webcodecs-opus-codec-registration/
+                frameDuration: 10000 // In ns. Lower latency than default = 20000
+            }
+        }
+        const sourceAudioSetting = getAudioTrackSettings();
+        audioEncoderConfig.encoderConfig.sampleRate = sourceAudioSetting.sampleRate; // Get from source
+        audioEncoderConfig.encoderConfig.numberOfChannels = sourceAudioSetting.channelCount; // Get from source
+        const audioBitrate = document.getElementById('audioEncodingBitrateBpsOptions').options[document.getElementById('audioEncodingBitrateBpsOptions').selectedIndex].data.bitrate;
+        audioEncoderConfig.encoderConfig.bitrate = audioBitrate;
+
+        // Get a MediaStream from preview
+        if (document.getElementById('vPreview').srcObject == undefined || document.getElementById('vPreview').srcObject == null) {
+            console.error("Preview is not set, we can not start a publish session");
+            return;
+        }
+
+        const mediaStream = document.getElementById('vPreview').srcObject;
+        if (mediaStream.getVideoTracks().length <= 0) {
+            console.error("Publish session can not be started without video tracks in preview");
+            return;
+        }
+        if (mediaStream.getAudioTracks().length <= 0) {
+            console.error("Publish session can not be started without audio tracks in preview");
+            return;
+        }
+
+        // Print messages from the worker in the console
+        vStreamWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        aStreamWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        vEncoderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        aEncoderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+        muxerSenderWorker.addEventListener('message', function (e) {
+            processWorkerMessage(e);
+        });
+
+        // Create a MediaStreamTrackProcessor, which exposes frames from the track
+        // as a ReadableStream of VideoFrames.
+        const vTrack = mediaStream.getVideoTracks()[0];
+        const vProcessor = new MediaStreamTrackProcessor(vTrack);
+        const vFrameStream = vProcessor.readable;
+
+        const aTrack = mediaStream.getAudioTracks()[0];
+        const aProcessor = new MediaStreamTrackProcessor(aTrack);
+        const aFrameStream = aProcessor.readable;
+
+        // Initialize encoders
+        vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery });
+        aEncoderWorker.postMessage({ type: "aencoderini", encoderConfig: audioEncoderConfig.encoderConfig, encoderMaxQueueSize: audioEncoderConfig.encoderMaxQueueSize });
+
+        // Transport
+        if (IS_LOCALHOST) {
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`;
+            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)
+        }
+
+        muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked
+
+        // Get url data
+        muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+
+        //Get max Inflight requests & auth info
+        muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
+        muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
+        muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
+        muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
+        if (document.getElementById('authInfo').disabled) {
+            muxerSenderConfig.moqTracks["video"].authInfo = ""
+        } else {
+            muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
+        }
+        muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
+        muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
+        muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
+        muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+        muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
+        if (document.getElementById('authInfo').disabled) {
+            muxerSenderConfig.moqTracks["audio"].authInfo = ""
+        } else {
+            muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
+        }
+        // Initialize muxer - sender
+        muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
+
+        // Transfer the readable stream to the worker.
+        vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
+        aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);
+    }
+
+    // Add listeners from HTML
+    window.addEventListener("load", (event) => {initUI();});
+    document.getElementById('btnStart').addEventListener("click", (event) => {start();});
+    document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+
+    document.getElementById('videoSources').addEventListener("change", (event) => {onVideoSourceChanged(event.target.options[event.target.selectedIndex].value);});
+    document.getElementById('audioSources').addEventListener("change", (event) => {onAudioSourceChanged(event.target.options[event.target.selectedIndex].value);});
+
+    document.getElementById('videoEncodingOptions').addEventListener("change", (event) => {onVideoEncodingsSettingsChanged(event.target.options[event.target.selectedIndex].data);});
+
+    document.getElementById('audioCodecOptions').addEventListener("change", (event) => {onAudioCodecChanged(event.target.options[event.target.selectedIndex].data);});
+    document.getElementById('useAuthToken').addEventListener("change", (event) => { UIUseToken(event.target.checked) });
+</script>

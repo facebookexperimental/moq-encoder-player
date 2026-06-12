@@ -13,6 +13,97 @@ For the server/relay side we have used [moxygen](https://github.com/facebookexpe
 
 Note: You need to be careful and check that protocol versions implemented by this code and moxygen matches
 
+## TypeScript
+
+The source code is written in [TypeScript](https://www.typescriptlang.org/) and lives under [`src/`](./src). It is compiled with `tsc` into native ES modules under `dist/` (mirroring the `src/` tree). The browser demos under [`demo/`](./demo) load the compiled output from `dist/` directly as ES module Web Workers / AudioWorklets, so **you must build the project before running the demos** (see [Development](#development-build-run-test)).
+
+### Project structure
+
+```
+moq-encoder-player/
+├── demo/                   # Browser demos (HTML). They load the compiled code from dist/
+│   ├── encoder/            #   index.html (full encoder), simple.html
+│   └── player/             #   index.html (full player), simple.html
+├── src/                    # TypeScript source code
+│   ├── index.ts            #   Library entry point (re-exports the reusable modules)
+│   ├── capture/            #   a_capture.ts, v_capture.ts        (Web Workers)
+│   ├── encode/             #   a_encoder.ts, v_encoder.ts        (Web Workers)
+│   ├── decode/             #   audio_decoder.ts, video_decoder.ts (Web Workers)
+│   ├── moq/                #   moq.ts (high-level Moq/Track/Subscription client),
+│   │                       #   moqt.ts (wire protocol), varint.ts, byte_utils.ts, buffer_utils.ts
+│   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
+│   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
+│   ├── packager/           #   mi_packager.ts                    (media-interop packager)
+│   ├── render/             #   audio_circular_buffer.ts, video_render_buffer.ts,
+│   │                       #   source_buffer_worklet.ts          (AudioWorklet)
+│   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, time_buffer_checker.ts, utils.ts,
+│   │   └── media/          #   avcc_parser.ts ...
+│   └── types/              #   globals.d.ts (ambient types for WebTransport / AudioWorklet)
+├── tests/                  # Jest unit tests for the pure utilities
+├── dist/                   # Compiled JavaScript + type declarations (generated, git-ignored)
+├── .github/workflows/      # CI: lint + build + test
+├── tsconfig.json           # TypeScript compiler options
+├── jest.config.js          # Test runner configuration
+├── .eslintrc.js            # ESLint configuration
+├── .prettierrc             # Prettier configuration
+└── package.json            # NPM dependencies, scripts and metadata
+```
+
+## Development (build, run, test)
+
+Requirements: [Node.js](https://nodejs.org/) 18+ (for the toolchain) and [Python 3](https://realpython.com/installing-python/) (for the local dev web server, which sets the cross-origin-isolation headers required by `SharedArrayBuffer`).
+
+Install dependencies once:
+
+```bash
+npm install
+```
+
+### Run locally (development)
+
+```bash
+# 1. Compile TypeScript -> dist/ and start the cross-origin-isolated web server on :8080
+npm run dev
+```
+
+`npm run dev` runs `npm run build` followed by `npm run serve`. While iterating on the TypeScript you can keep the compiler running in watch mode in one terminal and the server in another:
+
+```bash
+npm run build:watch   # terminal 1: re-compile on every change
+npm run serve         # terminal 2: serve the repo on http://localhost:8080
+```
+
+Then open the demos (see [Testing](#testing-encoder-player-served-from-localhost) below for the full flow):
+
+- Encoder: <http://localhost:8080/demo/encoder/?local>
+- Player: <http://localhost:8080/demo/player/?local>
+
+### Build for production
+
+```bash
+npm run build     # type-checks and emits dist/*.js + dist/*.d.ts (declarations)
+```
+
+The contents of `dist/` are everything needed at runtime (the demos and any external consumer import from there). `npm run clean` removes the `dist/` folder.
+
+### Run tests
+
+```bash
+npm test          # run the Jest unit test suite once
+npm run test:watch
+```
+
+### Lint & format
+
+```bash
+npm run lint          # ESLint
+npm run lint:fix
+npm run format        # Prettier (write)
+npm run format:check
+```
+
+CI (GitHub Actions, see [`.github/workflows/main.yml`](./.github/workflows/main.yml)) runs `lint`, `build` and `test` on every push / pull request.
+
 ## Packager
 
 It uses [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
@@ -92,7 +183,7 @@ const muxerSenderConfig = {
     }
 ```
 
-### src_encoder/index.html
+### demo/encoder/index.html
 
 Main encoder webpage and also glues all encoder pieces together
 
@@ -104,51 +195,51 @@ Main encoder webpage and also glues all encoder pieces together
   - Gets the wall clock generation time of 1st frame/sample in the chunk
   - Sends the chunk (augmented with wall clock, seqId, and metadata) to the muxer
 
-### utils/TimeBufferChecker
+### src/utils/time_buffer_checker.ts (TimeBufferChecker)
 
 Stores the frames timestamps and the wall clock generation time from the raw generated frames. That allows us keep track of each frame / chunk creation time (wall clock)
 
-### capture/v_capture.js
+### src/capture/v_capture.ts
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that waits for the next RGB or YUV video frame from capture device, augments it adding wallclock, and sends it via post message to video encoder
 
-### capture/a_capture.js
+### src/capture/a_capture.ts
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Receives the audio PCM frame (few ms, ~10ms to 25ms of audio samples) from capture device, augments it adding wallclock, and finally send it (doing copy) via post message to audio encoder
 
-### encode/v_encoder.js
+### src/encode/v_encoder.ts
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Encodes RGB or YUV video frames into encoded video chunks
 
-- Receives the video RGB or YUV frame from `v_capture.js`
+- Receives the video RGB or YUV frame from `v_capture.ts`
 - Adds the video frame to a queue. And it keeps the queue smaller than `encodeQueueSize` (that helps when encoder is overwhelmed)
 - Specifies I frames based on config var `keyframeEvery`
 - It delivers the encoded chunks to the next stage (muxer)
 
 Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a chunk per video frame
 
-### encode/a_encoder.js
+### src/encode/a_encoder.ts
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Encodes PCM audio frames (samples) into encoded audio chunks
 
-- Receives the audio PCM frame from `a_capture.js`
+- Receives the audio PCM frame from `a_capture.ts`
 - Adds the audio frame to a queue. And it keeps the queue smaller than `encodeQueueSize` (that helps when encoder is overwhelmed)
 - It delivers the encoded chunks to the next stage (muxer)
 
 Note: `opus.frameDuration` setting helps keeping encoding latency low
 
-### packager/mi_packager.js
+### src/packager/mi_packager.ts
 
 - Implements [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
-### sender/moq_sender.js
+### src/sender/moq_sender.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.js`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.ts`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
 - Opens a WebTransport session against the relay
 - Implements MOQT publisher handshake for 2 tracks (opening control stream and announcing track namespace)
 - **Creates a Unidirectional (encoder -> server) QUIC stream per every frame** (video and audio)
-- Receives audio and video chunks from `a_encoder.js` and `v_encoder.js`
+- Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts`
 - It uses sendOrder to establish send priority. We use incremental counter (so new is higher priority than old), and we also increase audio priority over video (by adding an offset)
 - It keeps number of inflight requests always below configured value `maxInFlightRequest`
 
@@ -163,57 +254,64 @@ Fig5: Player block diagram
 
 To keep the audio and video in-sync the following strategy is applied:
 
-- Audio renderer (`audio_circular_buffer.js`) keeps track of last played timestamp (delivered to audio device by `source_buffer_worklet.js`) by using PTS value in the current playing `AudioData` frame and adding the duration of the number of samples delivered. This information is accessible from player page via `timingInfo.renderer.currentAudioTS`, who also adds the hardware latency provided by `AudioContext`.
+- Audio renderer (`audio_circular_buffer.ts`) keeps track of last played timestamp (delivered to audio device by `source_buffer_worklet.ts`) by using PTS value in the current playing `AudioData` frame and adding the duration of the number of samples delivered. This information is accessible from player page via `timingInfo.renderer.currentAudioTS`, who also adds the hardware latency provided by `AudioContext`.
 - Every time we sent new audio samples to audio renderer the video renderer `video_render_buffer` (who contains YUV/RGB frames + timestamps) gets called and:
   - Returns / paints the oldest closest (or equal) frame to current audio ts (`timingInfo.renderer.currentAudioTS`)
   - Discards (frees) all frames older current ts (except the returned one)
 - It is worth saying that `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync. To work around that problem we calculate all the audio GAPs duration `timestampOffset` (by last playedTS - newTS, ideally = 0 if NO gaps), and we compensate the issued PTS by that.
 
-### receiver/moq_demuxer_downloader.js
+### src/receiver/moq_demuxer_downloader.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and extracts video and audio packets (see `mi_packager.js`) from the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) entry point. It is a thin shell that forwards worker messages to the `MoqReceiver` class in `src/receiver/moq/moq_receiver_internals.ts`, mirroring the publisher layout (`src/sender/`).
+
+The MOQT subscriber logic is split in two layers:
+
+- `src/moq/moq.ts` — the high-level, media-free `Moq` client (shared with the publisher). It owns the WebTransport session, the control loop, the SUBSCRIBE handshake (`Moq.subscribe` → `Subscription`), and the incoming stream / datagram receive loops. Received object payloads are routed to the matching `Subscription` by track alias.
+- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and demuxes the received payloads (see `mi_packager.ts`) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline.
+
+It implements MOQT and extracts video and audio packets from the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/):
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
-- Waits for incoming unidirectional (Server -> Player) QUIC streams
+- Waits for incoming unidirectional (Server -> Player) QUIC streams (and datagrams)
 - For every received chunk (QUIC stream) we:
-  - Demuxed it (see `mi_packager.js`)
+  - Demuxed it (see `mi_packager.ts`)
   - Video: Create `EncodedVideoChunk`
     - Could be enhanced by init metadata, wallclock, and seqId
   - Audio: Create `EncodedAudioChunk`
     - Could be enhanced by init metadata, wallclock, and seqId
 
-### utils/jitter_buffer.js
+### src/utils/jitter_buffer.ts
 
 Since we do not have any guarantee that QUIC streams are delivered in order we need to order them before sending them to the decoder. This is the function of the deJitter. We create one instance per track, in this case one for Audio, one for video
 
-- Receives the chunks from `moq_demuxer_downloader.js`
+- Receives the chunks from `moq_demuxer_downloader.ts`
 - Adds them into a sorted list, we sort by ascending `seqID`
 - When list length (in ms is > `bufferSizeMs`) we deliver (remove) the 1st element in the list
 - It also keeps track of delivered `seqID` detecting:
   - Gaps / discontinuities
   - Total QUIC Stream lost (not arrived in time)
 
-### decode/audio_decoder.js
+### src/decode/audio_decoder.ts
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) when it receives and audio chunk it decodes it and it sends the audio PCM samples to the audio renderer.
 `AudioDecoder` does NOT track timestamps on decoded data, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync.
 To work around that problem we calculate all the audio GAPs duration `timestampOffset` and we publish that to allow other elements in the pipeline to have accurate idea of live head position
 
 - Receives audio chunk
-  - If discontinuity detected (reported by jitter_buffer.js) then calculate lost time by:
+  - If discontinuity detected (reported by jitter_buffer.ts) then calculate lost time by:
     - `lostTime = currentChunkTimestamp - lastChunkSentTimestamp;` Where `lastChunkSentTimestamp = lastSentChunk.timestamp + lastSentChunk.duration`
     - `timestampOffset += lostTime`
 - Decode chunk and deliver PCM data
 
-### render/audio_circular_buffer.js
+### src/render/audio_circular_buffer.ts
 
 Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer) and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics) to implement following mechanisms to share data in a "multi thread" environment:
 
-- Circular buffer (`sharedAudiobuffers`): Main buffer used to share audio PCM data from decoder to renderer `source_buffer_worklet.js`
-- State communication (`sharedStates`): Use to share states and data between renderer `source_buffer_worklet.js` and main thread
+- Circular buffer (`sharedAudiobuffers`): Main buffer used to share audio PCM data from decoder to renderer `source_buffer_worklet.ts`
+- State communication (`sharedStates`): Use to share states and data between renderer `source_buffer_worklet.ts` and main thread
 
-### render/source_buffer_worklet.js
+### src/render/source_buffer_worklet.ts
 
 [AudioWorkletProcessor](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), implements an audio source Worklet that sends audio samples to renderer.
 
@@ -222,16 +320,16 @@ Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaS
   - In case the buffer is exhausted (underrun) it will insert silence samples and notify timing according to that.
 - Reports last PTS rendered (this is used to sync video to the audio track, so to keep A/V in sync)
 
-### decode/video_decoder.js
+### src/decode/video_decoder.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), Decodes video chunks and sends the decoded data (YUV or RGB) to the next stage (`video_render_buffer.js`)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), Decodes video chunks and sends the decoded data (YUV or RGB) to the next stage (`video_render_buffer.ts`)
 
 - Initializes video decoder with init segment
 - Sends video chunks to video decoder
   - If it detects a discontinuity drops all video frames until next IDR frame
-- Sends the decoded frame to `video_render_buffer.js`
+- Sends the decoded frame to `video_render_buffer.ts`
 
-### render/video_render_buffer.js
+### src/render/video_render_buffer.ts
 
 Buffer that stores video decoded frames
 
@@ -239,14 +337,7 @@ Buffer that stores video decoded frames
 - Allows the retrieval of video decoded frames via timestamps
   - Automatically drops all video frames that older than the currently requested
 
-### Latency measurement based in video data
-We can activate the option "Activate latency tracker (overlays data on video)" in the encoder (CPU consuming), this options will add the epoch ms clock of the encoder in the video frame as soon as it is received from the camera. It replaces the first video lines with that clock information. It is also encoded in a way that is resilient to video processing / encoding / decoding operations (see `./overlay_processor/overlay_encoder.js` and `./overlay_processor/overlay_decoder.js` in the code)
-
-The player will decode that info from every frame and when it is about to show that frame it will calculate the latency by: `latency_ms = now_in_ms - frame_capture_in_ms`.
-
-Note: This assumes the clocks of the encoder and the decoder are in-sync. Always true if you use same computer to encode and decode
-
-### Legacy latency measurement
+### Latency measurement
 
 - Every audio and video received chunk `timestamp` and `clkms` (wall clock) is added into `latencyAudioChecker` and `latencyVideoChecker` queue (instances of `TimeBufferChecker`)
 - The `renderer.currentAudioTS` (current audio sample rendered) is used to get the closest wall clock time from `audioTimeChecker`. From there we sync video.
@@ -262,7 +353,14 @@ Note: Encoder and Player clock have to be in sync for this metric to be accurate
 git clone git@github.com:facebookexperimental/moq-encoder-player.git
 ```
 
-- Install Python (see this [guide](https://realpython.com/installing-python/))
+- Install [Node.js](https://nodejs.org/) 18+ and [Python](https://realpython.com/installing-python/)
+
+- Install dependencies and build the TypeScript into `dist/`:
+
+```bash
+npm install
+npm run build
+```
 
 - Run local webserver by calling:
 
@@ -270,11 +368,11 @@ git clone git@github.com:facebookexperimental/moq-encoder-player.git
 ./start-http-server-cross-origin-isolated.py
 ```
 
-Note: It is better to run webserver using this script but you can use any webserver you to publish the `.` directory (repo directory)
+Note: It is better to run webserver using this script (or `npm run serve`) but you can use any webserver you like to publish the `.` directory (repo directory). The demos load the compiled code from `dist/`, so remember to (re)run `npm run build` after changing any TypeScript.
 
-- Load encoder webpage, url: http://localhost:8080/src-encoder/?local
+- Load encoder webpage, url: http://localhost:8080/demo/encoder/?local
   - Click "Start"
-- Load player webpage, url: http://localhost:8080/src-player/?local
+- Load player webpage, url: http://localhost:8080/demo/player/?local
   - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
   - Click "Start"
 
@@ -305,7 +403,14 @@ Note: The trick here is that this script will create a self signed certificate f
 git clone git@github.com:facebookexperimental/moq-encoder-player.git
 ```
 
-- Install Python (see this [guide](https://realpython.com/installing-python/))
+- Install [Node.js](https://nodejs.org/) 18+ and [Python](https://realpython.com/installing-python/)
+
+- Install dependencies and build the TypeScript into `dist/`:
+
+```bash
+npm install
+npm run build
+```
 
 - Run local webserver by calling:
 
@@ -315,9 +420,9 @@ git clone git@github.com:facebookexperimental/moq-encoder-player.git
 
 Note: You need to use this script to **run the player** because it adds some needed headers (more info [here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer#security_requirements))
 
-- Load encoder webpage, url: http://localhost:8080/src-encoder/?local
+- Load encoder webpage, url: http://localhost:8080/demo/encoder/?local
   - Click "Start"
-- Load player webpage, url: http://localhost:8080/src-player/?local
+- Load player webpage, url: http://localhost:8080/demo/player/?local
   - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
   - Click "Start"
 
@@ -330,9 +435,6 @@ You should see same UI that is shown in testing section above
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - Accelerate playback if we are over latency budget
-- Fix dropped frames UI on VC player (not properly separated between encoder & player, see TODO in the code)
-- Copy updates from event player to regular one
-  - Better TS logging and video renderer
 - All:
   - Accept B frames (DTS)
 
@@ -340,5 +442,5 @@ You should see same UI that is shown in testing section above
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
 
-TODO: 
+TODO:
 - Check token in all messages, not just when encoder receives SUBSCRIBE
