@@ -136,8 +136,8 @@ export class MoqReceiver {
 
     // Open the transport and perform the MoQ SETUP handshake.
     this.moq = new Moq();
-    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash });
-    await this.moq.setup(MOQ_CURRENT_VERSION);
+    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash, alpnVersion: MOQ_CURRENT_VERSION });
+    await this.moq.setup();
     sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ session established');
 
     // Subscribe to each configured track. Objects are routed to onObject by the

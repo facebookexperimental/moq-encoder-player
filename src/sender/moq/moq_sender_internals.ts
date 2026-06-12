@@ -154,12 +154,9 @@ export class MoqSender {
     // Open the transport and perform the MoQ SETUP handshake. The keep-alive
     // loop (if enabled) is managed by the Moq session itself.
     this.moq = new Moq();
-    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash });
+    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash, alpnVersion: MOQ_CURRENT_VERSION });
     console.log(`${WORKER_PREFIX} WT initiating to ${this.config.urlHostPort}`);
-    await this.moq.setup(
-      MOQ_CURRENT_VERSION,
-      this.config.keepAlivesEveryMs > 0 ? { everyMs: this.config.keepAlivesEveryMs } : undefined,
-    );
+    await this.moq.setup(this.config.keepAlivesEveryMs > 0 ? { everyMs: this.config.keepAlivesEveryMs } : undefined);
     console.log(`${WORKER_PREFIX} MOQ session established`);
 
     // Publish each configured track.

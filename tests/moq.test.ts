@@ -5,8 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Track, Subscription, MoqMapping } from '../src/moq/moq.js';
-import { MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../src/moq/moqt.js';
+import { Track, Subscription, MoqMapping, Moq } from '../src/moq/moq.js';
+import { MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, MOQ_CURRENT_VERSION } from '../src/moq/moqt.js';
 
 const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -45,6 +45,7 @@ describe('Track sequencing', () => {
   it('assigns group/object ids, starting a new group when newGroupOptions is passed', () => {
     const { moq } = fakeMoq({ hangStream: true });
     const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
     const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     const o2 = track.sendObject(new Uint8Array([2]));
     const o3 = track.sendObject(new Uint8Array([3]), { priority: BASE_PRI });
@@ -58,6 +59,7 @@ describe('Track object delivery (datagram)', () => {
   it('writes the object, marks it sent and fires the callback', async () => {
     const { moq, writes } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
+    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
     let cbObj: any = null;
     const obj = track.sendObject(new Uint8Array([1, 2, 3]), { priority: BASE_PRI }, [], (o) => {
       cbObj = o;
@@ -74,6 +76,7 @@ describe('Track queue policy', () => {
     // Subgroup stream creation hangs, so the queue stays full.
     const { moq } = fakeMoq({ hangStream: true });
     const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 2);
+    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
     const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // drains, stalls on stream open
     await flush();
     const o2 = track.sendObject(new Uint8Array([2])); // queued
@@ -94,6 +97,7 @@ describe('Track queue policy', () => {
   it('abort() is a no-op once an object has been sent', async () => {
     const { moq } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
+    track._addSubscriber(1, 1, []); // Forward State 1, so objects are sent
     const obj = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
     await flush();
     expect(obj.getInfo().status).toBe('sent');
@@ -147,5 +151,89 @@ describe('Track subscribers', () => {
     expect(removed).toHaveLength(1);
     expect(track.getInfo().numSubscribers).toBe(1);
     expect(track.subscribers[0].subscriptionRequestId).toBe(8);
+  });
+});
+
+describe('Track forward-state gating', () => {
+  it('drops objects while not forwarding, sends once forwarding (datagram)', async () => {
+    const { moq, writes } = fakeMoq();
+    const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
+
+    // No subscribers yet (Forward State 0) -> dropped, nothing written.
+    const o1 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
+    await flush();
+    expect(o1.getInfo().status).toBe('dropped');
+    expect(writes.length).toBe(0);
+
+    // Relay sets Forward State 1 (modeled as a subscriber entry).
+    track._addSubscriber(7, 1, []);
+    const o2 = track.sendObject(new Uint8Array([2]), { priority: BASE_PRI });
+    await flush();
+    expect(o2.getInfo().status).toBe('sent');
+    expect(writes.length).toBeGreaterThan(0);
+  });
+
+  it('finishes the started group after forwarding stops, then gates the next group (subgroup)', async () => {
+    const { moq } = fakeMoq();
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._addSubscriber(7, 1, []);
+
+    const key = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // start group
+    await flush();
+    expect(key.getInfo().status).toBe('sent');
+
+    // Forwarding stops mid-group; the rest of the already-started group still goes out.
+    track._removeSubscribersByRequestId(7);
+    const delta = track.sendObject(new Uint8Array([2])); // same group (no newGroup)
+    await flush();
+    expect(delta.getInfo().status).toBe('sent');
+
+    // The next group must not start while not forwarding.
+    const nextKey = track.sendObject(new Uint8Array([3]), { priority: BASE_PRI });
+    await flush();
+    expect(nextKey.getInfo().status).toBe('dropped');
+  });
+});
+
+describe('Moq.init ALPN negotiation', () => {
+  // Capture the args passed to the WebTransport constructor.
+  let captured: { url: string; options: any } | null = null;
+  const realWT = (globalThis as any).WebTransport;
+
+  class FakeWebTransport {
+    ready = Promise.resolve();
+    closed = new Promise(() => {}); // never settles; init() attaches a .catch()
+    constructor(url: string, options: any) {
+      captured = { url, options };
+    }
+    async createBidirectionalStream() {
+      return { readable: {}, writable: {} };
+    }
+    close() {}
+  }
+
+  beforeEach(() => {
+    captured = null;
+    (globalThis as any).WebTransport = FakeWebTransport as any;
+  });
+  afterEach(() => {
+    (globalThis as any).WebTransport = realWT;
+  });
+
+  it('offers the default ALPN token (MOQ_CURRENT_VERSION) when none is given', () => {
+    new Moq().init('https://localhost:4433/moq');
+    expect(captured?.options.protocols).toEqual([MOQ_CURRENT_VERSION]);
+  });
+
+  it('offers the caller-supplied ALPN token and the certificate hash', () => {
+    const hash = new Uint8Array([1, 2, 3]);
+    new Moq().init('https://localhost:4433/moq', {
+      alpnVersion: 'moqt-99',
+      serverCertificateHash: hash,
+    });
+    expect(captured?.options.protocols).toEqual(['moqt-99']);
+    expect(captured?.options.serverCertificateHashes).toEqual([
+      { algorithm: 'sha-256', value: hash },
+    ]);
   });
 });

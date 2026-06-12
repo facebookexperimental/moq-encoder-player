@@ -1,4 +1,25 @@
-# `src/utils/moqt.ts` review
+# `src/moq/moqt.ts` review
+
+> **Update (draft-16 upgrade).** The implementation has been upgraded from
+> `draft-ietf-moq-transport-14` to **draft-16**. The version is negotiated by the
+> transport (ALPN token `MOQ_CURRENT_VERSION = "moqt-16"`, offered to WebTransport
+> as `protocols`), not in-band. draft-16 keeps draft-14's single client-initiated
+> **bidirectional control stream** and the **RFC9000 varint** encoding (so
+> `varint.ts` is unchanged), but adopts: ALPN-based version negotiation (no version
+> field in CLIENT_SETUP/SERVER_SETUP); consolidated `REQUEST_OK` (0x7) / `REQUEST_ERROR`
+> (0x5); SUBSCRIBE/PUBLISH carry priority, group order, forward and filter as
+> **Message Parameters**; `SUBSCRIBE_UPDATE`→`REQUEST_UPDATE`; **delta-encoded**
+> Key-Value-Pairs; "extension headers" appended to PUBLISH/SUBSCRIBE_OK; new
+> datagram/subgroup type-bit layouts (no FIRST_OBJECT bit, unlike draft-18); and
+> reduced object statuses (Normal/EndOfGroup/EndOfTrack).
+>
+> Side-effect resolutions of findings below: **#1** (datagram 0x1 collision —
+> normal datagram is now `0x00`, `EXTENSIONS` is bit `0x01`), **#2** (SUBSCRIBE_DONE
+> removed; `0xb` is PUBLISH_DONE only), **#3** (`getDatagramType` rejects
+> STATUS+END_OF_GROUP), **#4** (control messages parsed from a length-bounded
+> buffer). The original draft-14 review is retained below for history.
+
+---
 
 Review of the partial MoQ Transport implementation in `src/utils/moqt.ts`
 (targets `draft-ietf-moq-transport-14`, `MOQ_CURRENT_VERSION = 0xff00000e`).

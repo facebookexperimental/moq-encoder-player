@@ -605,14 +605,14 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initVersions() {
-        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION;
         document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
     function updateFullTrackNameUI() {
         const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, true))}`
         const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), MIgetTrackName(document.getElementById("trackName").value, false))}`
-  
+
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
@@ -661,19 +661,19 @@ LICENSE file in the root directory of this source tree.
 
         // Ini downloaderConfig
         if (IS_LOCALHOST) {
-            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
-            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`;
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
 
         const orignal_ns = document.getElementById('namespace').value;
         const ns_tuples = orignal_ns.split("/");
-        
+
         downloaderConfig.moqTracks["video"].namespace = ns_tuples
         downloaderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
-        
+
         downloaderConfig.moqTracks["audio"].namespace = ns_tuples
         downloaderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
@@ -765,7 +765,7 @@ LICENSE file in the root directory of this source tree.
     function createWorkers() {
         // Create a worker to download chunk
         muxerDownloaderWorker = new Worker("../../dist/receiver/moq_demuxer_downloader.js", {type: "module"});
-        
+
         audioDecoderWorker = new Worker("../../dist/decode/audio_decoder.js", {type: "module"});
         videoDecoderWorker = new Worker("../../dist/decode/video_decoder.js", {type: "module"});
     }
@@ -999,7 +999,7 @@ LICENSE file in the root directory of this source tree.
             if (audioCtx == null && aFrame.sampleRate != undefined && aFrame.sampleRate > 0) {
                 // Initialize the audio when we know sampling freq used in the capture
                 await initializeAudioContext(aFrame.sampleRate);
-            } 
+            }
             // If audioSharedBuffer not initialized and is in start (render) state -> Initialize
             if (audioCtx != null && sourceBufferAudioWorklet != null && audioSharedBuffer === null) {
                 // Playback is 1:1 (no resampling). All target browsers honor the

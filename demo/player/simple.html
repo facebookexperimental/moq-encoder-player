@@ -44,12 +44,12 @@ LICENSE file in the root directory of this source tree.
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MOQ_CURRENT_VERSION } from "../../dist/moq/moqt.js"
     import { MI_PACKAGER_VERSION } from "../../dist/packager/mi_packager.js"
-    
+
     // Main vars
     let VERBOSE = true;
     let IS_LOCALHOST = false;
 
-    const downloaderConfig = {      
+    const downloaderConfig = {
         urlHostPort: '',
         urlPath: '',
 
@@ -75,7 +75,7 @@ LICENSE file in the root directory of this source tree.
     const queryString = window.location.search;
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
-    
+
     function initFromQS() {
         const qsHost = qsParams.get('host')
         if (qsHost != undefined) {
@@ -89,7 +89,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initVersions() {
-        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION;
         document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
@@ -102,11 +102,11 @@ LICENSE file in the root directory of this source tree.
         muxerDownloaderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
-        
+
         // Ini downloaderConfig
         if (IS_LOCALHOST) {
-            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
-            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`;
+            downloaderConfig.certificateHash = await getBinaryFile(fingerprint_filename)
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;

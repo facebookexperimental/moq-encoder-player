@@ -112,7 +112,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function initVersions() {
-        document.getElementById("moqtVersion").innerHTML = "0x" + MOQ_CURRENT_VERSION.toString(16);
+        document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION;
         document.getElementById("moqMediaPackagerVersion").innerHTML = MI_PACKAGER_VERSION;
     }
 
@@ -127,7 +127,7 @@ LICENSE file in the root directory of this source tree.
         const optionObjStream = document.createElement('option');
         optionObjStream.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
         if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
-            optionObjStream.selected = true;        
+            optionObjStream.selected = true;
         }
         optionObjStream.appendChild(document.createTextNode("Subgroup per object (AKA: Stream per object)"));
         selectElement.appendChild(optionObjStream);
@@ -136,7 +136,7 @@ LICENSE file in the root directory of this source tree.
         const optionObjDataGram = document.createElement('option');
         optionObjDataGram.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
         if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
-            optionObjStream.selected = true;        
+            optionObjStream.selected = true;
         }
         optionObjDataGram.appendChild(document.createTextNode("Datagram per object"));
         selectElement.appendChild(optionObjDataGram);
@@ -157,9 +157,9 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
         document.getElementById("btnSend").disabled = true
-        
+
         const stopMsg = { type: "stop" };
-        
+
         muxerSenderWorker.postMessage(stopMsg);
 
         msgSeqId = 0
@@ -185,7 +185,7 @@ LICENSE file in the root directory of this source tree.
             // DROPPED
         } else if (e.data.type === "dropped") { // DROPPED
             console.warn("Dropped frame" + JSON.stringify(e.data));
-            
+
             // OTHER
         } else {
             console.info("msg " + JSON.stringify(e.data));
@@ -209,8 +209,8 @@ LICENSE file in the root directory of this source tree.
 
         // Transport
         if (IS_LOCALHOST) {
-            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`; 
-            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)            
+            const fingerprint_filename = `${location.origin}/certs/certificate_fingerprint.hex`;
+            muxerSenderConfig.certificateHash = await getBinaryFile(fingerprint_filename)
         }
 
         muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked
@@ -226,7 +226,7 @@ LICENSE file in the root directory of this source tree.
             muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
         }
         muxerSenderConfig.moqTracks["data"].newSubgroupEvery = parseInt(document.getElementById('moqNewSubgroup').value);
-        
+
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
     }

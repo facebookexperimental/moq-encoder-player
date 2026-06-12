@@ -11,8 +11,10 @@ LICENSE file in the root directory of this source tree.
 // ../receiver/moq/.
 //
 //   const moq = new Moq();
-//   moq.init(urlHostPort, { serverCertificateHash });   // sync, starts connecting
-//   await moq.setup(MOQ_CURRENT_VERSION);                // CLIENT/SERVER_SETUP
+//   moq.init(urlHostPort, { serverCertificateHash, alpnVersion });   // sync, starts connecting
+//   await moq.setup();                                              // CLIENT/SERVER_SETUP
+//   // The MOQT version is negotiated by the transport via ALPN /
+//   // WT-Available-Protocols (draft-16), so setup() carries no version.
 //
 //   // Publish:
 //   const track = await moq.addTrack(ns, name, maxInFlight, auth, mapping);
@@ -38,7 +40,7 @@ import {
   moqSendSubscribe,
   moqSendUnSubscribe,
   moqSendSubscribeOk,
-  moqSendSubscribeError,
+  moqSendRequestError,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
@@ -50,26 +52,27 @@ import {
   moqDecodeDatagramType,
   getAuthInfofromParameters,
   getTrackFullName,
-  MOQ_CURRENT_VERSION,
   MOQ_MESSAGE_SERVER_SETUP,
   MOQ_MESSAGE_PUBLISH_OK,
-  MOQ_MESSAGE_PUBLISH_ERROR,
+  MOQ_MESSAGE_PUBLISH_DONE,
   MOQ_MESSAGE_MAX_REQUEST_ID,
   MOQ_MESSAGE_SUBSCRIBE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
-  MOQ_MESSAGE_SUBSCRIBE_ERROR,
-  MOQ_MESSAGE_SUBSCRIBE_DONE,
-  MOQ_MESSAGE_SUBSCRIBE_UPDATE,
+  MOQ_MESSAGE_REQUEST_OK,
+  MOQ_MESSAGE_REQUEST_ERROR,
+  MOQ_MESSAGE_REQUEST_UPDATE,
   MOQ_MESSAGE_UNSUBSCRIBE,
+  MOQ_PARAMETER_FORWARD,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP,
-  MOQ_OBJ_STATUS_END_OF_SUBGROUP,
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
   MOQ_SUBSCRIPTION_ERROR_INTERNAL,
   MOQ_STATUS_TRACK_ENDED,
+  MOQ_FORWARD_TRUE,
   type MoqtState,
   type KvPair,
   type ObjectHeader,
+  MOQ_ALPN_DRAFT16_VERSION,
 } from './moqt.js';
 
 const LOG_PREFIX = '[MOQ]';
@@ -118,7 +121,13 @@ export interface TrackInfo {
 }
 
 export interface MoqInitOptions {
+  // SHA-256 hash of the server certificate, for WebTransport `serverCertificateHashes`.
   serverCertificateHash?: Uint8Array | null;
+  // MOQT ALPN token (e.g. "moqt-16"). draft-16 negotiates the version via the
+  // transport (ALPN over native QUIC, WT-Available-Protocols over WebTransport),
+  // so this is offered to WebTransport as `protocols` rather than sent in SETUP.
+  // Optional; defaults to MOQ_ALPN_DRAFT16_VERSION when omitted.
+  alpnVersion?: string;
 }
 
 /**
@@ -229,6 +238,9 @@ export class Track {
   private queue: ObjData[] = [];
   private draining = false;
   private closed = false;
+  // Whether the current group is being written to the wire. Set at each new
+  // group from the forward state; see sendObject for the gating rationale.
+  private sendingGroup = false;
 
   private firstObjectSent = false;
   private currentGroupSeq = 0;
@@ -268,8 +280,9 @@ export class Track {
    * to the current group. `extensionHeaders` are MoQ object extension headers
    * (e.g. MoQMI media metadata). `callback` fires once the object is written.
    *
-   * Returns an `ObjData` handle. When the pending queue is already at
-   * `maxInFlightRequests`, the object is dropped (its status is `dropped`).
+   * Returns an `ObjData` handle. Objects are dropped (status `dropped`) when the
+   * subscription is not being forwarded (Forward State 0 / no subscriber), or
+   * when the pending queue is already at `maxInFlightRequests`.
    */
   sendObject(
     data: BufferSource | undefined,
@@ -280,6 +293,28 @@ export class Track {
     if (this.closed) {
       return new ObjData(this, -1, -1, 'dropped', this.currentGroupPriority);
     }
+
+    const newGroup = newGroupOptions !== undefined;
+
+    // Forward-state gating (draft-16 §5.1): the publisher does not send Objects
+    // while Forward State is 0. We decide at each group boundary whether to send
+    // the group based on whether the subscription is currently being forwarded
+    // (the relay toggles this via REQUEST_UPDATE; see Moq.onRequestUpdate). Once
+    // a group has begun we finish it so subgroups stay well-formed, and we only
+    // (re)start sending at the next new group (keyframe).
+    if (newGroup) {
+      this.sendingGroup = this.isForwarding();
+    }
+    if (!this.sendingGroup) {
+      return new ObjData(
+        this,
+        this.currentGroupSeq,
+        this.currentObjectSeq,
+        'dropped',
+        this.currentGroupPriority,
+      );
+    }
+
     // Drop when the pending queue is full.
     if (this.queue.length >= this.maxInFlightRequests) {
       return new ObjData(
@@ -291,7 +326,6 @@ export class Track {
       );
     }
 
-    const newGroup = newGroupOptions !== undefined;
     if (newGroupOptions !== undefined) {
       this.currentGroupPriority = newGroupOptions.priority;
     }
@@ -364,6 +398,13 @@ export class Track {
   }
 
   // ---- internal (called by Moq / ObjData) --------------------------------
+
+  // True when the subscription is being forwarded: the relay set Forward State 1
+  // (tracked as a subscriber entry via REQUEST_UPDATE), or a direct subscriber
+  // exists. Drives whether sendObject writes a group to the wire.
+  isForwarding(): boolean {
+    return this.subscribers.length > 0;
+  }
 
   _addSubscriber(subscriptionRequestId: number, forward: number, parameters: KvPair[]): void {
     this.subscribers.push({ subscriptionRequestId, forward, parameters });
@@ -620,12 +661,16 @@ export class Moq {
     const url = new URL(urlHostPort);
     url.protocol = 'https'; // WebTransport requires https
 
-    let wtOptions: any = {};
+    const wtOptions: any = {};
     if (options.serverCertificateHash != null) {
-      wtOptions = {
-        serverCertificateHashes: [{ algorithm: 'sha-256', value: options.serverCertificateHash }],
-      };
+      wtOptions.serverCertificateHashes = [{ algorithm: 'sha-256', value: options.serverCertificateHash }];
     }
+    // Offer the MOQT version for transport-level negotiation. The browser maps
+    // `protocols` to the WT-Available-Protocols header; engines that do not yet
+    // support it ignore the option (no version is then offered).
+    wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT16_VERSION];
+
+    console.info(`${LOG_PREFIX} Opening MOQT to ${url}, options: ${JSON.stringify(wtOptions)}`);
 
     this.moqt.wt = new WebTransport(url.href, wtOptions);
     this.moqt.wt.closed.catch(() => {
@@ -641,7 +686,6 @@ export class Moq {
 
   /** Perform the MoQ SETUP handshake and start the control loop. */
   async setup(
-    version: number = MOQ_CURRENT_VERSION,
     keepAliveOpts?: KeepAliveOptions,
   ): Promise<void> {
     if (this._state === MoqState.Idle) {
@@ -649,7 +693,7 @@ export class Moq {
     }
     await this.connecting;
 
-    await moqSendClientSetup(this.controlWriter(), version);
+    await moqSendClientSetup(this.controlWriter());
     const msg = await moqParseMsg(this.controlReader());
     if (msg.type !== MOQ_MESSAGE_SERVER_SETUP) {
       throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${msg.type}`);
@@ -702,8 +746,9 @@ export class Moq {
       authInfo,
       moqMapping,
     );
-    if (resp?.forward === 1) {
-      track._addSubscriber(requestId, 1, resp.parameters);
+    // FORWARD defaults to 1 when the parameter is absent (draft-16 §9.2.2.8).
+    if (forwardFromParameters(resp?.parameters ?? []) !== 0) {
+      track._addSubscriber(requestId, MOQ_FORWARD_TRUE, resp?.parameters ?? []);
     }
     this.tracks.push(track);
     return track;
@@ -857,28 +902,29 @@ export class Moq {
           console.log(`${LOG_PREFIX} received PUBLISH_OK ${JSON.stringify(msg.data)}`);
           this.resolvePublish(msg.data, true);
           break;
-        case MOQ_MESSAGE_PUBLISH_ERROR:
-          console.log(`${LOG_PREFIX} received PUBLISH_ERROR ${JSON.stringify(msg.data)}`);
-          this.resolvePublish(msg.data, false);
-          break;
         case MOQ_MESSAGE_SUBSCRIBE_OK:
           console.log(`${LOG_PREFIX} received SUBSCRIBE_OK ${JSON.stringify(msg.data)}`);
           this.resolveSubscribe(msg.data, true);
           break;
-        case MOQ_MESSAGE_SUBSCRIBE_ERROR:
-          console.log(`${LOG_PREFIX} received SUBSCRIBE_ERROR ${JSON.stringify(msg.data)}`);
-          this.resolveSubscribe(msg.data, false);
+        case MOQ_MESSAGE_REQUEST_ERROR:
+          // draft-16 unified error; route by Request ID to whichever request is pending.
+          console.log(`${LOG_PREFIX} received REQUEST_ERROR ${JSON.stringify(msg.data)}`);
+          this.rejectByRequestId(msg.data);
           break;
-        case MOQ_MESSAGE_SUBSCRIBE_DONE:
-          console.log(`${LOG_PREFIX} received SUBSCRIBE_DONE ${JSON.stringify(msg.data)}`);
+        case MOQ_MESSAGE_REQUEST_OK:
+          // Response to REQUEST_UPDATE/TRACK_STATUS/etc. Informational here.
+          console.log(`${LOG_PREFIX} received REQUEST_OK ${JSON.stringify(msg.data)}`);
+          break;
+        case MOQ_MESSAGE_PUBLISH_DONE:
+          console.log(`${LOG_PREFIX} received PUBLISH_DONE ${JSON.stringify(msg.data)}`);
           break;
         case MOQ_MESSAGE_SUBSCRIBE:
           console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE ${JSON.stringify(msg.data)}`);
           await this.onSubscribe(msg.data);
           break;
-        case MOQ_MESSAGE_SUBSCRIBE_UPDATE:
-          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE_UPDATE ${JSON.stringify(msg.data)}`);
-          this.onSubscribeUpdate(msg.data);
+        case MOQ_MESSAGE_REQUEST_UPDATE:
+          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_REQUEST_UPDATE ${JSON.stringify(msg.data)}`);
+          this.onRequestUpdate(msg.data);
           break;
         case MOQ_MESSAGE_UNSUBSCRIBE:
           console.log(`${LOG_PREFIX} received MOQ_MESSAGE_UNSUBSCRIBE ${JSON.stringify(msg.data)}`);
@@ -886,7 +932,6 @@ export class Moq {
           break;
         case MOQ_MESSAGE_MAX_REQUEST_ID:
           console.log(`${LOG_PREFIX} received MOQ_MESSAGE_MAX_REQUEST_ID ${JSON.stringify(msg.data)}`);
-
           break; // informational
         default:
           console.warn(`${LOG_PREFIX} Unexpected control message type ${msg.type}, ignoring`);
@@ -894,19 +939,19 @@ export class Moq {
     }
   }
 
-  // Resolve/reject a pending addTrack. PUBLISH_OK with an unknown request id is
-  // treated as a keep-alive answer and ignored.
+  // Resolve a pending addTrack on PUBLISH_OK. An unknown request id is treated
+  // as a keep-alive answer and ignored.
   private resolvePublish(data: any, ok: boolean): void {
     const pending = this.pendingPublish.get(data?.reqId);
     if (pending === undefined) {
       return;
     }
     this.pendingPublish.delete(data.reqId);
-    ok ? pending.resolve(data) : pending.reject(new Error(`PUBLISH_ERROR: ${JSON.stringify(data)}`));
+    ok ? pending.resolve(data) : pending.reject(new Error(`PUBLISH rejected: ${JSON.stringify(data)}`));
   }
 
-  // Resolve/reject a pending subscribe. SUBSCRIBE_OK/ERROR with an unknown
-  // request id is ignored (e.g. a late answer after we already retried).
+  // Resolve a pending subscribe on SUBSCRIBE_OK. An unknown request id is
+  // ignored (e.g. a late answer after we already retried).
   private resolveSubscribe(data: any, ok: boolean): void {
     const pending = this.pendingSubscribe.get(data?.requestId);
     if (pending === undefined) {
@@ -915,14 +960,32 @@ export class Moq {
     this.pendingSubscribe.delete(data.requestId);
     ok
       ? pending.resolve(data)
-      : pending.reject(new Error(`SUBSCRIBE_ERROR: ${JSON.stringify(data)}`));
+      : pending.reject(new Error(`SUBSCRIBE rejected: ${JSON.stringify(data)}`));
+  }
+
+  // draft-16 REQUEST_ERROR is unified; route it by Request ID to whichever
+  // pending publish or subscribe it answers.
+  private rejectByRequestId(data: any): void {
+    const id = data?.requestId;
+    const err = new Error(`REQUEST_ERROR: ${JSON.stringify(data)}`);
+    const pubPending = this.pendingPublish.get(id);
+    if (pubPending !== undefined) {
+      this.pendingPublish.delete(id);
+      pubPending.reject(err);
+      return;
+    }
+    const subPending = this.pendingSubscribe.get(id);
+    if (subPending !== undefined) {
+      this.pendingSubscribe.delete(id);
+      subPending.reject(err);
+    }
   }
 
   private async onSubscribe(subscribe: any): Promise<void> {
     const fullTrackName = getTrackFullName(subscribe.namespace, subscribe.trackName);
     const track = this.trackByFullName(fullTrackName);
     if (track == null) {
-      await moqSendSubscribeError(
+      await moqSendRequestError(
         this.controlWriter(),
         subscribe.requestId,
         MOQ_SUBSCRIPTION_ERROR_INTERNAL,
@@ -931,7 +994,7 @@ export class Moq {
       return;
     }
     if (!authMatches(track.authInfo, subscribe.parameters)) {
-      await moqSendSubscribeError(
+      await moqSendRequestError(
         this.controlWriter(),
         subscribe.requestId,
         MOQ_SUBSCRIPTION_ERROR_INTERNAL,
@@ -940,43 +1003,42 @@ export class Moq {
       return;
     }
 
-    track._addSubscriber(subscribe.requestId, 1, subscribe.parameters);
+    track._addSubscriber(subscribe.requestId, MOQ_FORWARD_TRUE, subscribe.parameters);
     const last = track._lastSent();
     await moqSendSubscribeOk(
       this.controlWriter(),
       subscribe.requestId,
       track.trackAlias,
-      0,
       last.group,
       last.obj,
-      undefined,
     );
   }
 
-  private onSubscribeUpdate(update: any): void {
-    if (!('subscriptionRequestId' in update) || !('forward' in update)) {
-      console.warn(`${LOG_PREFIX} Invalid SUBSCRIBE_UPDATE, ignoring`);
+  // draft-16 REQUEST_UPDATE references an Existing Request ID; Forward State is
+  // carried as the FORWARD parameter.
+  private onRequestUpdate(update: any): void {
+    if (!('existingRequestId' in update)) {
+      console.warn(`${LOG_PREFIX} Invalid REQUEST_UPDATE, ignoring`);
       return;
     }
-    // NOTE: the update references the original subscription id; we match it
-    // against the publisher request id we sent (preserved mapping).
-    const track = this.trackByPublisherRequestId(update.subscriptionRequestId);
+    const track = this.trackByPublisherRequestId(update.existingRequestId);
     if (track == null || !authMatches(track.authInfo, update.parameters)) {
       return;
     }
-    if (update.forward === 1) {
-      track._addSubscriber(update.subscriptionRequestId, 1, update.parameters);
-    } else {
-      track._removeSubscribersByRequestId(update.subscriptionRequestId);
+    const forward = forwardFromParameters(update.parameters);
+    if (forward === MOQ_FORWARD_TRUE) {
+      track._addSubscriber(update.existingRequestId, MOQ_FORWARD_TRUE, update.parameters);
+    } else if (forward === 0) {
+      track._removeSubscribersByRequestId(update.existingRequestId);
     }
   }
 
   private onUnsubscribe(unsubscribe: any): void {
-    if (!('subscriptionRequestId' in unsubscribe)) {
+    if (!('requestId' in unsubscribe)) {
       return;
     }
     for (const track of this.tracks) {
-      track._removeSubscribersByRequestId(unsubscribe.subscriptionRequestId);
+      track._removeSubscribersByRequestId(unsubscribe.requestId);
     }
   }
 
@@ -1114,13 +1176,9 @@ export class Moq {
   }
 }
 
-// True when an object header status marks the end of a subgroup/group/track.
+// True when an object header status marks the end of a group/track.
 function isEndOfGroupStatus(status: number | undefined): boolean {
-  return (
-    status === MOQ_OBJ_STATUS_END_OF_GROUP ||
-    status === MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP ||
-    status === MOQ_OBJ_STATUS_END_OF_SUBGROUP
-  );
+  return status === MOQ_OBJ_STATUS_END_OF_GROUP || status === MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP;
 }
 
 // Auth passes when the track has no authInfo, or the parameters carry a match.
@@ -1129,4 +1187,10 @@ function authMatches(trackAuth: string | undefined, parameters: KvPair[]): boole
     return true;
   }
   return trackAuth === getAuthInfofromParameters(parameters);
+}
+
+// Read the FORWARD parameter (draft-16 §9.2.2.8); returns 1 when absent.
+function forwardFromParameters(parameters: KvPair[]): number {
+  const fwd = parameters.find((p) => p.name === MOQ_PARAMETER_FORWARD);
+  return fwd === undefined ? MOQ_FORWARD_TRUE : (fwd.val as number);
 }
