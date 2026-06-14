@@ -12,14 +12,16 @@ const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 // A minimal stand-in for the bits of `Moq` that `Track` touches.
-function fakeMoq(opts: { hangStream?: boolean } = {}) {
+function fakeMoq(opts: { hangStream?: boolean; hangClose?: boolean } = {}) {
   const writes: any[] = [];
   const writer = {
     write: (b: any) => {
       writes.push(b);
       return Promise.resolve();
     },
-    close: () => Promise.resolve(),
+    // hangClose keeps each stream "open" forever (close never settles), so the
+    // open-stream counter accumulates — used to exercise the maxOpenStreams cap.
+    close: () => (opts.hangClose ? new Promise<void>(() => {}) : Promise.resolve()),
     releaseLock: () => {},
     ready: Promise.resolve(),
   };
@@ -37,8 +39,13 @@ function fakeMoq(opts: { hangStream?: boolean } = {}) {
   return { moq, writes };
 }
 
-function makeTrack(moq: any, mapping: MoqMapping, maxInFlight = 1000): Track {
-  return new Track(moq, ['vc'], 'v0', 2, 7, maxInFlight, undefined, mapping);
+function makeTrack(
+  moq: any,
+  mapping: MoqMapping,
+  maxInFlight = 1000,
+  maxOpenStreams = 1000,
+): Track {
+  return new Track(moq, ['vc'], 'v0', 2, 7, maxInFlight, maxOpenStreams, undefined, mapping);
 }
 
 describe('Track sequencing', () => {
@@ -103,6 +110,81 @@ describe('Track queue policy', () => {
     expect(obj.getInfo().status).toBe('sent');
     obj.abort();
     expect(obj.getInfo().status).toBe('sent');
+  });
+});
+
+describe('Track info counters (numQueued / numOpenStreams)', () => {
+  it('subgroup: opens one stream per group, no queue backlog once written', async () => {
+    const { moq } = fakeMoq();
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+
+    track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
+    await flush();
+    expect(track.getInfo().numQueued).toBe(0);
+    expect(track.getInfo().numOpenStreams).toBe(1);
+  });
+
+  it('datagram: never opens a subgroup stream', async () => {
+    const { moq } = fakeMoq();
+    const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
+    track._setForwarding(true);
+
+    track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
+    await flush();
+    expect(track.getInfo().numQueued).toBe(0);
+    expect(track.getInfo().numOpenStreams).toBe(0);
+  });
+
+  it('numQueued reflects objects waiting while stream creation is stalled', async () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+
+    track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // drains, stalls opening the stream
+    track.sendObject(new Uint8Array([2])); // waits in the queue
+    await flush();
+    expect(track.getInfo().numQueued).toBe(2);
+    expect(track.getInfo().numOpenStreams).toBe(0);
+  });
+});
+
+describe('Track open-stream cap (maxOpenStreams)', () => {
+  it('drops a new group once too many subgroup streams are still open', async () => {
+    // Stream closes never settle, so each new group leaves its stream "open".
+    const { moq } = fakeMoq({ hangClose: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 1000, 2); // maxOpenStreams = 2
+    track._setForwarding(true);
+
+    const g0 = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI });
+    await flush();
+    const g1 = track.sendObject(new Uint8Array([2]), { priority: BASE_PRI });
+    await flush();
+    const g2 = track.sendObject(new Uint8Array([3]), { priority: BASE_PRI });
+    await flush();
+
+    expect(g0.getInfo().status).toBe('sent');
+    expect(g1.getInfo().status).toBe('sent');
+    expect(g2.getInfo().status).toBe('dropped'); // cap reached -> new group dropped
+    expect(track.getInfo().numOpenStreams).toBe(2);
+  });
+
+  it('drops the rest of a group whose start was refused, until a new group fits', async () => {
+    const { moq } = fakeMoq({ hangClose: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 1000, 1); // maxOpenStreams = 1
+    track._setForwarding(true);
+
+    const key = track.sendObject(new Uint8Array([1]), { priority: BASE_PRI }); // opens group 0
+    await flush();
+    // Next keyframe is refused (1 stream already open); its delta is refused too.
+    const refusedKey = track.sendObject(new Uint8Array([2]), { priority: BASE_PRI });
+    const refusedDelta = track.sendObject(new Uint8Array([3]));
+    await flush();
+
+    expect(key.getInfo().status).toBe('sent');
+    expect(refusedKey.getInfo().status).toBe('dropped');
+    expect(refusedDelta.getInfo().status).toBe('dropped');
+    expect(track.getInfo().numOpenStreams).toBe(1);
   });
 });
 

@@ -113,7 +113,7 @@ sequenceDiagram
   participant Relay
   App->>Moq: init(url, { alpnVersion })
   App->>Moq: await setup()
-  App->>Moq: await addTrack(ns, name, maxInFlight, auth, mapping)
+  App->>Moq: await addTrack(ns, name, maxQueuedObjects, auth, mapping)
   Moq->>Relay: PUBLISH
   Relay-->>Moq: PUBLISH_OK (Forward State 0 or 1)
   Moq-->>App: Track
@@ -188,15 +188,18 @@ enable the idle keep-alive loop. Moves the session to `Running`.
 addTrack(
   namespace: string[],
   name: string,
-  maxInFlightRequests: number,
+  maxQueuedObjects: number,
+  maxOpenStreams: number,
   authInfo: string | undefined,
   moqMapping: MoqMapping,
 ): Promise<Track>
 ```
 Publish a track: sends `PUBLISH` and resolves with a [`Track`](#track) once the
 peer replies `PUBLISH_OK`. `namespace` is a tuple (array) of name segments;
-`name` is the track name. `maxInFlightRequests` bounds the per-track send queue
-(`<= 0` means unbounded). `authInfo` is an optional auth token string.
+`name` is the track name. `maxQueuedObjects` bounds the per-track send queue and
+`maxOpenStreams` bounds the concurrent open subgroup streams — a new group is
+dropped while that many streams are still open (both `<= 0` mean unbounded).
+`authInfo` is an optional auth token string.
 
 ```ts
 subscribe(
@@ -232,7 +235,8 @@ open subgroup stream(s), and Forward State.
 | `trackAlias` | `number` | Numeric alias used on the wire for objects. |
 | `publisherRequestId` | `number` | Request id of the originating `PUBLISH`. |
 | `authInfo` | `string \| undefined` | Auth token, if any. |
-| `maxInFlightRequests` | `number` | Send-queue cap. |
+| `maxQueuedObjects` | `number` | Send-queue cap (objects dropped once the queue reaches this). |
+| `maxOpenStreams` | `number` | Open subgroup-stream cap (a new group is dropped while this many streams are still open). |
 | `moqMapping` | `MoqMapping` | Object→QUIC mapping. |
 | `subscribers` | `Subscriber[]` | Active downstream subscriber/forward entries (mostly internal). |
 
@@ -255,7 +259,9 @@ headers (e.g. MoQMI metadata). `callback` fires once the object is written.
 The returned object's `status` is **`dropped`** (nothing sent) when:
 - the track is `closed`,
 - the subscription is **not being forwarded** (Forward State 0 / no subscriber),
-- the pending queue is already at `maxInFlightRequests`.
+- the pending send queue is already at `maxQueuedObjects`,
+- starting a new group would exceed `maxOpenStreams` (subgroup mapping) — the
+  whole group is then dropped until a later group finds room.
 
 ```ts
 getInfo(): TrackInfo
@@ -371,7 +377,8 @@ type ObjectCallback = (
 interface TrackInfo {
   namespace: string[]; name: string; trackAlias: number; moqMapping: MoqMapping;
   numSubscribers: number;   // reflects Forward State (0 or 1 for a PUBLISH track)
-  numInFlight: number;      // queued objects
+  numQueued: number;        // objects waiting in the send queue (not yet written)
+  numOpenStreams: number;   // subgroup streams created but not yet closed (0 for datagram)
   currentGroup: number; currentObject: number;
 }
 interface SubscriptionInfo { namespace: string[]; name: string; subscribeRequestId: number; trackAlias: number }
@@ -397,7 +404,8 @@ await moq.setup({ everyMs: 5000 }); // optional keep-alive while idle
 const video = await moq.addTrack(
   ['vc', 'room42'],            // namespace tuple
   'video0',                    // track name
-  100,                         // max in-flight objects
+  10,                          // max queued objects
+  39,                          // max open subgroup streams
   undefined,                   // authInfo
   MoqMapping.SubgroupPerGroup, // video → one stream per group
 );
@@ -457,7 +465,7 @@ const moq = new Moq();
 moq.init(url, { alpnVersion: 'moqt-16' });
 await moq.setup();
 
-const track = await moq.addTrack(ns, 'data0', 0, undefined, MoqMapping.ObjectPerDatagram);
+const track = await moq.addTrack(ns, 'data0', 0, 0, undefined, MoqMapping.ObjectPerDatagram);
 await moq.subscribe(ns, 'data0', undefined, (r, ext, len) => true);
 
 track.sendObject(new TextEncoder().encode('hello'), { priority: 128 });
