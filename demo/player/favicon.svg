@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Media player">
+  <defs>
+    <linearGradient id="plBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2029"/>
+      <stop offset="1" stop-color="#0f1419"/>
+    </linearGradient>
+    <linearGradient id="plFg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7fb2ff"/>
+      <stop offset="1" stop-color="#5b9dff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Card -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#plBg)" stroke="#2c3540" stroke-width="1.5"/>
+
+  <!-- Playback ring -->
+  <circle cx="32" cy="30" r="17" fill="none" stroke="url(#plFg)" stroke-width="3"/>
+
+  <!-- Play triangle -->
+  <path d="M27 21 L27 39 L43 30 Z" fill="url(#plFg)"
+        stroke="url(#plFg)" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- Seek bar -->
+  <line x1="13" y1="54" x2="51" y2="54" stroke="#2c3540" stroke-width="3" stroke-linecap="round"/>
+  <line x1="13" y1="54" x2="34" y2="54" stroke="url(#plFg)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="34" cy="54" r="3.5" fill="#7fb2ff"/>
+</svg>

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Media encoder">
+  <defs>
+    <linearGradient id="encBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2029"/>
+      <stop offset="1" stop-color="#0f1419"/>
+    </linearGradient>
+    <linearGradient id="encFg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7fb2ff"/>
+      <stop offset="1" stop-color="#5b9dff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Card -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#encBg)" stroke="#2c3540" stroke-width="1.5"/>
+
+  <!-- Source media: audio/video waveform being captured -->
+  <g fill="url(#encFg)">
+    <rect x="9"  y="25" width="3" height="14" rx="1.5"/>
+    <rect x="14" y="19" width="3" height="26" rx="1.5"/>
+    <rect x="19" y="27" width="3" height="10" rx="1.5"/>
+    <rect x="24" y="22" width="3" height="20" rx="1.5"/>
+  </g>
+
+  <!-- Encode: arrow into the bitstream -->
+  <path d="M29 32 H38 M34 28 L38 32 L34 36" fill="none" stroke="url(#encFg)"
+        stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Encoded media chunks -->
+  <g fill="url(#encFg)">
+    <rect x="41" y="23" width="7" height="7" rx="2"/>
+    <rect x="50" y="23" width="7" height="7" rx="2" opacity="0.75"/>
+    <rect x="41" y="32" width="7" height="7" rx="2" opacity="0.75"/>
+    <rect x="50" y="32" width="7" height="7" rx="2"/>
+  </g>
+</svg>
