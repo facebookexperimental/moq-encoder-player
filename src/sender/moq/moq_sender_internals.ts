@@ -20,6 +20,7 @@ export interface TrackData {
   name: string;
   authInfo?: string;
   maxInFlightRequests?: number;
+  maxOpenStreams?: number;
   isHipri?: boolean;
   moqMapping?: string;
   newSubgroupEvery?: number;
@@ -174,6 +175,7 @@ export class MoqSender {
       trackData.namespace,
       trackData.name,
       trackData.maxInFlightRequests ?? Number.MAX_SAFE_INTEGER,
+      trackData.maxOpenStreams ?? Number.MAX_SAFE_INTEGER,
       trackData.authInfo,
       trackData.moqMapping as MoqMapping,
     );
@@ -352,10 +354,16 @@ export class MoqSender {
   }
 
   private emitStats(): void {
-    const inFlightReq: Record<string, number> = {};
+    // Two distinct signals: queuedReq = objects waiting in the send queue (the
+    // backpressure cap), openStreamsReq = open QUIC subgroup streams (the meaning
+    // the v14 "inflight" stat had; ~1 for subgroup, 0 for datagram).
+    const queuedReq: Record<string, number> = {};
+    const openStreamsReq: Record<string, number> = {};
     for (const [mediaType, track] of Object.entries(this.tracks)) {
-      inFlightReq[mediaType] = track.getInfo().numInFlight;
+      const info = track.getInfo();
+      queuedReq[mediaType] = info.numQueued;
+      openStreamsReq[mediaType] = info.numOpenStreams;
     }
-    self.postMessage({ type: 'sendstats', clkms: Date.now(), inFlightReq });
+    self.postMessage({ type: 'sendstats', clkms: Date.now(), queuedReq, openStreamsReq });
   }
 }

@@ -17,7 +17,7 @@ LICENSE file in the root directory of this source tree.
 //   // WT-Available-Protocols (draft-16), so setup() carries no version.
 //
 //   // Publish:
-//   const track = await moq.addTrack(ns, name, maxInFlight, auth, mapping);
+//   const track = await moq.addTrack(ns, name, maxQueuedObjects, maxOpenStreams, auth, mapping);
 //   const obj = track.sendObject(bytes, { priority }, extHeaders, () => {});  // new group
 //   track.sendObject(moreBytes);                                              // same group
 //   obj.getInfo();   // { objId, groupId, status }
@@ -115,7 +115,10 @@ export interface TrackInfo {
   trackAlias: number;
   moqMapping: MoqMapping;
   numSubscribers: number;
-  numInFlight: number;
+  // Objects waiting in the per-track send queue (not yet written to a stream).
+  numQueued: number;
+  // Open QUIC subgroup streams: created but not yet closed (0 for datagram).
+  numOpenStreams: number;
   currentGroup: number;
   currentObject: number;
 }
@@ -229,7 +232,11 @@ export class Track {
   readonly trackAlias: number;
   readonly publisherRequestId: number;
   readonly authInfo: string | undefined;
-  readonly maxInFlightRequests: number;
+  // Send-queue cap: objects are dropped once `queue.length` reaches this.
+  readonly maxQueuedObjects: number;
+  // Open-stream cap (subgroup mapping): a new group is dropped (its stream is
+  // not opened) while `openStreamCount` is at this limit. 0 / unset = unbounded.
+  readonly maxOpenStreams: number;
   readonly moqMapping: MoqMapping;
 
   subscribers: Subscriber[] = [];
@@ -254,9 +261,16 @@ export class Track {
   private currentGroupPriority = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 
   // Open subgroup stream writer keyed by group id (one at a time in practice).
-  private streams = new Map<number, WritableStreamDefaultWriter<Uint8Array>>();
+  private openStreams = new Map<number, WritableStreamDefaultWriter<Uint8Array>>();
   // Last object id written per group (used to send the end-of-group marker).
   private groupLastObj = new Map<number, number>();
+  // Number of subgroup streams created but not yet finished closing. Counts the
+  // current group's stream plus any whose end-of-group close is still settling,
+  // so it reflects the QUIC streams genuinely open against the relay.
+  private openStreamCount = 0;
+  // Set when a new group was dropped by the open-stream cap, so the rest of that
+  // group's objects (deltas) are dropped too until the next group is accepted.
+  private skipDeltasUntilNewGroup = false;
 
   constructor(
     moq: Moq,
@@ -264,7 +278,8 @@ export class Track {
     name: string,
     trackAlias: number,
     publisherRequestId: number,
-    maxInFlightRequests: number,
+    maxQueuedObjects: number,
+    maxOpenStreams: number,
     authInfo: string | undefined,
     moqMapping: MoqMapping,
   ) {
@@ -273,8 +288,10 @@ export class Track {
     this.name = name;
     this.trackAlias = trackAlias;
     this.publisherRequestId = publisherRequestId;
-    this.maxInFlightRequests =
-      maxInFlightRequests > 0 ? maxInFlightRequests : Number.MAX_SAFE_INTEGER;
+    this.maxQueuedObjects =
+      maxQueuedObjects > 0 ? maxQueuedObjects : Number.MAX_SAFE_INTEGER;
+    this.maxOpenStreams =
+      maxOpenStreams > 0 ? maxOpenStreams : Number.MAX_SAFE_INTEGER;
     this.authInfo = authInfo;
     this.moqMapping = moqMapping;
   }
@@ -286,8 +303,10 @@ export class Track {
    * (e.g. MoQMI media metadata). `callback` fires once the object is written.
    *
    * Returns an `ObjData` handle. Objects are dropped (status `dropped`) when the
-   * subscription is not being forwarded (Forward State 0 / no subscriber), or
-   * when the pending queue is already at `maxInFlightRequests`.
+   * subscription is not being forwarded (Forward State 0 / no subscriber), when
+   * the pending send queue is already at `maxQueuedObjects`, or (subgroup
+   * mapping) when starting a new group would exceed `maxOpenStreams` — in which
+   * case the whole group is dropped until a later group finds room.
    */
   sendObject(
     data: BufferSource | undefined,
@@ -323,8 +342,26 @@ export class Track {
       this.resumeNeedsNewGroup = false;
     }
 
-    // Drop when the pending queue is full.
-    if (this.queue.length >= this.maxInFlightRequests) {
+    // Open-stream cap (subgroup mapping): refuse to start a new group while too
+    // many subgroup streams are still open, and drop the rest of a group whose
+    // start was refused. Datagram mapping opens no streams, so it is exempt.
+    if (this.moqMapping === MoqMapping.SubgroupPerGroup) {
+      if (newGroup) {
+        this.skipDeltasUntilNewGroup = this.openStreamCount >= this.maxOpenStreams;
+      }
+      if (this.skipDeltasUntilNewGroup) {
+        return new ObjData(
+          this,
+          this.currentGroupSeq,
+          this.currentObjectSeq,
+          'dropped',
+          this.currentGroupPriority,
+        );
+      }
+    }
+
+    // Drop when the pending send queue is full.
+    if (this.queue.length >= this.maxQueuedObjects) {
       return new ObjData(
         this,
         this.currentGroupSeq,
@@ -362,7 +399,8 @@ export class Track {
       trackAlias: this.trackAlias,
       moqMapping: this.moqMapping,
       numSubscribers: this.subscribers.length,
-      numInFlight: this.queue.length,
+      numQueued: this.queue.length,
+      numOpenStreams: this.openStreamCount,
       currentGroup: this.currentGroupSeq,
       currentObject: this.currentObjectSeq,
     };
@@ -382,7 +420,7 @@ export class Track {
     this.queue = [];
 
     // Close every open subgroup stream with an end-of-group object.
-    for (const [groupId, writer] of this.streams) {
+    for (const [groupId, writer] of this.openStreams) {
       const lastObj = this.groupLastObj.get(groupId) ?? 0;
       try {
         await moqSendObjectEndOfGroupToWriter(writer, lastObj + 1, [], true);
@@ -390,7 +428,8 @@ export class Track {
         // Best-effort on teardown.
       }
     }
-    this.streams.clear();
+    this.openStreams.clear();
+    this.openStreamCount = 0;
 
     try {
       await moqSendPublishDone(
@@ -430,15 +469,17 @@ export class Track {
   // Reset and forget all open subgroup streams (best-effort). Used when
   // forwarding stops, so stale streams don't linger to be STOP_SENDING'd.
   private async resetStreams(): Promise<void> {
-    const streams = this.streams;
-    this.streams = new Map();
+    const streams = this.openStreams;
+    this.openStreams = new Map();
     this.groupLastObj.clear();
+    this.skipDeltasUntilNewGroup = false;
     for (const writer of streams.values()) {
       try {
         await writer.abort('forward paused');
       } catch {
         // Best-effort: the relay may have already reset the stream.
       }
+      this.openStreamCount = Math.max(0, this.openStreamCount - 1);
     }
   }
 
@@ -548,30 +589,27 @@ export class Track {
       throw new Error(`Unexpected MOQ - QUIC mapping: ${this.moqMapping}`);
     }
 
-    // Close any open stream from a previous group (the group rolled). The
-    // end-of-group object is one past the last object on this single per-group
-    // stream, i.e. Object ID Delta 0. This is best-effort: the relay may have
-    // already reset the stream (e.g. after the subscriber went away), so an
-    // error here must not wedge the track — always drop the stream from the map.
-    for (const [groupId, writer] of this.streams) {
+    // Close any open stream from a previous group (the group rolled). The close
+    // runs in the background (closeStream) so a slow end-of-group + FIN does not
+    // block the drain; the stream stays counted in openStreamCount until it
+    // settles, which is what the open-stream cap throttles against.
+    for (const [groupId, writer] of this.openStreams) {
       if (groupId !== obj.groupId) {
-        try {
-          await moqSendObjectEndOfGroupToWriter(writer, 0, [], true);
-        } catch {
-          // Stream was likely stopped/reset by the peer; just forget it.
-        }
-        this.streams.delete(groupId);
+        this.openStreams.delete(groupId);
         this.groupLastObj.delete(groupId);
+        this.closeStream(writer);
       }
     }
 
-    // Open a stream for this group on demand, writing the subgroup header.
-    let writer = this.streams.get(obj.groupId);
+    // Open a stream for this group on demand, writing the subgroup header. The
+    // open-stream cap already gated this in sendObject, so by here there is room.
+    let writer = this.openStreams.get(obj.groupId);
     if (writer === undefined) {
       // Use the group priority directly as the WebTransport stream send order.
       const uniStream = await this.moq._wt().createUnidirectionalStream({ sendOrder: obj.priority });
       writer = uniStream.getWriter();
-      this.streams.set(obj.groupId, writer);
+      this.openStreams.set(obj.groupId, writer);
+      this.openStreamCount++;
       await moqSendSubgroupHeader(writer, this.trackAlias, obj.groupId, obj.priority);
     }
 
@@ -582,11 +620,25 @@ export class Track {
       // The stream was stopped/reset (e.g. the relay sent STOP_SENDING when the
       // subscriber left). Abandon it so we don't keep writing to a dead stream;
       // a later object (after forwarding resumes) opens a fresh one.
-      this.streams.delete(obj.groupId);
+      this.openStreams.delete(obj.groupId);
       this.groupLastObj.delete(obj.groupId);
+      this.openStreamCount = Math.max(0, this.openStreamCount - 1);
       throw err;
     }
     this.groupLastObj.set(obj.groupId, obj.objId);
+  }
+
+  // Close a rolled-off subgroup stream in the background: send end-of-group +
+  // FIN (Object ID Delta 0), then drop it from openStreamCount once the close
+  // settles. Best-effort — the relay may have already reset the stream.
+  private closeStream(writer: WritableStreamDefaultWriter<Uint8Array>): void {
+    void moqSendObjectEndOfGroupToWriter(writer, 0, [], true)
+      .catch(() => {
+        // Stream was likely stopped/reset by the peer; just forget it.
+      })
+      .finally(() => {
+        this.openStreamCount = Math.max(0, this.openStreamCount - 1);
+      });
   }
 }
 
@@ -769,7 +821,8 @@ export class Moq {
   async addTrack(
     namespace: string[],
     name: string,
-    maxInFlightRequests: number,
+    maxQueuedObjects: number,
+    maxOpenStreams: number,
     authInfo: string | undefined,
     moqMapping: MoqMapping,
   ): Promise<Track> {
@@ -795,7 +848,8 @@ export class Moq {
       name,
       trackAlias,
       requestId,
-      maxInFlightRequests,
+      maxQueuedObjects,
+      maxOpenStreams,
       authInfo,
       moqMapping,
     );

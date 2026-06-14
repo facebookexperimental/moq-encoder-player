@@ -124,16 +124,28 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <label>Full track names (based on namespace and track name):<input id="fullTrackNames" type="text" value="-" size="64" readonly></label>
                     <div class="clear"></div>
-                    <label>Max inflight audio requests:<input id="maxInflightAudioRequests" type="text" value="60"></label>
-                    <div class="clear"></div>
-                    <label>Max inflight video requests:<input id="maxInflightVideoRequests" type="text" value="39"></label>
-                    <div class="clear"></div>
                     <label>Token (type = out of band):<input id="authInfo" type="text" value="secret" disabled></label>
                     <label>Active: <input type="checkbox" id="useAuthToken"></label>
                     <div class="clear"></div>
                     <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>
                     <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>
                     <div class="clear"></div>
+                    <div class="boxed">
+                        <h3>Queue limits</h3>
+                        <div class="clear"></div>
+                        <label>Max send-queue audio objects:<input id="maxInflightAudioRequests" type="text" value="20"></label>
+                        <div class="clear"></div>
+                        <label>Max send-queue video objects:<input id="maxInflightVideoRequests" type="text" value="10"></label>
+                        <div class="clear"></div>
+                    </div>
+                    <div class="boxed">
+                        <h3>QUIC stream limits</h3>
+                        <div class="clear"></div>
+                        <label>Max QUIC streams for audio:<input id="maxQUICStreamsAudio" type="text" value="60"></label>
+                        <div class="clear"></div>
+                        <label>Max QUIC streams for video:<input id="maxQUICStreamsVideo" type="text" value="39"></label>
+                        <div class="clear"></div>
+                    </div>
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -185,13 +197,15 @@ LICENSE file in the root directory of this source tree.
         <video height="50%" id="vPreview" autoplay muted></video>
     </div>
 
-    <!-- Inflight requests timeline (last 60s) -->
+    <!-- Send queue / open streams timeline (last 60s) -->
     <div class="boxed">
-        <h2>Inflight requests timeline (last 60s)</h2>
+        <h2>Send queue / open streams timeline (last 60s)</h2>
         <canvas id="inflightTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
-            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio inflight</label>
-            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video inflight</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio queued</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video queued</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle;border-top:2px dashed #d62728;height:0"></span> Audio open streams (dashed)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle;border-top:2px dashed #1f77b4;height:0"></span> Video open streams (dashed)</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio packet loss</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video packet loss</label>
         </div>
@@ -264,13 +278,19 @@ LICENSE file in the root directory of this source tree.
         <div id="tabMuxer" class="boxed tab-panel">
             <h2>Muxer sender</h2>
             <div>
-                <h3>Inflight</h3>
+                <h3>Send queue / open streams</h3>
                 <div class="styleform">
                     <form>
-                        <label>Inflight audio requests:<input id="uploadStatsAudioInflight" type="text" value=""
+                        <label>Queued audio objects:<input id="uploadStatsAudioQueued" type="text" value=""
                                 readonly></label>
                         <div class="clear"></div>
-                        <label>Inflight video requests:<input id="uploadStatsVideoInflight" type="text" value=""
+                        <label>Queued video objects:<input id="uploadStatsVideoQueued" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Open audio streams:<input id="uploadStatsAudioStreams" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Open video streams:<input id="uploadStatsVideoStreams" type="text" value=""
                                 readonly></label>
                         <div class="clear"></div>
                     </form>
@@ -420,7 +440,8 @@ LICENSE file in the root directory of this source tree.
             "audio": {
                 namespace: ["vc"],
                 name: "audio0",
-                maxInFlightRequests: 100,
+                maxInFlightRequests: 20,
+                maxOpenStreams: 60,
                 isHipri: true,
                 authInfo: "secret",
                 moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
@@ -428,7 +449,8 @@ LICENSE file in the root directory of this source tree.
             "video": {
                 namespace: ["vc"],
                 name: "video0",
-                maxInFlightRequests: 50,
+                maxInFlightRequests: 10,
+                maxOpenStreams: 39,
                 isHipri: false,
                 authInfo: "secret",
                 moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
@@ -443,11 +465,12 @@ LICENSE file in the root directory of this source tree.
     let aEncoderWorker = null;
     let muxerSenderWorker = null;
 
-    // Inflight requests timeline
+    // Send queue / open streams timeline
     const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
     const TIMELINE_AUDIO_COLOR = '#d62728';
     const TIMELINE_VIDEO_COLOR = '#1f77b4';
-    let timelineSamples = []; // { tMs, audio, video } relative to session start
+    // { tMs, audioQueued, videoQueued, audioStreams, videoStreams } relative to session start
+    let timelineSamples = [];
     let timelineDrops = [];   // { tMs, mediaType, cum } one entry per dropped packet
     let dropCum = { audio: 0, video: 0 }; // running session totals of dropped packets
     let timelineStartMs = -1; // Date.now() when start was pressed
@@ -462,7 +485,9 @@ LICENSE file in the root directory of this source tree.
         timelineStartMs = Date.now();
         const maxV = parseInt(document.getElementById('maxInflightVideoRequests').value) || 0;
         const maxA = parseInt(document.getElementById('maxInflightAudioRequests').value) || 0;
-        timelineYMax = Math.max(maxV, maxA, 1);
+        const maxStreamsV = parseInt(document.getElementById('maxQUICStreamsVideo').value) || 0;
+        const maxStreamsA = parseInt(document.getElementById('maxQUICStreamsAudio').value) || 0;
+        timelineYMax = Math.max(maxV, maxA, maxStreamsV, maxStreamsA, 1);
         if (timelineAnimFrame === null) {
             timelineAnimFrame = requestAnimationFrame(drawTimeline);
         }
@@ -475,11 +500,14 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function addTimelineSample(audioInflight, videoInflight) {
+    function addTimelineSample(audioQueued, videoQueued, audioStreams, videoStreams) {
         if (timelineStartMs < 0) {
             return;
         }
-        timelineSamples.push({ tMs: Date.now() - timelineStartMs, audio: audioInflight, video: videoInflight });
+        timelineSamples.push({
+            tMs: Date.now() - timelineStartMs,
+            audioQueued, videoQueued, audioStreams, videoStreams,
+        });
     }
 
     function addTimelineDrop(mediaType) {
@@ -508,9 +536,10 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function drawTimelineSeries(ctx, w, h, nowMs, key, color) {
+    function drawTimelineSeries(ctx, w, h, nowMs, key, color, dashed) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
+        ctx.setLineDash(dashed ? [5, 4] : []);
         ctx.beginPath();
         let started = false;
         for (let i = 0; i < timelineSamples.length; i++) {
@@ -526,6 +555,7 @@ LICENSE file in the root directory of this source tree.
             }
         }
         ctx.stroke();
+        ctx.setLineDash([]);
     }
 
     function drawTimeline() {
@@ -595,8 +625,11 @@ LICENSE file in the root directory of this source tree.
         // Packet-loss bars (one per dropped packet, height = cumulative loss for its media type)
         drawTimelineDrops(ctx, w, h, nowMs, rightYMax);
 
-        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR);
-        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR);
+        // Queued objects (solid) and open streams (dashed) per media type
+        drawTimelineSeries(ctx, w, h, nowMs, 'audioQueued', TIMELINE_AUDIO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, 'videoQueued', TIMELINE_VIDEO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, 'audioStreams', TIMELINE_AUDIO_COLOR, true);
+        drawTimelineSeries(ctx, w, h, nowMs, 'videoStreams', TIMELINE_VIDEO_COLOR, true);
 
         timelineAnimFrame = requestAnimationFrame(drawTimeline);
     }
@@ -620,8 +653,10 @@ LICENSE file in the root directory of this source tree.
     }
 
     function clearUI() {
-        document.getElementById('uploadStatsAudioInflight').value = "0";
-        document.getElementById('uploadStatsVideoInflight').value = "0";
+        document.getElementById('uploadStatsAudioQueued').value = "0";
+        document.getElementById('uploadStatsVideoQueued').value = "0";
+        document.getElementById('uploadStatsAudioStreams').value = "0";
+        document.getElementById('uploadStatsVideoStreams').value = "0";
 
         document.getElementById('firstVts').value = "";
         document.getElementById('firstAts').value = "";
@@ -956,7 +991,7 @@ LICENSE file in the root directory of this source tree.
 
     function initMOQMappingModesUI(selectElement) {
         initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "video");
-        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_DATAGRAM, "audio");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "audio");
     }
 
     function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
@@ -1216,7 +1251,7 @@ LICENSE file in the root directory of this source tree.
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", firstFrameClkms, compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, sampleFreq, numChannels, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
-            updateUploadStats(e.data.inFlightReq);
+            updateUploadStats(e.data.queuedReq, e.data.openStreamsReq);
 
             // UNKNOWN
         } else {
@@ -1224,11 +1259,13 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function updateUploadStats(inFlightReq) {
-        document.getElementById('uploadStatsAudioInflight').value = `${inFlightReq["audio"]} (${returnMax('inFlightAudioReqNum', inFlightReq["audio"])})`;
-        document.getElementById('uploadStatsVideoInflight').value = `${inFlightReq["video"]} (${returnMax('inFlightVideoReqNum', inFlightReq["video"])})`;
+    function updateUploadStats(queuedReq, openStreamsReq) {
+        document.getElementById('uploadStatsAudioQueued').value = `${queuedReq["audio"]} (${returnMax('queuedAudioReqNum', queuedReq["audio"])})`;
+        document.getElementById('uploadStatsVideoQueued').value = `${queuedReq["video"]} (${returnMax('queuedVideoReqNum', queuedReq["video"])})`;
+        document.getElementById('uploadStatsAudioStreams').value = `${openStreamsReq["audio"]} (${returnMax('streamsAudioReqNum', openStreamsReq["audio"])})`;
+        document.getElementById('uploadStatsVideoStreams').value = `${openStreamsReq["video"]} (${returnMax('streamsVideoReqNum', openStreamsReq["video"])})`;
 
-        addTimelineSample(inFlightReq["audio"], inFlightReq["video"]);
+        addTimelineSample(queuedReq["audio"], queuedReq["video"], openStreamsReq["audio"], openStreamsReq["video"]);
     }
 
     function updateDroppedFrame(droppedFrameData) {
@@ -1392,6 +1429,7 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["video"].name = MIgetTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
+        muxerSenderConfig.moqTracks["video"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsVideo').value);
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         if (document.getElementById('authInfo').disabled) {
             muxerSenderConfig.moqTracks["video"].authInfo = ""
@@ -1401,6 +1439,7 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
         muxerSenderConfig.moqTracks["audio"].name = MIgetTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
+        muxerSenderConfig.moqTracks["audio"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsAudio').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
         if (document.getElementById('authInfo').disabled) {

@@ -241,7 +241,7 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 - **Creates a Unidirectional (encoder -> server) QUIC stream per every frame** (video and audio)
 - Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts`
 - It uses sendOrder to establish send priority. We use incremental counter (so new is higher priority than old), and we also increase audio priority over video (by adding an offset)
-- It keeps number of inflight requests always below configured value `maxInFlightRequest`
+- It keeps the per-track send queue below the configured `maxInFlightRequests` (objects waiting to be written are dropped once the queue is full). Two stats are reported per track: `numQueued` (objects waiting in the send queue) and `numOpenStreams` (open QUIC subgroup streams)
 
 ## Player
 
