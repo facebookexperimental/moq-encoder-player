@@ -956,7 +956,7 @@ LICENSE file in the root directory of this source tree.
 
     function initMOQMappingModesUI(selectElement) {
         initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "video");
-        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "audio");
+        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_OBJECT_PER_DATAGRAM, "audio");
     }
 
     function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
@@ -978,7 +978,7 @@ LICENSE file in the root directory of this source tree.
             const optionObjTrack = document.createElement('option');
             optionObjTrack.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
             if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
-                optionObjStream.selected = true;
+                optionObjTrack.selected = true;
             }
             optionObjTrack.appendChild(document.createTextNode("Object per datagram (AKA: Frame per datagram)"));
             selectElement.appendChild(optionObjTrack);
