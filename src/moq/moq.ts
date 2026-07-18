@@ -14,7 +14,7 @@ LICENSE file in the root directory of this source tree.
 //   moq.init(urlHostPort, { serverCertificateHash, alpnVersion });   // sync, starts connecting
 //   await moq.setup();                                              // SETUP handshake
 //   // The MOQT version is negotiated by the transport via ALPN /
-//   // WT-Available-Protocols (draft-18), so setup() carries no version. draft-18
+//   // WT-Available-Protocols (draft-19), so setup() carries no version. draft-19
 //   // uses a pair of unidirectional control streams and runs each request
 //   // (PUBLISH / SUBSCRIBE / ...) on its own bidirectional stream.
 //
@@ -69,7 +69,7 @@ import {
   type MoqtState,
   type KvPair,
   type ObjectHeader,
-  MOQ_ALPN_DRAFT18_VERSION,
+  MOQ_ALPN_DRAFT19_VERSION,
 } from './moqt.js';
 
 const LOG_PREFIX = '[MOQ]';
@@ -123,10 +123,10 @@ export interface TrackInfo {
 export interface MoqInitOptions {
   // SHA-256 hash of the server certificate, for WebTransport `serverCertificateHashes`.
   serverCertificateHash?: Uint8Array | null;
-  // MOQT ALPN token (e.g. "moqt-18"). draft-18 negotiates the version via the
+  // MOQT ALPN token (e.g. "moqt-19"). draft-19 negotiates the version via the
   // transport (ALPN over native QUIC, WT-Available-Protocols over WebTransport),
   // so this is offered to WebTransport as `protocols` rather than sent in SETUP.
-  // Optional; defaults to MOQ_ALPN_DRAFT18_VERSION when omitted.
+  // Optional; defaults to MOQ_ALPN_DRAFT19_VERSION when omitted.
   alpnVersion?: string;
 }
 
@@ -239,14 +239,14 @@ export class Track {
   subscribers: Subscriber[] = [];
 
   private moq: Moq;
-  // draft-18: each request runs on its own bidirectional stream. PUBLISH was sent
+  // draft-19: each request runs on its own bidirectional stream. PUBLISH was sent
   // on this stream; REQUEST_OK / REQUEST_UPDATE (Forward State) and the final
   // PUBLISH_DONE all flow back on it.
   private publishStream: WebTransportBidirectionalStream;
   private queue: ObjData[] = [];
   private draining = false;
   private closed = false;
-  // Forward State for this subscription (draft-18). The relay toggles it via
+  // Forward State for this subscription (draft-19). The relay toggles it via
   // REQUEST_UPDATE; objects are only sent while it is true. Starts false: the
   // relay's PUBLISH_OK parks new tracks at Forward State 0 until a subscriber
   // appears.
@@ -321,7 +321,7 @@ export class Track {
 
     let newGroup = newGroupOptions !== undefined;
 
-    // Forward-state gating (draft-18 §5.1): the publisher does not send Objects
+    // Forward-state gating (draft-19 §5.1): the publisher does not send Objects
     // while Forward State is 0. The relay toggles this via REQUEST_UPDATE (see
     // Moq.onRequestUpdate -> Track._setForwarding).
     if (!this.forwarding) {
@@ -432,7 +432,7 @@ export class Track {
     this.openStreams.clear();
     this.openStreamCount = 0;
 
-    // draft-18: PUBLISH_DONE goes back on this request's own bidi stream (no
+    // draft-19: PUBLISH_DONE goes back on this request's own bidi stream (no
     // Request ID field — the stream identifies the request); then FIN it.
     try {
       await moqSendPublishDone(
@@ -456,7 +456,7 @@ export class Track {
 
   // Read REQUEST_UPDATE (Forward State toggles) and other late control messages
   // that the peer sends on the publish stream after the initial REQUEST_OK. In
-  // draft-18 the message arrives on this track's own stream, so it is inherently
+  // draft-19 the message arrives on this track's own stream, so it is inherently
   // scoped to this track (no Existing Request ID lookup needed).
   async _runResponseLoop(): Promise<void> {
     try {
@@ -694,7 +694,7 @@ export class Subscription {
 
   private moq: Moq;
   private onObject: ObjectCallback;
-  // draft-18: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
+  // draft-19: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
   // any REQUEST_UPDATE flow back on it. Objects still arrive on separate uni
   // subgroup streams / datagrams, routed by track alias.
   private subscribeStream: WebTransportBidirectionalStream;
@@ -731,7 +731,7 @@ export class Subscription {
   }
 
   /**
-   * Stop the subscription. draft-18 removed the UNSUBSCRIBE message: cancelling
+   * Stop the subscription. draft-19 removed the UNSUBSCRIBE message: cancelling
    * the request stream's readable (STOP_SENDING) and closing its writable (FIN)
    * signals the publisher to stop sending objects for this subscription.
    */
@@ -822,7 +822,7 @@ export class Moq {
   private incomingLoopsStarted = false;
 
   // Resolves once the peer's SETUP has been received on its incoming control
-  // (unidirectional) stream. draft-18 handshakes over a pair of uni streams
+  // (unidirectional) stream. draft-19 handshakes over a pair of uni streams
   // rather than a single bidi control stream, so we cannot simply read the reply
   // back on the stream we wrote to.
   private peerSetupReceived: Promise<void> | null = null;
@@ -845,7 +845,7 @@ export class Moq {
     // Offer the MOQT version for transport-level negotiation. The browser maps
     // `protocols` to the WT-Available-Protocols header; engines that do not yet
     // support it ignore the option (no version is then offered).
-    wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT18_VERSION];
+    wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT19_VERSION];
 
     console.info(`${LOG_PREFIX} Opening MOQT to ${url}, options: ${JSON.stringify(wtOptions)}`);
 
@@ -877,7 +877,7 @@ export class Moq {
     this.ensureIncomingLoops();
 
     // Send our SETUP on the local unidirectional control stream, then wait for
-    // the peer's SETUP (draft-18 §7).
+    // the peer's SETUP (draft-19 §7).
     await moqSendSetup(this.controlWriter());
     await this.peerSetupReceived;
 
@@ -889,7 +889,7 @@ export class Moq {
   }
 
   /**
-   * Publish a track. draft-18: open a dedicated bidirectional stream, send
+   * Publish a track. draft-19: open a dedicated bidirectional stream, send
    * PUBLISH on it, and await the peer's REQUEST_OK (or REQUEST_ERROR) read back
    * on that same stream.
    */
@@ -940,7 +940,7 @@ export class Moq {
       moqMapping,
       pubStream,
     );
-    // FORWARD defaults to 1 when the parameter is absent (draft-18 §9.2.2.8).
+    // FORWARD defaults to 1 when the parameter is absent (draft-19 §9.2.2.8).
     // Relays typically REQUEST_OK with Forward State 0 until a subscriber exists,
     // then flip it via REQUEST_UPDATE on the publish stream (Track._runResponseLoop).
     const forwarding = forwardFromParameters(resp.data?.parameters ?? []) !== 0;
@@ -954,7 +954,7 @@ export class Moq {
   }
 
   /**
-   * Subscribe to a track. draft-18: open a dedicated bidirectional stream, send
+   * Subscribe to a track. draft-19: open a dedicated bidirectional stream, send
    * SUBSCRIBE on it, and await SUBSCRIBE_OK read back on the same stream. Objects
    * arrive on separate unidirectional subgroup streams / datagrams, routed to
    * `onObject` by the negotiated track alias. A rejection is retried after
@@ -1029,7 +1029,7 @@ export class Moq {
     this._state = MoqState.Closed;
     this.stopKeepAlive();
 
-    // Tear down asynchronously. draft-18: each track/subscription closes its own
+    // Tear down asynchronously. draft-19: each track/subscription closes its own
     // request stream (PUBLISH_DONE + FIN / STOP_SENDING), independent of the
     // unidirectional control stream, before moqClose() tears down the transport.
     const tracks = this.tracks;
@@ -1067,7 +1067,7 @@ export class Moq {
     this.keepAliveOpts = null;
   }
 
-  // Send a keep-alive only when the session has been idle for `everyMs`. draft-18
+  // Send a keep-alive only when the session has been idle for `everyMs`. draft-19
   // has no keep-alive PUBLISH on the control stream; instead we send a no-op
   // REQUEST_UPDATE on an already-open request stream (a published track's stream,
   // or failing that a subscription's). No-op when there is nothing open.
@@ -1108,7 +1108,7 @@ export class Moq {
 
   // Start the incoming unidirectional-stream and datagram loops once. They run
   // in the background until close(); errors after close are expected. Unlike
-  // draft-18 there is no single control-message loop: request responses are read
+  // draft-19 there is no single control-message loop: request responses are read
   // on their own bidi streams (Track/Subscription._runResponseLoop), and the peer
   // SETUP + object subgroups arrive here on incoming unidirectional streams.
   private ensureIncomingLoops(): void {
@@ -1296,7 +1296,7 @@ function isEndOfGroupStatus(status: number | undefined): boolean {
   return status === MOQ_OBJ_STATUS_END_OF_GROUP || status === MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP;
 }
 
-// Read the FORWARD parameter (draft-18 §9.2.2.8); returns 1 when absent.
+// Read the FORWARD parameter (draft-19 §9.2.2.8); returns 1 when absent.
 function forwardFromParameters(parameters: KvPair[]): number {
   const fwd = parameters.find((p) => p.name === MOQ_PARAMETER_FORWARD);
   return fwd === undefined ? MOQ_FORWARD_TRUE : (fwd.val as number);

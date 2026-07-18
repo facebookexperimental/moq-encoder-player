@@ -37,7 +37,7 @@ import {
   MOQ_MESSAGE_PUBLISH_DONE,
   MOQ_MESSAGE_REQUEST_OK,
   MOQ_MESSAGE_REQUEST_ERROR,
-  MOQ_PARAMETER_SUBSCRIPTION_FILTER,
+  MOQ_PARAMETER_LOCATION_FILTER,
   MOQ_FORWARD_TRUE,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE,
@@ -241,9 +241,9 @@ describe('control message round trips via moqParseMsg', () => {
     expect(parsed.data.requestId).toBe(42);
     expect(parsed.data.namespace).toEqual(['ns', 'a']);
     expect(parsed.data.trackName).toBe('video');
-    expect(
-      parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_SUBSCRIPTION_FILTER),
-    ).toBe(true);
+    expect(parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_LOCATION_FILTER)).toBe(
+      true,
+    );
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBe('secret');
   });
 

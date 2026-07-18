@@ -14,30 +14,33 @@ import {
   getArrayBufferByteLength,
 } from './buffer_utils.js';
 
-// MOQ Transport definitions — draft-ietf-moq-transport-18
+// MOQ Transport definitions — draft-ietf-moq-transport-19
 // https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
 //
 // Since draft-15 the MOQT version is negotiated by the transport via ALPN (over
 // native QUIC) or WT-Available-Protocols (over WebTransport), not in-band in the
-// SETUP message. The "version" is therefore an ALPN token string, offered to
-// WebTransport as a connection protocol (see Moq.init in ./moq.ts).
-export const MOQ_ALPN_DRAFT18_VERSION = 'moqt-18';
+// SETUP message (draft-19 SETUP carries only Setup Options). The "version" is
+// therefore an ALPN token string, offered to WebTransport as a connection
+// protocol (see Moq.init in ./moq.ts).
+export const MOQ_ALPN_DRAFT19_VERSION = 'moqt-19';
 
-export const MOQ_CURRENT_VERSION = MOQ_ALPN_DRAFT18_VERSION;
+export const MOQ_CURRENT_VERSION = MOQ_ALPN_DRAFT19_VERSION;
 
 // Identifies our implementation in the MOQT_IMPLEMENTATION setup option.
 export const MOQ_IMPLEMENTATION_NAME = 'moq-encoder-player';
 
 export const MOQ_USE_LITTLE_ENDIAN = false; // MoQ is big endian
 
-// Setup Options (draft-18 §15.4) — separate namespace from Message Parameters.
+// Setup Options (draft-19 §15.4) — separate namespace from Message Parameters.
 export const MOQ_SETUP_OPTION_PATH = 0x1;
 export const MOQ_SETUP_OPTION_AUTHORIZATION_TOKEN = 0x3;
 export const MOQ_SETUP_OPTION_MAX_AUTH_TOKEN_CACHE_SIZE = 0x4;
 export const MOQ_SETUP_OPTION_AUTHORITY = 0x5;
+export const MOQ_SETUP_OPTION_MAX_FILTER_RANGES = 0x6; // draft-19 (#1765); default 0
 export const MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION = 0x7;
+export const MOQ_SETUP_OPTION_MAX_REQUEST_UPDATES = 0x8; // draft-19 (#1613); default 0
 
-// Message Parameters (draft-18 §15.7).
+// Message Parameters (draft-19 §15.7).
 export const MOQ_PARAMETER_OBJECT_DELIVERY_TIMEOUT = 0x02;
 export const MOQ_PARAMETER_AUTHORIZATION_TOKEN = 0x03;
 export const MOQ_PARAMETER_RENDEZVOUS_TIMEOUT = 0x04;
@@ -47,7 +50,8 @@ export const MOQ_PARAMETER_LARGEST_OBJECT = 0x09;
 export const MOQ_PARAMETER_FILL_TIMEOUT = 0x0a;
 export const MOQ_PARAMETER_FORWARD = 0x10;
 export const MOQ_PARAMETER_SUBSCRIBER_PRIORITY = 0x20;
-export const MOQ_PARAMETER_SUBSCRIPTION_FILTER = 0x21;
+// draft-19 renamed SUBSCRIPTION_FILTER -> LOCATION_FILTER (code 0x21 unchanged, #1765).
+export const MOQ_PARAMETER_LOCATION_FILTER = 0x21;
 export const MOQ_PARAMETER_GROUP_ORDER = 0x22;
 export const MOQ_PARAMETER_NEW_GROUP_REQUEST = 0x32;
 export const MOQ_PARAMETER_TRACK_NAMESPACE_PREFIX = 0x34;
@@ -56,22 +60,35 @@ export const MOQ_MAX_PARAMS = 256;
 export const MOQ_MAX_ARRAY_LENGTH = 1024;
 export const MOQ_MAX_TUPLE_PARAMS = 32;
 
-// REQUEST_ERROR codes (draft-18 §15.10.2) — subset used by this app.
+// REQUEST_ERROR codes (draft-19 §15.10.2) — subset used by this app.
 export const MOQ_REQUEST_ERROR_INTERNAL = 0x0;
 export const MOQ_REQUEST_ERROR_UNAUTHORIZED = 0x1;
+export const MOQ_REQUEST_ERROR_TIMEOUT = 0x2;
 export const MOQ_REQUEST_ERROR_NOT_SUPPORTED = 0x3;
+export const MOQ_REQUEST_ERROR_GOING_AWAY = 0x6;
+export const MOQ_REQUEST_ERROR_EXCESSIVE_LOAD = 0x9;
 export const MOQ_REQUEST_ERROR_DOES_NOT_EXIST = 0x10;
 export const MOQ_REQUEST_ERROR_INVALID_RANGE = 0x11;
+export const MOQ_REQUEST_ERROR_MALFORMED_TRACK = 0x12;
+export const MOQ_REQUEST_ERROR_REDIRECT = 0x34;
+// draft-19 additions (#1765): filter-related request errors. DUPLICATE_SUBSCRIPTION
+// (0x19 in draft-18) was removed — multiple subscriptions per track are now allowed.
+export const MOQ_REQUEST_ERROR_CONFLICTING_FILTERS = 0x35;
+export const MOQ_REQUEST_ERROR_INVALID_FILTER = 0x36;
 // Back-compat alias used by the session layer when rejecting a SUBSCRIBE.
 export const MOQ_SUBSCRIPTION_ERROR_INTERNAL = MOQ_REQUEST_ERROR_INTERNAL;
 
-// Filter types (draft-18 §5.1.2) — unchanged from draft-14.
+// Session-level termination code added in draft-19 (#1613).
+export const MOQ_SESSION_ERROR_TOO_MANY_REQUEST_UPDATES = 0x1b;
+
+// Location Filter types (draft-19 §5.1.2; renamed from "Subscription Filter",
+// same codes). Range Filters (0x25-0x29) are out of scope for this client.
 export const MOQ_FILTER_TYPE_NEXT_GROUP_START = 0x1;
 export const MOQ_FILTER_TYPE_LARGEST_OBJECT = 0x2;
 export const MOQ_FILTER_TYPE_ABSOLUTE_START = 0x3;
 export const MOQ_FILTER_TYPE_ABSOLUTE_RANGE = 0x4;
 
-// Object datagram type bits (draft-18 §11.3.1). Form 0b00X0XXXX.
+// Object datagram type bits (draft-19 §11.3.1). Form 0b00X0XXXX.
 const MOQ_DATAGRAM_BIT_PROPERTIES = 0x01;
 const MOQ_DATAGRAM_BIT_END_OF_GROUP = 0x02;
 const MOQ_DATAGRAM_BIT_ZERO_OBJECT_ID = 0x04;
@@ -79,7 +96,7 @@ const MOQ_DATAGRAM_BIT_DEFAULT_PRIORITY = 0x08;
 const MOQ_DATAGRAM_BIT_STATUS = 0x20;
 const MOQ_DATAGRAM_ALLOWED_BITS = 0x2f; // bits that may be set; 0x10 must be clear
 
-// Subgroup header type bits (draft-18 §11.4.2). Form 0b0XX1XXXX (bit 0x10 set).
+// Subgroup header type bits (draft-19 §11.4.2). Form 0b0XX1XXXX (bit 0x10 set).
 const MOQ_SUBGROUP_BIT_PROPERTIES = 0x01;
 const MOQ_SUBGROUP_SUBGROUP_ID_MODE_MASK = 0x06; // bits 1-2
 const MOQ_SUBGROUP_BIT_REQUIRED = 0x10;
@@ -89,7 +106,7 @@ const MOQ_SUBGROUP_BIT_FIRST_OBJECT = 0x40;
 const MOQ_SUBGROUP_ID_MODE_ABSENT_FIRST_OBJ = 1;
 const MOQ_SUBGROUP_ID_MODE_PRESENT = 2;
 
-// MOQ Messages (draft-18 §10 Table 5).
+// MOQ Messages (draft-19 §10 Table 5).
 export const MOQ_MESSAGE_SETUP = 0x2f00; // doubles as the control uni-stream type
 export const MOQ_MESSAGE_GOAWAY = 0x10;
 export const MOQ_MESSAGE_REQUEST_UPDATE = 0x2;
@@ -102,14 +119,15 @@ export const MOQ_MESSAGE_NAMESPACE = 0x8;
 export const MOQ_MESSAGE_PUBLISH_DONE = 0xb;
 export const MOQ_MESSAGE_TRACK_STATUS = 0xd;
 export const MOQ_MESSAGE_NAMESPACE_DONE = 0xe;
-export const MOQ_MESSAGE_PUBLISH_BLOCKED = 0xf;
+// draft-19 renamed PUBLISH_BLOCKED -> PUBLISH_SKIPPED (code 0xf unchanged, #1779).
+export const MOQ_MESSAGE_PUBLISH_SKIPPED = 0xf;
 export const MOQ_MESSAGE_FETCH = 0x16;
 export const MOQ_MESSAGE_FETCH_OK = 0x18;
 export const MOQ_MESSAGE_PUBLISH = 0x1d;
 export const MOQ_MESSAGE_SUBSCRIBE_NAMESPACE = 0x50;
 export const MOQ_MESSAGE_SUBSCRIBE_TRACKS = 0x51;
 
-// Unidirectional / datagram stream types (draft-18 §3.4).
+// Unidirectional / datagram stream types (draft-19 §3.4).
 export const MOQ_STREAM_TYPE_FETCH_HEADER = 0x05;
 export const MOQ_STREAM_TYPE_SETUP = 0x2f00;
 export const MOQ_STREAM_TYPE_PADDING = 0x132b3e28;
@@ -133,13 +151,13 @@ export const MOQ_GROUP_ORDER_DESCENDING = 0x2;
 export const MOQ_FORWARD_FALSE = 0;
 export const MOQ_FORWARD_TRUE = 1;
 
-// Object status (draft-18 §11.2.1.1). NOT_EXISTS (0x1) and END_OF_SUBGROUP (0x5)
+// Object status (draft-19 §11.2.1.1). NOT_EXISTS (0x1) and END_OF_SUBGROUP (0x5)
 // were removed in the draft-15..18 cleanup.
 export const MOQ_OBJ_STATUS_NORMAL = 0x0;
 export const MOQ_OBJ_STATUS_END_OF_GROUP = 0x3;
 export const MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP = 0x4;
 
-// Object Properties (draft-18 §15.8). Renamed from "Extension Headers"; the
+// Object Properties (draft-19 §15.8). Renamed from "Extension Headers"; the
 // MoQMI media-interop types keep their values and ride the delta-encoded KVPs.
 export const MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE = 0x0a;
 export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA = 0x15;
@@ -157,7 +175,7 @@ export const MOQ_EXT_HEADERS_SUPPORTED = [
   MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA,
 ];
 
-// Authorization Token Alias Type (draft-18 §15.5)
+// Authorization Token Alias Type (draft-19 §15.5)
 export const MOQ_TOKEN_DELETE = 0x0;
 export const MOQ_TOKEN_REGISTER = 0x1;
 export const MOQ_TOKEN_USE_ALIAS = 0x2;
@@ -166,7 +184,7 @@ export const MOQ_TOKEN_USE_VALUE = 0x3;
 // Token type
 export const MOQ_TOKEN_TYPE_NEGOTIATED_OUT_OF_BAND = 0x0;
 
-// PUBLISH_DONE status codes (draft-18 §15.10.3)
+// PUBLISH_DONE status codes (draft-19 §15.10.3)
 export const MOQ_STATUS_INTERNAL_ERROR = 0x0;
 export const MOQ_STATUS_UNAUTHORIZED = 0x1;
 export const MOQ_STATUS_TRACK_ENDED = 0x2;
@@ -222,7 +240,7 @@ export interface StreamHeaderOptions {
   isFirstObject: boolean;
 }
 
-// Parsed control messages (draft-18)
+// Parsed control messages (draft-19)
 
 export interface ParsedSetup {
   options: KvPair[];
@@ -311,7 +329,7 @@ export interface SubgroupObject {
 export interface MoqtState {
   // Kept loose: callers invoke `wt.createUnidirectionalStream(...)` etc.
   wt: any;
-  // draft-18 uses a pair of unidirectional control streams. We open one to send
+  // draft-19 uses a pair of unidirectional control streams. We open one to send
   // (controlWriter); the peer's incoming control stream is discovered by the
   // session layer and stored in controlReader.
   controlWriter: WritableStream<Uint8Array> | null;
@@ -370,7 +388,7 @@ export async function moqClose(moqt: MoqtState): Promise<void> {
   moqt.datagramsReader = null;
 }
 
-// MOQ control stream — draft-18 opens a unidirectional stream that begins with
+// MOQ control stream — draft-19 opens a unidirectional stream that begins with
 // the SETUP message (stream type 0x2F00 == SETUP message type).
 export async function moqCreateControlStream(moqt: MoqtState): Promise<void> {
   if (moqt.wt === null) {
@@ -590,10 +608,7 @@ function moqCreateSubscribeMessageBytes(
   const params: KvPair[] = [];
   // Request the live edge with a Largest Object subscription filter.
   params.push(
-    moqCreateKvPair(
-      MOQ_PARAMETER_SUBSCRIPTION_FILTER,
-      numberToVarInt(MOQ_FILTER_TYPE_LARGEST_OBJECT),
-    ),
+    moqCreateKvPair(MOQ_PARAMETER_LOCATION_FILTER, numberToVarInt(MOQ_FILTER_TYPE_LARGEST_OBJECT)),
   );
   if (authInfo != undefined && authInfo != '') {
     params.push(
@@ -1032,7 +1047,7 @@ export function moqCreateKvPair(name: number, val: KvPairValue): KvPair {
   return { name, val };
 }
 
-// ---- Message Parameters (draft-18 §10.2) -----------------------------------
+// ---- Message Parameters (draft-19 §10.2) -----------------------------------
 //
 // Type-delta encoded, count-bounded; each parameter Type has a fixed value
 // encoding. Unknown parameter types are a protocol violation (we throw).
@@ -1052,7 +1067,7 @@ const MESSAGE_PARAM_ENCODING: Record<number, number> = {
   [MOQ_PARAMETER_FILL_TIMEOUT]: PARAM_ENC_VARINT,
   [MOQ_PARAMETER_FORWARD]: PARAM_ENC_UINT8,
   [MOQ_PARAMETER_SUBSCRIBER_PRIORITY]: PARAM_ENC_UINT8,
-  [MOQ_PARAMETER_SUBSCRIPTION_FILTER]: PARAM_ENC_LENPREFIXED,
+  [MOQ_PARAMETER_LOCATION_FILTER]: PARAM_ENC_LENPREFIXED,
   [MOQ_PARAMETER_GROUP_ORDER]: PARAM_ENC_UINT8,
   [MOQ_PARAMETER_NEW_GROUP_REQUEST]: PARAM_ENC_VARINT,
   [MOQ_PARAMETER_TRACK_NAMESPACE_PREFIX]: PARAM_ENC_LENPREFIXED,
@@ -1132,7 +1147,7 @@ function decodeMessageParamValue(r: BufReader, type: number): KvPairValue {
   throw new Error(`Unknown message parameter type ${type}`);
 }
 
-// ---- Key-Value-Pairs (draft-18 §1.4.3) -------------------------------------
+// ---- Key-Value-Pairs (draft-19 §1.4.3) -------------------------------------
 //
 // Delta-type encoded; Length present only when the (absolute) Type is odd. Used
 // for Setup Options, Track Properties and Object Properties.

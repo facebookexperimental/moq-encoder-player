@@ -2,7 +2,7 @@
 
 `src/moq/moq.ts` provides a small, **media-free** client API for
 [Media over QUIC Transport (MoQT)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
-**draft-18**, running in the browser over **WebTransport**. It wraps the
+**draft-19**, running in the browser over **WebTransport**. It wraps the
 low-level wire codec in [`moqt.ts`](./moqt.ts) and the varint codec in
 [`varint.ts`](./varint.ts) and exposes three small classes:
 
@@ -98,12 +98,12 @@ stateDiagram-v2
 - **`init()` is synchronous** and returns immediately; it opens the WebTransport
   connection and the local unidirectional control stream in the background.
 - **`setup()`** awaits that readiness, exchanges the single `SETUP` message
-  (draft-18 merged CLIENT/SERVER_SETUP into one, sent on each peer's own
+  (draft-19 merged CLIENT/SERVER_SETUP into one, sent on each peer's own
   unidirectional control stream), and starts the incoming stream/datagram loops.
   The MoQT **version is negotiated by the transport via ALPN /
-  `WT-Available-Protocols`** (draft-18), so `setup()` carries no version argument.
+  `WT-Available-Protocols`** (draft-19), so `setup()` carries no version argument.
 - `addTrack()` / `subscribe()` also await readiness, so you can call them right
-  after `setup()`. Each opens its **own bidirectional request stream** (draft-18);
+  after `setup()`. Each opens its **own bidirectional request stream** (draft-19);
   the peer's `REQUEST_OK` / `SUBSCRIBE_OK` (or `REQUEST_ERROR`) is read back on it.
 
 ### Publish flow
@@ -307,7 +307,7 @@ A track you subscribe to. Identity + the per-object callback.
 
 ```ts
 getInfo(): SubscriptionInfo     // snapshot of identity
-unsubscribe(): Promise<void>    // draft-18: close the request stream (no UNSUBSCRIBE msg); idempotent
+unsubscribe(): Promise<void>    // draft-19: close the request stream (no UNSUBSCRIBE msg); idempotent
 ```
 
 ---
@@ -348,7 +348,7 @@ enum MoqState { Idle, Connecting, Running, Closed }
 ```ts
 interface MoqInitOptions {
   serverCertificateHash?: Uint8Array | null; // SHA-256 hash for serverCertificateHashes
-  alpnVersion?: string;                      // e.g. "moqt-18"; defaults to MOQ_ALPN_DRAFT18_VERSION
+  alpnVersion?: string;                      // e.g. "moqt-19"; defaults to MOQ_ALPN_DRAFT19_VERSION
 }
 ```
 `alpnVersion` is offered to WebTransport as `protocols` (the transport-level
@@ -403,7 +403,7 @@ interface ObjInfo { objId: number; groupId: number; status: ObjStatus }
 import { Moq, MoqMapping } from './moq/moq.js';
 
 const moq = new Moq();
-moq.init('https://localhost:4433/moq', { alpnVersion: 'moqt-18' });
+moq.init('https://localhost:4433/moq', { alpnVersion: 'moqt-19' });
 await moq.setup({ everyMs: 5000 }); // optional keep-alive while idle
 
 const video = await moq.addTrack(
@@ -467,7 +467,7 @@ async function readExactly(
 
 ```ts
 const moq = new Moq();
-moq.init(url, { alpnVersion: 'moqt-18' });
+moq.init(url, { alpnVersion: 'moqt-19' });
 await moq.setup();
 
 const track = await moq.addTrack(ns, 'data0', 0, 0, undefined, MoqMapping.ObjectPerDatagram);
