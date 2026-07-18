@@ -1,7 +1,6 @@
 # moq-encoder-player
 
-MOQT version: v16
-LOC version: v3
+MOQT version: v16. LOC version: v3
 
 This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
