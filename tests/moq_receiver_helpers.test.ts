@@ -19,9 +19,9 @@ describe('parseReceiverConfig', () => {
   });
 
   it('throws when the track map is invalid', () => {
-    expect(() =>
-      parseReceiverConfig({ urlHostPort: 'https://relay:4433', moqTracks: {} }),
-    ).toThrow(/> 0/);
+    expect(() => parseReceiverConfig({ urlHostPort: 'https://relay:4433', moqTracks: {} })).toThrow(
+      /> 0/,
+    );
   });
 
   it('returns a fully-populated config and fills defaults for valid input', () => {

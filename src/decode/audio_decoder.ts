@@ -38,7 +38,6 @@ function processAudioFrame(aFrame: any) {
 }
 
 function initializeDecoder(config: any) {
-  // eslint-disable-next-line no-undef
   audioDecoder = new AudioDecoder({
     output: (frame: any) => {
       processAudioFrame(frame);

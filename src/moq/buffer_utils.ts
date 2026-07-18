@@ -74,7 +74,6 @@ export async function buffRead(
   readableStream: ReadableStream,
   size: number,
 ): Promise<{ eof: boolean; buff: any } | null> {
-  let ret = null;
   if (size <= 0) {
     return { eof: false, buff: new Uint8Array(Number(0)) };
   }
@@ -82,11 +81,10 @@ export async function buffRead(
   const reader = readableStream.getReader({ mode: 'byob' });
 
   try {
-    ret = await buffReadFrombyobReader(reader, buff, 0, size);
+    return await buffReadFrombyobReader(reader, buff, 0, size);
   } finally {
     reader.releaseLock();
   }
-  return ret;
 }
 
 export async function buffReadFrombyobReader(

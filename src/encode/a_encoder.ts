@@ -89,7 +89,6 @@ self.addEventListener('message', async function (e) {
   if (type === 'aencoderini') {
     const encoderConfig = e.data.encoderConfig;
 
-    // eslint-disable-next-line no-undef
     aEncoder = new AudioEncoder(initAudioEncoder);
 
     // We do NOT accept changing audio encoding settings mid-stream for now

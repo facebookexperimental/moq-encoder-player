@@ -75,7 +75,11 @@ export class MoqReceiver {
       if (DEV_MODE) {
         throw err;
       }
-      sendMessageToMain(WORKER_PREFIX, 'error', `Error handling message ${type}. Err: ${err?.message}`);
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'error',
+        `Error handling message ${type}. Err: ${err?.message}`,
+      );
     }
   }
 
@@ -136,7 +140,10 @@ export class MoqReceiver {
 
     // Open the transport and perform the MoQ SETUP handshake.
     this.moq = new Moq();
-    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash, alpnVersion: MOQ_CURRENT_VERSION });
+    this.moq.init(this.config.urlHostPort, {
+      serverCertificateHash: this.config.certificateHash,
+      alpnVersion: MOQ_CURRENT_VERSION,
+    });
     await this.moq.setup();
     sendMessageToMain(WORKER_PREFIX, 'info', 'MOQ session established');
 
@@ -165,7 +172,8 @@ export class MoqReceiver {
 
   // Build the per-object callback handed to Moq.subscribe.
   private objectHandler(): ObjectCallback {
-    return (reader, extensionHeaders, length) => this.handleObject(reader, extensionHeaders, length);
+    return (reader, extensionHeaders, length) =>
+      this.handleObject(reader, extensionHeaders, length);
   }
 
   // Demux one received object into an encoded media chunk and post it upstream.
@@ -182,7 +190,9 @@ export class MoqReceiver {
 
     const chunkData: any = packet.GetData();
     if (chunkData == null || chunkData.type === undefined) {
-      throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`);
+      throw new Error(
+        `Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`,
+      );
     }
     if (this.verbose) {
       sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-MI: ${packet.GetDataStr()}`);

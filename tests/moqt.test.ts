@@ -220,7 +220,9 @@ describe('control message round trips via moqParseMsg', () => {
   });
 
   it('SERVER_SETUP parses (no version, empty params)', async () => {
-    const parsed = await moqParseMsg(createByobReadable(frame(MOQ_MESSAGE_SERVER_SETUP, numberToVarInt(0))));
+    const parsed = await moqParseMsg(
+      createByobReadable(frame(MOQ_MESSAGE_SERVER_SETUP, numberToVarInt(0))),
+    );
     expect(parsed.type).toBe(MOQ_MESSAGE_SERVER_SETUP);
     expect(parsed.data.parameters).toEqual([]);
   });
@@ -233,9 +235,9 @@ describe('control message round trips via moqParseMsg', () => {
     expect(parsed.data.requestId).toBe(42);
     expect(parsed.data.namespace).toEqual(['ns', 'a']);
     expect(parsed.data.trackName).toBe('video');
-    expect(parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_SUBSCRIPTION_FILTER)).toBe(
-      true,
-    );
+    expect(
+      parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_SUBSCRIPTION_FILTER),
+    ).toBe(true);
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBe('secret');
   });
 
@@ -372,14 +374,25 @@ describe('object and datagram headers (draft-16)', () => {
   it('per-datagram object (with extensions) round-trips its header', async () => {
     const cap = createCaptureStream();
     const ext = [moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, 5)];
-    await moqSendObjectPerDatagramToWriter(cap.writer, 12, 3, 4, 0x0a, new Uint8Array([9, 9]), ext, false);
+    await moqSendObjectPerDatagramToWriter(
+      cap.writer,
+      12,
+      3,
+      4,
+      0x0a,
+      new Uint8Array([9, 9]),
+      ext,
+      false,
+    );
     const parsed = await moqParseObjectHeader(createByobReadable(cap.getBytes()));
     expect(parsed.trackAlias).toBe(12);
     expect(parsed.groupSeq).toBe(3);
     expect(parsed.objSeq).toBe(4);
     expect(parsed.publisherPriority).toBe(0x0a);
     expect(parsed.options.extensionsPresent).toBe(true);
-    expect(parsed.extensionHeaders).toEqual([{ name: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, val: 5 }]);
+    expect(parsed.extensionHeaders).toEqual([
+      { name: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, val: 5 },
+    ]);
   });
 
   it('moqParseObjectHeader throws on an unknown object type', async () => {

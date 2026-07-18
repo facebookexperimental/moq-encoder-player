@@ -9,3 +9,9 @@ coverage/
 
 # Local TLS certificates for the dev media server
 certs/
+
+# Claude
+.claude/
+
+# Local scractpatch
+local-scratch/

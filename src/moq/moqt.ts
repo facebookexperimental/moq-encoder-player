@@ -460,9 +460,7 @@ function moqCreateClientSetupMessageBytes(): Uint8Array {
   return frameControlMessage(MOQ_MESSAGE_CLIENT_SETUP, [moqCreateParametersBytes(params)]);
 }
 
-export async function moqSendClientSetup(
-  writerStream: WritableStream<Uint8Array>
-): Promise<void> {
+export async function moqSendClientSetup(writerStream: WritableStream<Uint8Array>): Promise<void> {
   return moqSendToStream(writerStream, moqCreateClientSetupMessageBytes());
 }
 
@@ -817,7 +815,10 @@ function moqCreateSubgroupHeaderBytes(
   ]);
 }
 
-function moqCreateObjectEndOfGroupBytes(objSeqDelta: number, extensionHeaders: KvPair[]): Uint8Array {
+function moqCreateObjectEndOfGroupBytes(
+  objSeqDelta: number,
+  extensionHeaders: KvPair[],
+): Uint8Array {
   return concatBuffer([
     numberToVarInt(objSeqDelta), // Object ID delta
     moqCreateExtensionsBytes(extensionHeaders), // length-prefixed (0 when empty)
@@ -1324,7 +1325,7 @@ export function isMoqObjectStreamHeaderType(type: number): boolean {
   if ((type & MOQ_SUBGROUP_FORBIDDEN_BITS) !== 0) {
     return false; // bits 6-7 must be clear (form 0b00X1XXXX)
   }
-  if (((type & MOQ_SUBGROUP_SUBGROUP_ID_MODE_MASK) >> 1) === 3) {
+  if ((type & MOQ_SUBGROUP_SUBGROUP_ID_MODE_MASK) >> 1 === 3) {
     return false; // reserved subgroup-id mode
   }
   return true;

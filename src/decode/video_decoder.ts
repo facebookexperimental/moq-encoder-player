@@ -125,7 +125,6 @@ self.addEventListener('message', async function (e) {
         lastMetadataUsed = e.data.metadata;
       } else {
         // Initialize video decoder
-        // eslint-disable-next-line no-undef
         videoDecoder = new VideoDecoder({
           output: (frame: any) => {
             processVideoFrame(frame);

@@ -288,10 +288,8 @@ export class Track {
     this.name = name;
     this.trackAlias = trackAlias;
     this.publisherRequestId = publisherRequestId;
-    this.maxQueuedObjects =
-      maxQueuedObjects > 0 ? maxQueuedObjects : Number.MAX_SAFE_INTEGER;
-    this.maxOpenStreams =
-      maxOpenStreams > 0 ? maxOpenStreams : Number.MAX_SAFE_INTEGER;
+    this.maxQueuedObjects = maxQueuedObjects > 0 ? maxQueuedObjects : Number.MAX_SAFE_INTEGER;
+    this.maxOpenStreams = maxOpenStreams > 0 ? maxOpenStreams : Number.MAX_SAFE_INTEGER;
     this.authInfo = authInfo;
     this.moqMapping = moqMapping;
   }
@@ -606,7 +604,9 @@ export class Track {
     let writer = this.openStreams.get(obj.groupId);
     if (writer === undefined) {
       // Use the group priority directly as the WebTransport stream send order.
-      const uniStream = await this.moq._wt().createUnidirectionalStream({ sendOrder: obj.priority });
+      const uniStream = await this.moq
+        ._wt()
+        .createUnidirectionalStream({ sendOrder: obj.priority });
       writer = uniStream.getWriter();
       this.openStreams.set(obj.groupId, writer);
       this.openStreamCount++;
@@ -768,7 +768,9 @@ export class Moq {
 
     const wtOptions: any = {};
     if (options.serverCertificateHash != null) {
-      wtOptions.serverCertificateHashes = [{ algorithm: 'sha-256', value: options.serverCertificateHash }];
+      wtOptions.serverCertificateHashes = [
+        { algorithm: 'sha-256', value: options.serverCertificateHash },
+      ];
     }
     // Offer the MOQT version for transport-level negotiation. The browser maps
     // `protocols` to the WT-Available-Protocols header; engines that do not yet
@@ -790,9 +792,7 @@ export class Moq {
   }
 
   /** Perform the MoQ SETUP handshake and start the control loop. */
-  async setup(
-    keepAliveOpts?: KeepAliveOptions,
-  ): Promise<void> {
+  async setup(keepAliveOpts?: KeepAliveOptions): Promise<void> {
     if (this._state === MoqState.Idle) {
       throw new Error('setup() called before init()');
     }
@@ -1033,7 +1033,9 @@ export class Moq {
           await this.onSubscribe(msg.data);
           break;
         case MOQ_MESSAGE_REQUEST_UPDATE:
-          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_REQUEST_UPDATE ${JSON.stringify(msg.data)}`);
+          console.log(
+            `${LOG_PREFIX} received MOQ_MESSAGE_REQUEST_UPDATE ${JSON.stringify(msg.data)}`,
+          );
           this.onRequestUpdate(msg.data);
           break;
         case MOQ_MESSAGE_UNSUBSCRIBE:
@@ -1041,7 +1043,9 @@ export class Moq {
           this.onUnsubscribe(msg.data);
           break;
         case MOQ_MESSAGE_MAX_REQUEST_ID:
-          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_MAX_REQUEST_ID ${JSON.stringify(msg.data)}`);
+          console.log(
+            `${LOG_PREFIX} received MOQ_MESSAGE_MAX_REQUEST_ID ${JSON.stringify(msg.data)}`,
+          );
           break; // informational
         default:
           console.warn(`${LOG_PREFIX} Unexpected control message type ${msg.type}, ignoring`);
@@ -1057,7 +1061,11 @@ export class Moq {
       return;
     }
     this.pendingPublish.delete(data.reqId);
-    ok ? pending.resolve(data) : pending.reject(new Error(`PUBLISH rejected: ${JSON.stringify(data)}`));
+    if (ok) {
+      pending.resolve(data);
+    } else {
+      pending.reject(new Error(`PUBLISH rejected: ${JSON.stringify(data)}`));
+    }
   }
 
   // Resolve a pending subscribe on SUBSCRIBE_OK. An unknown request id is
@@ -1068,9 +1076,11 @@ export class Moq {
       return;
     }
     this.pendingSubscribe.delete(data.requestId);
-    ok
-      ? pending.resolve(data)
-      : pending.reject(new Error(`SUBSCRIBE rejected: ${JSON.stringify(data)}`));
+    if (ok) {
+      pending.resolve(data);
+    } else {
+      pending.reject(new Error(`SUBSCRIBE rejected: ${JSON.stringify(data)}`));
+    }
   }
 
   // draft-16 REQUEST_ERROR is unified; route it by Request ID to whichever
@@ -1216,7 +1226,11 @@ export class Moq {
         const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
         isEOF = isEndOfGroupStatus(objHeader.status);
         if (!isEOF && objHeader.payloadLength > 0) {
-          isEOF = await sub._deliver(readerStream, objHeader.extensionHeaders, objHeader.payloadLength);
+          isEOF = await sub._deliver(
+            readerStream,
+            objHeader.extensionHeaders,
+            objHeader.payloadLength,
+          );
         }
         numObjRead++;
       } catch (err: any) {
@@ -1276,7 +1290,10 @@ export class Moq {
   }
 
   private trackByFullName(fullTrackName: string): Track | null {
-    return this.tracks.find((t) => getTrackFullName(t.namespace as any, t.name) === fullTrackName) ?? null;
+    return (
+      this.tracks.find((t) => getTrackFullName(t.namespace as any, t.name) === fullTrackName) ??
+      null
+    );
   }
   private trackByPublisherRequestId(reqId: number): Track | null {
     return this.tracks.find((t) => t.publisherRequestId === reqId) ?? null;

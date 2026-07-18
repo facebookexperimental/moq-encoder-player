@@ -168,6 +168,9 @@ export class MIPackager {
         this.duration = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
+        // Advance the offset even on the last field so appending a field later
+        // can't silently read from the wrong position.
+        // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
         this.wallclock = r.num;
       }
@@ -204,6 +207,9 @@ export class MIPackager {
         this.duration = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
+        // Advance the offset even on the last field so appending a field later
+        // can't silently read from the wrong position.
+        // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
         this.wallclock = r.num;
       }
@@ -409,11 +415,6 @@ export class MIPackager {
 }
 
 export function MIgetTrackName(trackPrefix: string, isAudio: boolean) {
-  let suffix = '';
-  if (isAudio) {
-    suffix = 'audio0';
-  } else {
-    suffix = 'video0';
-  }
+  const suffix = isAudio ? 'audio0' : 'video0';
   return `${trackPrefix}${suffix}`;
 }

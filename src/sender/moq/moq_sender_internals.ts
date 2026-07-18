@@ -155,16 +155,23 @@ export class MoqSender {
     // Open the transport and perform the MoQ SETUP handshake. The keep-alive
     // loop (if enabled) is managed by the Moq session itself.
     this.moq = new Moq();
-    this.moq.init(this.config.urlHostPort, { serverCertificateHash: this.config.certificateHash, alpnVersion: MOQ_CURRENT_VERSION });
+    this.moq.init(this.config.urlHostPort, {
+      serverCertificateHash: this.config.certificateHash,
+      alpnVersion: MOQ_CURRENT_VERSION,
+    });
     console.log(`${WORKER_PREFIX} WT initiating to ${this.config.urlHostPort}`);
-    await this.moq.setup(this.config.keepAlivesEveryMs > 0 ? { everyMs: this.config.keepAlivesEveryMs } : undefined);
+    await this.moq.setup(
+      this.config.keepAlivesEveryMs > 0 ? { everyMs: this.config.keepAlivesEveryMs } : undefined,
+    );
     console.log(`${WORKER_PREFIX} MOQ session established`);
 
     // Publish each configured track.
     this.tracks = {};
     for (const [mediaType, trackData] of Object.entries(this.config.moqTracks)) {
       this.tracks[mediaType] = await this.publishTrack(mediaType, trackData);
-      console.log(`${WORKER_PREFIX} Published track ${mediaType} (${trackData.namespace}/${trackData.name})`);
+      console.log(
+        `${WORKER_PREFIX} Published track ${mediaType} (${trackData.namespace}/${trackData.name})`,
+      );
     }
 
     console.log(`${WORKER_PREFIX} MOQ Initialized, waiting for subscriptions`);
@@ -195,7 +202,12 @@ export class MoqSender {
   /** Package one encoded media chunk and hand it to its track. */
   handleChunk(data: ChunkMessage): void {
     if (this.moq === null || this.moq.state !== MoqState.Running) {
-      this.emitDropped(data.seqId, data.chunk?.timestamp, 'transport is NOT open yet', data.mediaType);
+      this.emitDropped(
+        data.seqId,
+        data.chunk?.timestamp,
+        'transport is NOT open yet',
+        data.mediaType,
+      );
       return;
     }
 
@@ -218,16 +230,26 @@ export class MoqSender {
     const newGroupOptions = newGroup
       ? { priority: this.priorityForMediaType(data.mediaType) }
       : undefined;
-    const obj = track.sendObject(packet.PayloadToBytes(), newGroupOptions, packet.ExtensionHeaders(), () => {
-      if (this.verbose) {
-        console.debug(
-          `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${obj.getInfo().groupId}/${obj.getInfo().objId})`,
-        );
-      }
-    });
+    const obj = track.sendObject(
+      packet.PayloadToBytes(),
+      newGroupOptions,
+      packet.ExtensionHeaders(),
+      () => {
+        if (this.verbose) {
+          console.debug(
+            `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${obj.getInfo().groupId}/${obj.getInfo().objId})`,
+          );
+        }
+      },
+    );
 
     if (obj.getInfo().status === 'dropped') {
-      this.emitDropped(seqId, chunkData.chunk?.timestamp, 'too many inflight requests', data.mediaType);
+      this.emitDropped(
+        seqId,
+        chunkData.chunk?.timestamp,
+        'too many inflight requests',
+        data.mediaType,
+      );
     }
 
     if (this.config?.isSendingStats) {
