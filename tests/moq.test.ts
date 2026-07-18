@@ -39,13 +39,54 @@ function fakeMoq(opts: { hangStream?: boolean; hangClose?: boolean } = {}) {
   return { moq, writes };
 }
 
+// A minimal stand-in for a WebTransport bidirectional request stream (draft-19
+// runs each PUBLISH / SUBSCRIBE on its own bidi stream). Records cancel/close so
+// teardown behaviour can be asserted.
+function fakeBidiStream() {
+  const calls = { cancelled: 0, closed: 0 };
+  const writer = {
+    write: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+    ready: Promise.resolve(),
+    releaseLock: () => {},
+  };
+  const stream: any = {
+    writable: {
+      getWriter: () => writer,
+      close: () => {
+        calls.closed++;
+        return Promise.resolve();
+      },
+    },
+    readable: {
+      cancel: () => {
+        calls.cancelled++;
+        return Promise.resolve();
+      },
+    },
+    _calls: calls,
+  };
+  return stream;
+}
+
 function makeTrack(
   moq: any,
   mapping: MoqMapping,
   maxInFlight = 1000,
   maxOpenStreams = 1000,
 ): Track {
-  return new Track(moq, ['vc'], 'v0', 2, 7, maxInFlight, maxOpenStreams, undefined, mapping);
+  return new Track(
+    moq,
+    ['vc'],
+    'v0',
+    2,
+    7,
+    maxInFlight,
+    maxOpenStreams,
+    undefined,
+    mapping,
+    fakeBidiStream(),
+  );
 }
 
 describe('Track sequencing', () => {
@@ -192,10 +233,19 @@ describe('Subscription', () => {
   it('reports its identity and forwards received objects to the callback', async () => {
     const { moq } = fakeMoq();
     const received: Array<{ length?: number }> = [];
-    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, 'secret', async (_r, _e, length) => {
-      received.push({ length });
-      return true; // EOF
-    });
+    const sub = new Subscription(
+      moq,
+      ['vc'],
+      'a0',
+      4,
+      9,
+      'secret',
+      async (_r, _e, length) => {
+        received.push({ length });
+        return true; // EOF
+      },
+      fakeBidiStream(),
+    );
 
     expect(sub.getInfo()).toEqual({
       namespace: ['vc'],
@@ -209,12 +259,16 @@ describe('Subscription', () => {
     expect(received).toEqual([{ length: 10 }]);
   });
 
-  it('unsubscribe sends UNSUBSCRIBE once and is idempotent', async () => {
-    const { moq, writes } = fakeMoq();
-    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, undefined, () => false);
+  it('unsubscribe closes the request stream once and is idempotent', async () => {
+    const { moq } = fakeMoq();
+    const stream = fakeBidiStream();
+    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, undefined, () => false, stream);
+    // draft-19 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
+    // writable (FIN) exactly once, even across repeated calls.
     await sub.unsubscribe();
     await sub.unsubscribe(); // no-op the second time
-    expect(writes.length).toBe(1);
+    expect(stream._calls.cancelled).toBe(1);
+    expect(stream._calls.closed).toBe(1);
   });
 });
 
@@ -292,8 +346,9 @@ describe('Moq.init ALPN negotiation', () => {
     constructor(url: string, options: any) {
       captured = { url, options };
     }
-    async createBidirectionalStream() {
-      return { readable: {}, writable: {} };
+    // draft-19 opens a unidirectional control stream (SETUP) rather than a bidi one.
+    async createUnidirectionalStream() {
+      return {};
     }
     close() {}
   }

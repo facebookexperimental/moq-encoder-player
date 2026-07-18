@@ -2,13 +2,13 @@
 
 `src/moq/moq.ts` provides a small, **media-free** client API for
 [Media over QUIC Transport (MoQT)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
-**draft‑16**, running in the browser over **WebTransport**. It wraps the
+**draft-18**, running in the browser over **WebTransport**. It wraps the
 low-level wire codec in [`moqt.ts`](./moqt.ts) and the varint codec in
 [`varint.ts`](./varint.ts) and exposes three small classes:
 
 | Class | Role | Created by |
 |-------|------|------------|
-| [`Moq`](#moq) | The session: transport, SETUP handshake, control loop | `new Moq()` |
+| [`Moq`](#moq) | The session: transport, SETUP handshake, incoming stream loops | `new Moq()` |
 | [`Track`](#track) | A track you **publish** | `moq.addTrack(...)` |
 | [`Subscription`](#subscription) | A track you **subscribe** to | `moq.subscribe(...)` |
 | [`ObjData`](#objdata) | A handle to one published object | `track.sendObject(...)` |
@@ -96,13 +96,15 @@ stateDiagram-v2
 ```
 
 - **`init()` is synchronous** and returns immediately; it opens the WebTransport
-  connection and the control stream in the background.
-- **`setup()`** awaits that readiness, performs the CLIENT/SERVER_SETUP
-  handshake, and starts the background control loop. The MoQT **version is
-  negotiated by the transport via ALPN / `WT-Available-Protocols`** (draft‑16),
-  so `setup()` carries no version argument.
+  connection and the local unidirectional control stream in the background.
+- **`setup()`** awaits that readiness, exchanges the single `SETUP` message
+  (draft-18 merged CLIENT/SERVER_SETUP into one, sent on each peer's own
+  unidirectional control stream), and starts the incoming stream/datagram loops.
+  The MoQT **version is negotiated by the transport via ALPN /
+  `WT-Available-Protocols`** (draft-18), so `setup()` carries no version argument.
 - `addTrack()` / `subscribe()` also await readiness, so you can call them right
-  after `setup()`.
+  after `setup()`. Each opens its **own bidirectional request stream** (draft-18);
+  the peer's `REQUEST_OK` / `SUBSCRIBE_OK` (or `REQUEST_ERROR`) is read back on it.
 
 ### Publish flow
 
@@ -113,9 +115,9 @@ sequenceDiagram
   participant Relay
   App->>Moq: init(url, { alpnVersion })
   App->>Moq: await setup()
-  App->>Moq: await addTrack(ns, name, maxQueuedObjects, auth, mapping)
-  Moq->>Relay: PUBLISH
-  Relay-->>Moq: PUBLISH_OK (Forward State 0 or 1)
+  App->>Moq: await addTrack(ns, name, maxQueuedObjects, maxOpenStreams, auth, mapping)
+  Moq->>Relay: PUBLISH (on its own bidi request stream)
+  Relay-->>Moq: REQUEST_OK (Forward State 0 or 1)
   Moq-->>App: Track
   loop per encoded frame
     App->>Moq: track.sendObject(bytes, newGroup?, extHeaders?)
@@ -124,8 +126,9 @@ sequenceDiagram
   Relay-->>Moq: REQUEST_UPDATE (Forward State 1/0 as subscribers come/go)
 ```
 
-> **Forward State gating.** A relay typically replies `PUBLISH_OK` with **Forward
-> State 0** ("I have no subscribers yet") and later sends `REQUEST_UPDATE` to flip
+> **Forward State gating.** A relay typically replies `REQUEST_OK` with **Forward
+> State 0** ("I have no subscribers yet") and later sends `REQUEST_UPDATE` (on the
+> track's publish stream) to flip
 > it to 1 when a subscriber appears (and back to 0 when the last one leaves).
 > While Forward State is 0, `track.sendObject()` returns objects with status
 > `dropped` and nothing is sent — so you don't waste uplink when nobody is
@@ -180,9 +183,10 @@ Open the transport. **Synchronous**; connection setup runs in the background.
 ```ts
 setup(keepAliveOpts?: KeepAliveOptions): Promise<void>
 ```
-Await connection readiness, run the SETUP handshake, and start the control loop.
-Throws if called before `init()`. Pass [`KeepAliveOptions`](#keepaliveoptions) to
-enable the idle keep-alive loop. Moves the session to `Running`.
+Await connection readiness, run the SETUP handshake, and start the incoming
+stream/datagram loops. Throws if called before `init()`. Pass
+[`KeepAliveOptions`](#keepaliveoptions) to enable the idle keep-alive loop. Moves
+the session to `Running`.
 
 ```ts
 addTrack(
@@ -194,8 +198,9 @@ addTrack(
   moqMapping: MoqMapping,
 ): Promise<Track>
 ```
-Publish a track: sends `PUBLISH` and resolves with a [`Track`](#track) once the
-peer replies `PUBLISH_OK`. `namespace` is a tuple (array) of name segments;
+Publish a track: opens a bidirectional request stream, sends `PUBLISH` on it, and
+resolves with a [`Track`](#track) once the peer replies `REQUEST_OK`. `namespace`
+is a tuple (array) of name segments;
 `name` is the track name. `maxQueuedObjects` bounds the per-track send queue and
 `maxOpenStreams` bounds the concurrent open subgroup streams — a new group is
 dropped while that many streams are still open (both `<= 0` mean unbounded).
@@ -302,7 +307,7 @@ A track you subscribe to. Identity + the per-object callback.
 
 ```ts
 getInfo(): SubscriptionInfo     // snapshot of identity
-unsubscribe(): Promise<void>    // best-effort UNSUBSCRIBE; idempotent
+unsubscribe(): Promise<void>    // draft-18: close the request stream (no UNSUBSCRIBE msg); idempotent
 ```
 
 ---
@@ -343,7 +348,7 @@ enum MoqState { Idle, Connecting, Running, Closed }
 ```ts
 interface MoqInitOptions {
   serverCertificateHash?: Uint8Array | null; // SHA-256 hash for serverCertificateHashes
-  alpnVersion?: string;                      // e.g. "moqt-16"; defaults to MOQ_ALPN_DRAFT16_VERSION
+  alpnVersion?: string;                      // e.g. "moqt-18"; defaults to MOQ_ALPN_DRAFT18_VERSION
 }
 ```
 `alpnVersion` is offered to WebTransport as `protocols` (the transport-level
@@ -398,7 +403,7 @@ interface ObjInfo { objId: number; groupId: number; status: ObjStatus }
 import { Moq, MoqMapping } from './moq/moq.js';
 
 const moq = new Moq();
-moq.init('https://localhost:4433/moq', { alpnVersion: 'moqt-16' });
+moq.init('https://localhost:4433/moq', { alpnVersion: 'moqt-18' });
 await moq.setup({ everyMs: 5000 }); // optional keep-alive while idle
 
 const video = await moq.addTrack(
@@ -462,7 +467,7 @@ async function readExactly(
 
 ```ts
 const moq = new Moq();
-moq.init(url, { alpnVersion: 'moqt-16' });
+moq.init(url, { alpnVersion: 'moqt-18' });
 await moq.setup();
 
 const track = await moq.addTrack(ns, 'data0', 0, 0, undefined, MoqMapping.ObjectPerDatagram);

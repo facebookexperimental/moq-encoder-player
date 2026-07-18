@@ -12,9 +12,11 @@ LICENSE file in the root directory of this source tree.
 //
 //   const moq = new Moq();
 //   moq.init(urlHostPort, { serverCertificateHash, alpnVersion });   // sync, starts connecting
-//   await moq.setup();                                              // CLIENT/SERVER_SETUP
+//   await moq.setup();                                              // SETUP handshake
 //   // The MOQT version is negotiated by the transport via ALPN /
-//   // WT-Available-Protocols (draft-16), so setup() carries no version.
+//   // WT-Available-Protocols (draft-18), so setup() carries no version. draft-18
+//   // uses a pair of unidirectional control streams and runs each request
+//   // (PUBLISH / SUBSCRIBE / ...) on its own bidirectional stream.
 //
 //   // Publish:
 //   const track = await moq.addTrack(ns, name, maxQueuedObjects, maxOpenStreams, auth, mapping);
@@ -33,14 +35,15 @@ import {
   moqCreate,
   moqClose,
   moqCreateControlStream,
-  moqSendClientSetup,
+  moqSendSetup,
   moqParseMsg,
+  moqParseControlMessageWithType,
+  moqReadVarintType,
+  moqParseObjectHeaderWithType,
   moqSendPublish,
   moqSendPublishDone,
   moqSendSubscribe,
-  moqSendUnSubscribe,
-  moqSendSubscribeOk,
-  moqSendRequestError,
+  moqSendRequestUpdate,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
@@ -50,29 +53,23 @@ import {
   isMoqObjectStreamHeaderType,
   isMoqObjectDatagramType,
   moqDecodeDatagramType,
-  getAuthInfofromParameters,
   getTrackFullName,
-  MOQ_MESSAGE_SERVER_SETUP,
-  MOQ_MESSAGE_PUBLISH_OK,
+  MOQ_MESSAGE_SETUP,
   MOQ_MESSAGE_PUBLISH_DONE,
-  MOQ_MESSAGE_MAX_REQUEST_ID,
-  MOQ_MESSAGE_SUBSCRIBE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
   MOQ_MESSAGE_REQUEST_OK,
-  MOQ_MESSAGE_REQUEST_ERROR,
   MOQ_MESSAGE_REQUEST_UPDATE,
-  MOQ_MESSAGE_UNSUBSCRIBE,
+  MOQ_STREAM_TYPE_PADDING,
   MOQ_PARAMETER_FORWARD,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP,
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
-  MOQ_SUBSCRIPTION_ERROR_INTERNAL,
   MOQ_STATUS_TRACK_ENDED,
   MOQ_FORWARD_TRUE,
   type MoqtState,
   type KvPair,
   type ObjectHeader,
-  MOQ_ALPN_DRAFT16_VERSION,
+  MOQ_ALPN_DRAFT18_VERSION,
 } from './moqt.js';
 
 const LOG_PREFIX = '[MOQ]';
@@ -126,10 +123,10 @@ export interface TrackInfo {
 export interface MoqInitOptions {
   // SHA-256 hash of the server certificate, for WebTransport `serverCertificateHashes`.
   serverCertificateHash?: Uint8Array | null;
-  // MOQT ALPN token (e.g. "moqt-16"). draft-16 negotiates the version via the
+  // MOQT ALPN token (e.g. "moqt-18"). draft-18 negotiates the version via the
   // transport (ALPN over native QUIC, WT-Available-Protocols over WebTransport),
   // so this is offered to WebTransport as `protocols` rather than sent in SETUP.
-  // Optional; defaults to MOQ_ALPN_DRAFT16_VERSION when omitted.
+  // Optional; defaults to MOQ_ALPN_DRAFT18_VERSION when omitted.
   alpnVersion?: string;
 }
 
@@ -242,10 +239,14 @@ export class Track {
   subscribers: Subscriber[] = [];
 
   private moq: Moq;
+  // draft-18: each request runs on its own bidirectional stream. PUBLISH was sent
+  // on this stream; REQUEST_OK / REQUEST_UPDATE (Forward State) and the final
+  // PUBLISH_DONE all flow back on it.
+  private publishStream: WebTransportBidirectionalStream;
   private queue: ObjData[] = [];
   private draining = false;
   private closed = false;
-  // Forward State for this subscription (draft-16). The relay toggles it via
+  // Forward State for this subscription (draft-18). The relay toggles it via
   // REQUEST_UPDATE; objects are only sent while it is true. Starts false: the
   // relay's PUBLISH_OK parks new tracks at Forward State 0 until a subscriber
   // appears.
@@ -282,6 +283,7 @@ export class Track {
     maxOpenStreams: number,
     authInfo: string | undefined,
     moqMapping: MoqMapping,
+    publishStream: WebTransportBidirectionalStream,
   ) {
     this.moq = moq;
     this.namespace = namespace;
@@ -292,6 +294,7 @@ export class Track {
     this.maxOpenStreams = maxOpenStreams > 0 ? maxOpenStreams : Number.MAX_SAFE_INTEGER;
     this.authInfo = authInfo;
     this.moqMapping = moqMapping;
+    this.publishStream = publishStream;
   }
 
   /**
@@ -318,7 +321,7 @@ export class Track {
 
     let newGroup = newGroupOptions !== undefined;
 
-    // Forward-state gating (draft-16 §5.1): the publisher does not send Objects
+    // Forward-state gating (draft-18 §5.1): the publisher does not send Objects
     // while Forward State is 0. The relay toggles this via REQUEST_UPDATE (see
     // Moq.onRequestUpdate -> Track._setForwarding).
     if (!this.forwarding) {
@@ -429,20 +432,55 @@ export class Track {
     this.openStreams.clear();
     this.openStreamCount = 0;
 
+    // draft-18: PUBLISH_DONE goes back on this request's own bidi stream (no
+    // Request ID field — the stream identifies the request); then FIN it.
     try {
       await moqSendPublishDone(
-        this.moq._controlWriter(),
-        this.publisherRequestId,
+        this.publishStream.writable,
         MOQ_STATUS_TRACK_ENDED,
         this.subscribers.length,
         'Subscription Ended, the stream has finished',
       );
+      await this.publishStream.writable.close();
     } catch {
       // Best-effort on teardown.
     }
   }
 
   // ---- internal (called by Moq / ObjData) --------------------------------
+
+  // The writable half of the PUBLISH request stream (used for keep-alive).
+  _publishWritable(): WritableStream<Uint8Array> {
+    return this.publishStream.writable;
+  }
+
+  // Read REQUEST_UPDATE (Forward State toggles) and other late control messages
+  // that the peer sends on the publish stream after the initial REQUEST_OK. In
+  // draft-18 the message arrives on this track's own stream, so it is inherently
+  // scoped to this track (no Existing Request ID lookup needed).
+  async _runResponseLoop(): Promise<void> {
+    try {
+      for (;;) {
+        const msg = await moqParseMsg(this.publishStream.readable);
+        if (msg.type === MOQ_MESSAGE_REQUEST_UPDATE) {
+          const forward = forwardFromParameters(msg.data?.parameters ?? []);
+          if (forward === MOQ_FORWARD_TRUE) {
+            this._addSubscriber(this.publisherRequestId, MOQ_FORWARD_TRUE, msg.data.parameters);
+            this._setForwarding(true);
+          } else {
+            this._removeSubscribersByRequestId(this.publisherRequestId);
+            this._setForwarding(false);
+          }
+        } else if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
+          console.log(`${LOG_PREFIX} publish stream PUBLISH_DONE ${JSON.stringify(msg.data)}`);
+          break;
+        }
+        // Ignore other late control messages.
+      }
+    } catch {
+      // Stream closed/reset: the peer is done with this publication.
+    }
+  }
 
   // True when the subscription is being forwarded (Forward State 1).
   isForwarding(): boolean {
@@ -656,6 +694,10 @@ export class Subscription {
 
   private moq: Moq;
   private onObject: ObjectCallback;
+  // draft-18: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
+  // any REQUEST_UPDATE flow back on it. Objects still arrive on separate uni
+  // subgroup streams / datagrams, routed by track alias.
+  private subscribeStream: WebTransportBidirectionalStream;
   private closed = false;
 
   constructor(
@@ -666,6 +708,7 @@ export class Subscription {
     trackAlias: number,
     authInfo: string | undefined,
     onObject: ObjectCallback,
+    subscribeStream: WebTransportBidirectionalStream,
   ) {
     this.moq = moq;
     this.namespace = namespace;
@@ -674,6 +717,7 @@ export class Subscription {
     this.trackAlias = trackAlias;
     this.authInfo = authInfo;
     this.onObject = onObject;
+    this.subscribeStream = subscribeStream;
   }
 
   /** Snapshot of the subscription's identity. */
@@ -686,20 +730,50 @@ export class Subscription {
     };
   }
 
-  /** Stop the subscription (best-effort UNSUBSCRIBE). */
+  /**
+   * Stop the subscription. draft-18 removed the UNSUBSCRIBE message: cancelling
+   * the request stream's readable (STOP_SENDING) and closing its writable (FIN)
+   * signals the publisher to stop sending objects for this subscription.
+   */
   async unsubscribe(): Promise<void> {
     if (this.closed) {
       return;
     }
     this.closed = true;
     try {
-      await moqSendUnSubscribe(this.moq._controlWriter(), this.subscribeRequestId);
+      await this.subscribeStream.readable.cancel('unsubscribe'); // STOP_SENDING
+    } catch {
+      // Best-effort on teardown.
+    }
+    try {
+      await this.subscribeStream.writable.close();
     } catch {
       // Best-effort on teardown.
     }
   }
 
   // ---- internal (called by Moq receive loops) ----------------------------
+
+  // The writable half of the SUBSCRIBE request stream (used for keep-alive).
+  _requestWritable(): WritableStream<Uint8Array> {
+    return this.subscribeStream.writable;
+  }
+
+  // Read PUBLISH_DONE / late control messages that arrive on the subscribe
+  // stream after SUBSCRIBE_OK. A stream close/reset ends the subscription.
+  async _runResponseLoop(): Promise<void> {
+    try {
+      for (;;) {
+        const msg = await moqParseMsg(this.subscribeStream.readable);
+        if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
+          console.log(`${LOG_PREFIX} subscribe stream PUBLISH_DONE ${JSON.stringify(msg.data)}`);
+          break;
+        }
+      }
+    } catch {
+      // Stream closed/reset.
+    }
+  }
 
   // Hand one received object payload to the callback; returns its EOF result.
   async _deliver(
@@ -742,21 +816,17 @@ export class Moq {
   private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
   private lastObjectSentMs = 0;
 
-  // Pending addTrack PUBLISH requests, keyed by request id.
-  private pendingPublish = new Map<
-    number,
-    { resolve: (data: any) => void; reject: (err: any) => void }
-  >();
-
   // Subscriber state.
   private subscriptions: Subscription[] = [];
   private subscriptionsByAlias = new Map<number, Subscription>();
-  private receiveLoopsStarted = false;
-  // Pending subscribe SUBSCRIBE requests, keyed by request id.
-  private pendingSubscribe = new Map<
-    number,
-    { resolve: (data: any) => void; reject: (err: any) => void }
-  >();
+  private incomingLoopsStarted = false;
+
+  // Resolves once the peer's SETUP has been received on its incoming control
+  // (unidirectional) stream. draft-18 handshakes over a pair of uni streams
+  // rather than a single bidi control stream, so we cannot simply read the reply
+  // back on the stream we wrote to.
+  private peerSetupReceived: Promise<void> | null = null;
+  private resolvePeerSetup: (() => void) | null = null;
 
   /**
    * Open the transport (sync). Connection + control stream creation happen in
@@ -775,7 +845,7 @@ export class Moq {
     // Offer the MOQT version for transport-level negotiation. The browser maps
     // `protocols` to the WT-Available-Protocols header; engines that do not yet
     // support it ignore the option (no version is then offered).
-    wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT16_VERSION];
+    wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT18_VERSION];
 
     console.info(`${LOG_PREFIX} Opening MOQT to ${url}, options: ${JSON.stringify(wtOptions)}`);
 
@@ -791,33 +861,38 @@ export class Moq {
     })();
   }
 
-  /** Perform the MoQ SETUP handshake and start the control loop. */
+  /** Perform the MoQ SETUP handshake and start the incoming receive loops. */
   async setup(keepAliveOpts?: KeepAliveOptions): Promise<void> {
     if (this._state === MoqState.Idle) {
       throw new Error('setup() called before init()');
     }
     await this.connecting;
 
-    await moqSendClientSetup(this.controlWriter());
-    const msg = await moqParseMsg(this.controlReader());
-    if (msg.type !== MOQ_MESSAGE_SERVER_SETUP) {
-      throw new Error(`Expected MOQ_MESSAGE_SERVER_SETUP, received ${msg.type}`);
-    }
+    this.peerSetupReceived = new Promise<void>((resolve) => {
+      this.resolvePeerSetup = resolve;
+    });
+
+    // The peer's SETUP arrives on its own incoming unidirectional stream, so the
+    // incoming loops must be running before we can complete the handshake.
+    this.ensureIncomingLoops();
+
+    // Send our SETUP on the local unidirectional control stream, then wait for
+    // the peer's SETUP (draft-18 §7).
+    await moqSendSetup(this.controlWriter());
+    await this.peerSetupReceived;
 
     this._state = MoqState.Running;
-    // Control loop runs in the background until close().
-    this.runControlLoop().catch((err) => {
-      if (this._state === MoqState.Running) {
-        console.error(`${LOG_PREFIX} Control loop error: ${err}`);
-      }
-    });
 
     if (keepAliveOpts !== undefined) {
       this.startKeepAlive(keepAliveOpts);
     }
   }
 
-  /** Publish a track (sends PUBLISH, resolves on PUBLISH_OK). */
+  /**
+   * Publish a track. draft-18: open a dedicated bidirectional stream, send
+   * PUBLISH on it, and await the peer's REQUEST_OK (or REQUEST_ERROR) read back
+   * on that same stream.
+   */
   async addTrack(
     namespace: string[],
     name: string,
@@ -836,11 +911,22 @@ export class Moq {
     const trackAlias = this.allocateTrackAlias();
     const requestId = this.allocateClientReqId();
 
-    const published = new Promise<any>((resolve, reject) => {
-      this.pendingPublish.set(requestId, { resolve, reject });
-    });
-    await moqSendPublish(this.controlWriter(), requestId, namespace, name, trackAlias, authInfo, 1);
-    const resp = await published;
+    const pubStream: WebTransportBidirectionalStream =
+      await this.moqt.wt.createBidirectionalStream();
+    await moqSendPublish(
+      pubStream.writable,
+      requestId,
+      namespace,
+      name,
+      trackAlias,
+      authInfo,
+      MOQ_FORWARD_TRUE,
+    );
+
+    const resp = await moqParseMsg(pubStream.readable);
+    if (resp.type !== MOQ_MESSAGE_REQUEST_OK) {
+      throw new Error(`PUBLISH rejected (${resp.type}): ${JSON.stringify(resp.data)}`);
+    }
 
     const track = new Track(
       this,
@@ -852,22 +938,27 @@ export class Moq {
       maxOpenStreams,
       authInfo,
       moqMapping,
+      pubStream,
     );
-    // FORWARD defaults to 1 when the parameter is absent (draft-16 §9.2.2.8).
-    // Relays typically PUBLISH_OK with Forward State 0 until a subscriber exists.
-    const forwarding = forwardFromParameters(resp?.parameters ?? []) !== 0;
+    // FORWARD defaults to 1 when the parameter is absent (draft-18 §9.2.2.8).
+    // Relays typically REQUEST_OK with Forward State 0 until a subscriber exists,
+    // then flip it via REQUEST_UPDATE on the publish stream (Track._runResponseLoop).
+    const forwarding = forwardFromParameters(resp.data?.parameters ?? []) !== 0;
     if (forwarding) {
-      track._addSubscriber(requestId, MOQ_FORWARD_TRUE, resp?.parameters ?? []);
+      track._addSubscriber(requestId, MOQ_FORWARD_TRUE, resp.data?.parameters ?? []);
     }
     track._setForwarding(forwarding);
     this.tracks.push(track);
+    void track._runResponseLoop();
     return track;
   }
 
   /**
-   * Subscribe to a track (sends SUBSCRIBE, resolves on SUBSCRIBE_OK). Objects
-   * received for the track are routed to `onObject` by the negotiated track
-   * alias. A SUBSCRIBE_ERROR is retried after `SLEEP_SUBSCRIBE_ERROR_MS`.
+   * Subscribe to a track. draft-18: open a dedicated bidirectional stream, send
+   * SUBSCRIBE on it, and await SUBSCRIBE_OK read back on the same stream. Objects
+   * arrive on separate unidirectional subgroup streams / datagrams, routed to
+   * `onObject` by the negotiated track alias. A rejection is retried after
+   * `SLEEP_SUBSCRIBE_ERROR_MS` with a fresh request stream.
    */
   async subscribe(
     namespace: string[],
@@ -884,39 +975,49 @@ export class Moq {
 
     // Make sure the incoming stream / datagram receive loops are running before
     // any objects can arrive.
-    this.ensureReceiveLoops();
+    this.ensureIncomingLoops();
 
-    // Retry on SUBSCRIBE_ERROR with a fresh request id, mirroring the relay
+    // Retry on rejection with a fresh request id + stream, mirroring the relay
     // race handling the legacy downloader had.
     for (;;) {
       const requestId = this.allocateClientReqId();
-      const answered = new Promise<any>((resolve, reject) => {
-        this.pendingSubscribe.set(requestId, { resolve, reject });
-      });
-      await moqSendSubscribe(this.controlWriter(), requestId, namespace, name, authInfo);
-      try {
-        const resp = await answered;
+      const subStream: WebTransportBidirectionalStream =
+        await this.moqt.wt.createBidirectionalStream();
+      await moqSendSubscribe(subStream.writable, requestId, namespace, name, authInfo);
+
+      const resp = await moqParseMsg(subStream.readable);
+      if (resp.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
+        const trackAlias = resp.data.trackAlias;
         const sub = new Subscription(
           this,
           namespace,
           name,
           requestId,
-          resp.trackAlias,
+          trackAlias,
           authInfo,
           onObject,
+          subStream,
         );
         this.subscriptions.push(sub);
-        this.subscriptionsByAlias.set(resp.trackAlias, sub);
+        this.subscriptionsByAlias.set(trackAlias, sub);
+        void sub._runResponseLoop();
         console.log(
-          `${LOG_PREFIX} SUBSCRIBE_OK for ${getTrackFullName(namespace as any, name)} (alias ${resp.trackAlias})`,
+          `${LOG_PREFIX} SUBSCRIBE_OK for ${getTrackFullName(namespace as any, name)} (alias ${trackAlias})`,
         );
         return sub;
-      } catch (err) {
-        console.warn(
-          `${LOG_PREFIX} SUBSCRIBE_ERROR for ${getTrackFullName(namespace as any, name)}: ${err}. Retrying in ${SLEEP_SUBSCRIBE_ERROR_MS}ms`,
-        );
-        await new Promise((r) => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
       }
+
+      // REQUEST_ERROR or unexpected: close the stream and retry.
+      console.warn(
+        `${LOG_PREFIX} SUBSCRIBE failed for ${getTrackFullName(namespace as any, name)} (${resp.type}): ${JSON.stringify(resp.data)}. Retrying in ${SLEEP_SUBSCRIBE_ERROR_MS}ms`,
+      );
+      try {
+        await subStream.writable.close();
+        await subStream.readable.cancel('retry');
+      } catch {
+        // ignore
+      }
+      await new Promise((r) => setTimeout(r, SLEEP_SUBSCRIBE_ERROR_MS));
     }
   }
 
@@ -928,20 +1029,16 @@ export class Moq {
     this._state = MoqState.Closed;
     this.stopKeepAlive();
 
-    // Tear down asynchronously: tracks must finish closing (they send
-    // PUBLISH_DONE on the control stream, which locks the control writer)
-    // BEFORE moqClose() closes that stream, otherwise the writer is still
-    // locked and close() throws "Cannot close a locked stream".
+    // Tear down asynchronously. draft-18: each track/subscription closes its own
+    // request stream (PUBLISH_DONE + FIN / STOP_SENDING), independent of the
+    // unidirectional control stream, before moqClose() tears down the transport.
     const tracks = this.tracks;
     this.tracks = [];
     const subscriptions = this.subscriptions;
     this.subscriptions = [];
     this.subscriptionsByAlias.clear();
     void (async () => {
-      // Unsubscribe sequentially so we never hold two control-writer locks.
-      for (const sub of subscriptions) {
-        await sub.unsubscribe();
-      }
+      await Promise.allSettled(subscriptions.map((sub) => sub.unsubscribe()));
       await Promise.allSettled(tracks.map((track) => track.close()));
       await moqClose(this.moqt);
     })();
@@ -970,7 +1067,10 @@ export class Moq {
     this.keepAliveOpts = null;
   }
 
-  // Send a keep-alive PUBLISH only when the session has been idle for `everyMs`.
+  // Send a keep-alive only when the session has been idle for `everyMs`. draft-18
+  // has no keep-alive PUBLISH on the control stream; instead we send a no-op
+  // REQUEST_UPDATE on an already-open request stream (a published track's stream,
+  // or failing that a subscription's). No-op when there is nothing open.
   private async maybeSendKeepAlive(): Promise<void> {
     const opts = this.keepAliveOpts;
     if (opts === null || this._state !== MoqState.Running) {
@@ -979,15 +1079,20 @@ export class Moq {
     if (Date.now() - this.lastObjectSentMs <= opts.everyMs) {
       return;
     }
-    await moqSendPublish(
-      this.controlWriter(),
-      this.allocateClientReqId(),
-      [opts.namespace],
-      opts.name,
-      KEEPALIVE_TRACK_ALIAS,
-      undefined,
-    );
-    console.log(`${LOG_PREFIX} Sent keep alive (publish)`);
+    const track = this.tracks[0];
+    const sub = this.subscriptions[0];
+    try {
+      if (track !== undefined) {
+        await moqSendRequestUpdate(track._publishWritable(), track.publisherRequestId, []);
+      } else if (sub !== undefined) {
+        await moqSendRequestUpdate(sub._requestWritable(), sub.subscribeRequestId, []);
+      } else {
+        return;
+      }
+      console.log(`${LOG_PREFIX} Sent keep alive (request update)`);
+    } catch (err) {
+      console.warn(`${LOG_PREFIX} keep alive failed: ${err}`);
+    }
   }
 
   // ---- internal accessors used by Track ----------------------------------
@@ -995,216 +1100,106 @@ export class Moq {
   _wt(): any {
     return this.moqt.wt;
   }
-  _controlWriter(): WritableStream<Uint8Array> {
-    return this.controlWriter();
-  }
   _markObjectSent(): void {
     this.lastObjectSentMs = Date.now();
   }
 
-  // ---- control loop ------------------------------------------------------
+  // ---- incoming stream / datagram loops ----------------------------------
 
-  private async runControlLoop(): Promise<void> {
-    while (this._state === MoqState.Running) {
-      const msg = await moqParseMsg(this.controlReader());
-      switch (msg.type) {
-        case MOQ_MESSAGE_PUBLISH_OK:
-          console.log(`${LOG_PREFIX} received PUBLISH_OK ${JSON.stringify(msg.data)}`);
-          this.resolvePublish(msg.data, true);
-          break;
-        case MOQ_MESSAGE_SUBSCRIBE_OK:
-          console.log(`${LOG_PREFIX} received SUBSCRIBE_OK ${JSON.stringify(msg.data)}`);
-          this.resolveSubscribe(msg.data, true);
-          break;
-        case MOQ_MESSAGE_REQUEST_ERROR:
-          // draft-16 unified error; route by Request ID to whichever request is pending.
-          console.log(`${LOG_PREFIX} received REQUEST_ERROR ${JSON.stringify(msg.data)}`);
-          this.rejectByRequestId(msg.data);
-          break;
-        case MOQ_MESSAGE_REQUEST_OK:
-          // Response to REQUEST_UPDATE/TRACK_STATUS/etc. Informational here.
-          console.log(`${LOG_PREFIX} received REQUEST_OK ${JSON.stringify(msg.data)}`);
-          break;
-        case MOQ_MESSAGE_PUBLISH_DONE:
-          console.log(`${LOG_PREFIX} received PUBLISH_DONE ${JSON.stringify(msg.data)}`);
-          break;
-        case MOQ_MESSAGE_SUBSCRIBE:
-          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_SUBSCRIBE ${JSON.stringify(msg.data)}`);
-          await this.onSubscribe(msg.data);
-          break;
-        case MOQ_MESSAGE_REQUEST_UPDATE:
-          console.log(
-            `${LOG_PREFIX} received MOQ_MESSAGE_REQUEST_UPDATE ${JSON.stringify(msg.data)}`,
-          );
-          this.onRequestUpdate(msg.data);
-          break;
-        case MOQ_MESSAGE_UNSUBSCRIBE:
-          console.log(`${LOG_PREFIX} received MOQ_MESSAGE_UNSUBSCRIBE ${JSON.stringify(msg.data)}`);
-          this.onUnsubscribe(msg.data);
-          break;
-        case MOQ_MESSAGE_MAX_REQUEST_ID:
-          console.log(
-            `${LOG_PREFIX} received MOQ_MESSAGE_MAX_REQUEST_ID ${JSON.stringify(msg.data)}`,
-          );
-          break; // informational
-        default:
-          console.warn(`${LOG_PREFIX} Unexpected control message type ${msg.type}, ignoring`);
-      }
-    }
-  }
-
-  // Resolve a pending addTrack on PUBLISH_OK. An unknown request id is treated
-  // as a keep-alive answer and ignored.
-  private resolvePublish(data: any, ok: boolean): void {
-    const pending = this.pendingPublish.get(data?.reqId);
-    if (pending === undefined) {
+  // Start the incoming unidirectional-stream and datagram loops once. They run
+  // in the background until close(); errors after close are expected. Unlike
+  // draft-18 there is no single control-message loop: request responses are read
+  // on their own bidi streams (Track/Subscription._runResponseLoop), and the peer
+  // SETUP + object subgroups arrive here on incoming unidirectional streams.
+  private ensureIncomingLoops(): void {
+    if (this.incomingLoopsStarted) {
       return;
     }
-    this.pendingPublish.delete(data.reqId);
-    if (ok) {
-      pending.resolve(data);
-    } else {
-      pending.reject(new Error(`PUBLISH rejected: ${JSON.stringify(data)}`));
-    }
-  }
-
-  // Resolve a pending subscribe on SUBSCRIBE_OK. An unknown request id is
-  // ignored (e.g. a late answer after we already retried).
-  private resolveSubscribe(data: any, ok: boolean): void {
-    const pending = this.pendingSubscribe.get(data?.requestId);
-    if (pending === undefined) {
-      return;
-    }
-    this.pendingSubscribe.delete(data.requestId);
-    if (ok) {
-      pending.resolve(data);
-    } else {
-      pending.reject(new Error(`SUBSCRIBE rejected: ${JSON.stringify(data)}`));
-    }
-  }
-
-  // draft-16 REQUEST_ERROR is unified; route it by Request ID to whichever
-  // pending publish or subscribe it answers.
-  private rejectByRequestId(data: any): void {
-    const id = data?.requestId;
-    const err = new Error(`REQUEST_ERROR: ${JSON.stringify(data)}`);
-    const pubPending = this.pendingPublish.get(id);
-    if (pubPending !== undefined) {
-      this.pendingPublish.delete(id);
-      pubPending.reject(err);
-      return;
-    }
-    const subPending = this.pendingSubscribe.get(id);
-    if (subPending !== undefined) {
-      this.pendingSubscribe.delete(id);
-      subPending.reject(err);
-    }
-  }
-
-  private async onSubscribe(subscribe: any): Promise<void> {
-    const fullTrackName = getTrackFullName(subscribe.namespace, subscribe.trackName);
-    const track = this.trackByFullName(fullTrackName);
-    if (track == null) {
-      await moqSendRequestError(
-        this.controlWriter(),
-        subscribe.requestId,
-        MOQ_SUBSCRIPTION_ERROR_INTERNAL,
-        `Unknown track ${fullTrackName}`,
-      );
-      return;
-    }
-    if (!authMatches(track.authInfo, subscribe.parameters)) {
-      await moqSendRequestError(
-        this.controlWriter(),
-        subscribe.requestId,
-        MOQ_SUBSCRIPTION_ERROR_INTERNAL,
-        'Invalid subscribe authInfo',
-      );
-      return;
-    }
-
-    track._addSubscriber(subscribe.requestId, MOQ_FORWARD_TRUE, subscribe.parameters);
-    track._setForwarding(true);
-    const last = track._lastSent();
-    await moqSendSubscribeOk(
-      this.controlWriter(),
-      subscribe.requestId,
-      track.trackAlias,
-      last.group,
-      last.obj,
-    );
-  }
-
-  // draft-16 REQUEST_UPDATE references an Existing Request ID; Forward State is
-  // carried as the FORWARD parameter.
-  private onRequestUpdate(update: any): void {
-    if (!('existingRequestId' in update)) {
-      console.warn(`${LOG_PREFIX} Invalid REQUEST_UPDATE, ignoring`);
-      return;
-    }
-    const track = this.trackByPublisherRequestId(update.existingRequestId);
-    if (track == null || !authMatches(track.authInfo, update.parameters)) {
-      return;
-    }
-    const forward = forwardFromParameters(update.parameters);
-    if (forward === MOQ_FORWARD_TRUE) {
-      track._addSubscriber(update.existingRequestId, MOQ_FORWARD_TRUE, update.parameters);
-      track._setForwarding(true);
-    } else if (forward === 0) {
-      track._removeSubscribersByRequestId(update.existingRequestId);
-      track._setForwarding(false);
-    }
-  }
-
-  private onUnsubscribe(unsubscribe: any): void {
-    if (!('requestId' in unsubscribe)) {
-      return;
-    }
-    for (const track of this.tracks) {
-      const removed = track._removeSubscribersByRequestId(unsubscribe.requestId);
-      if (removed.length > 0 && track.subscribers.length === 0) {
-        track._setForwarding(false);
-      }
-    }
-  }
-
-  // ---- receive loops (subscriber) ----------------------------------------
-
-  // Start the incoming unidirectional-stream and datagram receive loops once.
-  // They run in the background until close(); errors after close are expected.
-  private ensureReceiveLoops(): void {
-    if (this.receiveLoopsStarted) {
-      return;
-    }
-    this.receiveLoopsStarted = true;
-    this.runStreamReceiveLoop().catch((err) => {
-      if (this._state === MoqState.Running) {
-        console.error(`${LOG_PREFIX} Stream receive loop error: ${err}`);
+    this.incomingLoopsStarted = true;
+    this.runIncomingUniLoop().catch((err) => {
+      if (this._state !== MoqState.Closed) {
+        console.error(`${LOG_PREFIX} Incoming stream loop error: ${err}`);
       }
     });
     this.runDatagramReceiveLoop().catch((err) => {
-      if (this._state === MoqState.Running) {
+      if (this._state !== MoqState.Closed) {
         console.error(`${LOG_PREFIX} Datagram receive loop error: ${err}`);
       }
     });
   }
 
-  // Accept incoming unidirectional QUIC streams (one subgroup per stream).
-  private async runStreamReceiveLoop(): Promise<void> {
+  // Accept incoming unidirectional QUIC streams and demux by their leading
+  // stream type: the peer control stream (begins with SETUP), an object subgroup
+  // header, or padding.
+  private async runIncomingUniLoop(): Promise<void> {
     const reader = this._wt().incomingUnidirectionalStreams.getReader();
-    while (this._state === MoqState.Running) {
+    while (this._state !== MoqState.Closed) {
       const { done, value } = await reader.read();
       if (done) {
         break;
       }
-      const header = await moqParseObjectHeader(value);
-      if (!isMoqObjectStreamHeaderType(header.type)) {
-        console.warn(`${LOG_PREFIX} Unsupported incoming stream type ${header.type}`);
-        continue;
+      // No await on purpose: handle each incoming stream concurrently.
+      void this.handleIncomingUniStream(value as ReadableStream<Uint8Array>);
+    }
+  }
+
+  private async handleIncomingUniStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    let type: number;
+    try {
+      type = await moqReadVarintType(stream);
+    } catch {
+      return; // empty / garbage stream
+    }
+
+    if (type === MOQ_MESSAGE_SETUP) {
+      await this.handlePeerControlStream(stream);
+      return;
+    }
+    if (isMoqObjectStreamHeaderType(type)) {
+      try {
+        const header = await moqParseObjectHeaderWithType(stream, type);
+        await this.receiveSubgroupStream(stream, header);
+      } catch (err) {
+        if (this._state !== MoqState.Closed) {
+          console.warn(`${LOG_PREFIX} subgroup stream error: ${err}`);
+        }
       }
-      // No await on purpose: drain this subgroup stream concurrently with the
-      // next incoming stream.
-      void this.receiveSubgroupStream(value, header);
+      return;
+    }
+    if (type === MOQ_STREAM_TYPE_PADDING) {
+      // Discard padding to release flow control.
+      try {
+        await stream.cancel('padding');
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    console.warn(`${LOG_PREFIX} Unsupported incoming stream type ${type}`);
+  }
+
+  // The peer's control stream begins with SETUP (type already read); consume the
+  // SETUP body to complete the handshake, then drain subsequent control messages
+  // (e.g. GOAWAY) until the stream closes.
+  private async handlePeerControlStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    this.moqt.controlReader = stream;
+    try {
+      await moqParseControlMessageWithType(stream, MOQ_MESSAGE_SETUP);
+    } catch (err) {
+      console.error(`${LOG_PREFIX} Failed to parse peer SETUP: ${err}`);
+      return;
+    }
+    if (this.resolvePeerSetup !== null) {
+      this.resolvePeerSetup();
+      this.resolvePeerSetup = null;
+    }
+    try {
+      while (this._state !== MoqState.Closed) {
+        const msg = await moqParseMsg(stream);
+        console.log(`${LOG_PREFIX} control message ${msg.type}`);
+      }
+    } catch {
+      // Control stream closed.
     }
   }
 
@@ -1221,7 +1216,7 @@ export class Moq {
     }
     let isEOF = false;
     let numObjRead = 0;
-    while (this._state === MoqState.Running && !isEOF) {
+    while (this._state !== MoqState.Closed && !isEOF) {
       try {
         const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
         isEOF = isEndOfGroupStatus(objHeader.status);
@@ -1252,7 +1247,7 @@ export class Moq {
   // Accept incoming datagrams (one object per datagram).
   private async runDatagramReceiveLoop(): Promise<void> {
     const reader = this._wt().datagrams.readable.getReader();
-    while (this._state === MoqState.Running) {
+    while (this._state !== MoqState.Closed) {
       const { done, value } = await reader.read();
       if (done) {
         break;
@@ -1285,19 +1280,6 @@ export class Moq {
   private controlWriter(): WritableStream<Uint8Array> {
     return this.moqt.controlWriter as WritableStream<Uint8Array>;
   }
-  private controlReader(): ReadableStream<Uint8Array> {
-    return this.moqt.controlReader as ReadableStream<Uint8Array>;
-  }
-
-  private trackByFullName(fullTrackName: string): Track | null {
-    return (
-      this.tracks.find((t) => getTrackFullName(t.namespace as any, t.name) === fullTrackName) ??
-      null
-    );
-  }
-  private trackByPublisherRequestId(reqId: number): Track | null {
-    return this.tracks.find((t) => t.publisherRequestId === reqId) ?? null;
-  }
 
   private allocateClientReqId(): number {
     this.nextClientReqId =
@@ -1314,15 +1296,7 @@ function isEndOfGroupStatus(status: number | undefined): boolean {
   return status === MOQ_OBJ_STATUS_END_OF_GROUP || status === MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP;
 }
 
-// Auth passes when the track has no authInfo, or the parameters carry a match.
-function authMatches(trackAuth: string | undefined, parameters: KvPair[]): boolean {
-  if (trackAuth == undefined || trackAuth === '') {
-    return true;
-  }
-  return trackAuth === getAuthInfofromParameters(parameters);
-}
-
-// Read the FORWARD parameter (draft-16 §9.2.2.8); returns 1 when absent.
+// Read the FORWARD parameter (draft-18 §9.2.2.8); returns 1 when absent.
 function forwardFromParameters(parameters: KvPair[]): number {
   const fwd = parameters.find((p) => p.name === MOQ_PARAMETER_FORWARD);
   return fwd === undefined ? MOQ_FORWARD_TRUE : (fwd.val as number);
