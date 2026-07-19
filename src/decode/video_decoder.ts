@@ -71,12 +71,12 @@ function getAndOverrideInitDataValues(metadata: any) {
   return { config, avcDecoderConfigurationRecordInfo };
 }
 
-function configureDecoder(seqId: number, metadata: any) {
+function configureDecoder(objLabel: string, metadata: any) {
   if (videoDecoder == null) {
     sendMessageToMain(
       WORKER_PREFIX,
       'warn',
-      `SeqId: ${seqId} Could NOT initialize decoder, decoder was null at this time`,
+      `Obj: ${objLabel} Could NOT initialize decoder, decoder was null at this time`,
     );
     return;
   }
@@ -85,9 +85,14 @@ function configureDecoder(seqId: number, metadata: any) {
   sendMessageToMain(
     WORKER_PREFIX,
     'info',
-    `SeqId: ${seqId} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`,
+    `Obj: ${objLabel} Received different init, REinitializing the VideoDecoder. Config: ${JSON.stringify(ret.config)}, avcDecoderConfigurationRecord: ${JSON.stringify(ret.avcDecoderConfigurationRecordInfo)}`,
   );
   videoDecoder.configure(ret.config);
+}
+
+// Human-readable id for logs: the MoQ transport (groupId, objId) for this chunk.
+function objLabelFor(data: any): string {
+  return `${data.groupId}/${data.objId}`;
 }
 
 self.addEventListener('message', async function (e) {
@@ -116,11 +121,11 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(
         WORKER_PREFIX,
         'debug',
-        `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`,
+        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`,
       );
       if (videoDecoder != null) {
         if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, e.data.metadata)) {
-          configureDecoder(e.data.seqId, e.data.metadata);
+          configureDecoder(objLabelFor(e.data), e.data.metadata);
         }
         lastMetadataUsed = e.data.metadata;
       } else {
@@ -140,7 +145,7 @@ self.addEventListener('message', async function (e) {
           }
         });
 
-        configureDecoder(e.data.seqId, e.data.metadata);
+        configureDecoder(objLabelFor(e.data), e.data.metadata);
         lastMetadataUsed = e.data.metadata;
 
         workerState = StateEnum.Running;
@@ -150,7 +155,7 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(
         WORKER_PREFIX,
         'debug',
-        `SeqId: ${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}`,
+        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}`,
       );
     }
 
@@ -203,7 +208,7 @@ self.addEventListener('message', async function (e) {
         sendMessageToMain(
           WORKER_PREFIX,
           'info',
-          `New chunk SeqId: ${e.data.seqId}, NALUS: ${JSON.stringify(chunkNALUInfo)}`,
+          `New chunk Obj: ${objLabelFor(e.data)}, NALUS: ${JSON.stringify(chunkNALUInfo)}`,
         );
       }
       videoDecoder.decode(e.data.chunk);

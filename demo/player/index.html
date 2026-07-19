@@ -737,10 +737,10 @@ LICENSE file in the root directory of this source tree.
     }
 
     function jitterAudioDroppedCallback(data) {
-        console.warn(`[AUDIO-JITTER] Dropped late audio frame. seqId: ${data.seqId}, currentSeqId:${data.firstBufferSeqId}`);
+        console.warn(`[AUDIO-JITTER] Dropped late audio frame. (${data.groupId}/${data.objId}), current:(${data.firstBufferGroupId}/${data.firstBufferObjId})`);
     }
     function jitterVideoDroppedCallback(data) {
-        console.warn(`[VIDEO-JITTER] Dropped late video frame. seqId: ${data.seqId}, currentSeqId:${data.firstBufferSeqId}`);
+        console.warn(`[VIDEO-JITTER] Dropped late video frame. (${data.groupId}/${data.objId}), current:(${data.firstBufferGroupId}/${data.firstBufferObjId})`);
     }
 
     function createJitterBuffers() {
@@ -927,11 +927,13 @@ LICENSE file in the root directory of this source tree.
             // CHUNKS
         } else if (e.data.type === "videochunk") {
             const chunk = e.data.chunk;
-            const seqId = e.data.seqId;
+            // Order/dejitter on the MoQ transport-native (groupId, objectId).
+            const groupId = e.data.groupId;
+            const objId = e.data.objectId;
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
             if (wtVideoJitterBuffer != null) {
-                const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, seqId, extraData);
+                const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData);
                 if (orderedVideoData !== undefined) {
                     if (timingInfo.muxer.currentVideoTs < 0) {
                         updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
@@ -939,28 +941,30 @@ LICENSE file in the root directory of this source tree.
 
                     // Download is sequential
                     if (orderedVideoData.isDisco) {
-                        console.warn(`VIDEO DISCO detected in seqId: ${orderedVideoData.seqId}`);
+                        console.warn(`VIDEO DISCO detected at (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
                     }
                     if (orderedVideoData.repeatedOrBackwards) {
-                        console.warn(`VIDEO Repeated or backwards chunk, discarding, seqId: ${orderedVideoData.seqId}`);
+                        console.warn(`VIDEO Repeated or backwards chunk, discarding, (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
                     } else {
                         // Adds pts to wallClk info
                         latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
 
                         timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                         updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                        videoDecoderWorker.postMessage({ type: "videochunk", seqId: orderedVideoData.seqId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
+                        videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
                     }
                 }
                 updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
             }
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
-            const seqId = e.data.seqId;
+            // Order/dejitter on the MoQ transport-native (groupId, objectId).
+            const groupId = e.data.groupId;
+            const objId = e.data.objectId;
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
 
             if (wtAudioJitterBuffer != null) {
-                const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, seqId, extraData);
+                const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData);
                 if (orderedAudioData !== undefined) {
                     if (timingInfo.muxer.currentAudioTs < 0) {
                         updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
@@ -968,10 +972,10 @@ LICENSE file in the root directory of this source tree.
 
                     // Download is sequential
                     if (orderedAudioData.isDisco) {
-                        console.warn(`AUDIO DISCO detected in seqId: ${orderedAudioData.seqId}`);
+                        console.warn(`AUDIO DISCO detected at (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
                     }
                     if (orderedAudioData.repeatedOrBackwards) {
-                        console.warn(`AUDIO Repeated or backwards chunk, discarding, seqId: ${orderedAudioData.seqId}`);
+                        console.warn(`AUDIO Repeated or backwards chunk, discarding, (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
                     } else {
                         // Adds pts to wallClk info
                         latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
@@ -979,7 +983,7 @@ LICENSE file in the root directory of this source tree.
                         timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
 
                         updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                        audioDecoderWorker.postMessage({ type: "audiochunk", seqId: orderedAudioData.seqId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
+                        audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
                     }
                 }
                 updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
@@ -1099,12 +1103,11 @@ LICENSE file in the root directory of this source tree.
         const clkms = droppedFrameData.clkms;
         const ts = droppedFrameData.ts;
         const msg = droppedFrameData.msg;
-        let seqId = droppedFrameData.msg;
-        if ('seqId' in droppedFrameData) {
-            seqId = droppedFrameData.seqId;
-        }
+        // Renderer-side drops are timestamp-keyed; include the MoQ (groupId/objId)
+        // when the source provides it, otherwise just the timestamp.
+        const objInfo = ('groupId' in droppedFrameData) ? ` (${droppedFrameData.groupId}/${droppedFrameData.objId})` : "";
 
-        const str = new Date(clkms).toISOString() + " (" + ts + ")(" + seqId + ") " + msg;
+        const str = new Date(clkms).toISOString() + " (" + ts + ")" + objInfo + " " + msg;
 
         const entry = document.createElement('li');
         entry.appendChild(document.createTextNode(str));

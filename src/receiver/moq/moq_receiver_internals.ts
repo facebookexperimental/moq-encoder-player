@@ -172,8 +172,8 @@ export class MoqReceiver {
 
   // Build the per-object callback handed to Moq.subscribe.
   private objectHandler(): ObjectCallback {
-    return (reader, extensionHeaders, length) =>
-      this.handleObject(reader, extensionHeaders, length);
+    return (reader, extensionHeaders, length, groupId, objectId) =>
+      this.handleObject(reader, extensionHeaders, length, groupId, objectId);
   }
 
   // Demux one received object into an encoded media chunk and post it upstream.
@@ -181,6 +181,8 @@ export class MoqReceiver {
     reader: ReadableStream<Uint8Array>,
     extensionHeaders: KvPair[],
     length?: number,
+    groupId?: number,
+    objectId?: number,
   ): Promise<boolean> {
     this.reportStats();
 
@@ -235,7 +237,10 @@ export class MoqReceiver {
       clkms: Date.now(),
       packagerType: chunkData.type,
       captureClkms: chunkData.wallclock,
-      seqId: chunkData.seqId,
+      // MoQ transport-native ordering keys. The player dejitters/orders on
+      // (groupId, objectId).
+      groupId,
+      objectId,
       chunk,
       metadata: chunkData.metadata,
       sampleFreq: chunkData.sampleFreq,
