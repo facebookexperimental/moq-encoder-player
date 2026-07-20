@@ -88,8 +88,8 @@ LICENSE file in the root directory of this source tree.
                     <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
                     (Leave it blank to NOT use it)
                     <div class="clear"></div>
-                    <label>Min audio player buffer (ms):<input id="playerBufferMs" type="text" value="100"></label>
-                    <label>(it waits until audio buffers this amount to start playback)</label>
+                    <label>Audio render player buffer (ms):<input id="playerBufferMs" type="text" value="100"><button id="btnPlayerBufferUpdate" type="button" disabled>Update</button></label>
+                    <label>(it waits until audio buffers this amount to start playback; Update forces a gap to re-apply live)</label>
                     <div class="clear"></div>
                     <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
                     <label>(this + jitter is the max latency allowed)</label>
@@ -194,17 +194,10 @@ LICENSE file in the root directory of this source tree.
             <div class="styleform">
                 <h3>Audio</h3>
                 <form>
-                    <label>Current frame TS compensated (ms):</label><input id="currentFrameATS" type="text" value=""
+                    <label>Current frame TS (ms):</label><input id="currentFrameATS" type="text" value=""
                         readonly>
                     <div class="clear"></div>
                     <label>Buffer size:</label><input id="currentDecoABuffer" type="text" value="" readonly>
-                    <div class="clear"></div>
-                    <label>Timestamp compensation(ms):</label><input id="currentDecoCompAOffset" type="text" value=""
-                        readonly>
-                    <label>(The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every
-                        decoded audio sample adds 1/fs (so sample time), that means if we drop and audio packet those
-                        timestamps will be collapsed creating A/V out of sync. We compensate those lost packets with
-                        this)</label>
                     <div class="clear"></div>
                 </form>
                 <h3>Video</h3>
@@ -227,7 +220,7 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <label>Buffer size:</label><input id="currentRendererABuffer" type="text" value="" size="48" readonly>
                     <div class="clear"></div>
-                    <label>Total silence inserted (ms):</label><input id="currentRendererASilenceInserted" type="text"
+                    <label>Gaps recovered:</label><input id="currentRendererASilenceInserted" type="text"
                         value="" readonly>
                     <div class="clear"></div>
                 </form>
@@ -288,16 +281,14 @@ LICENSE file in the root directory of this source tree.
     import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
-    import { CicularAudioSharedBuffer } from "../../dist/render/audio_circular_buffer.js"
+    import { GapTolerantPlayer } from "../../dist/render/audio_player.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
 
-    // Audio states (controls the player buffer)
+    // Audio states (reflects AudioContext running state)
     const AUDIO_STOPPED = 0;
     const AUDIO_PLAYING = 1;
-
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
 
     // Main vars
     let VERBOSE = true;
@@ -355,7 +346,7 @@ LICENSE file in the root directory of this source tree.
 
     const buffersInfo = {
         decoder: {
-            audio: { size: -1, lengthMs: -1, timestampCompensationOffset: -1 },
+            audio: { size: -1, lengthMs: -1 },
             video: { size: -1, lengthMs: -1 },
         },
         renderer: {
@@ -367,10 +358,8 @@ LICENSE file in the root directory of this source tree.
     // Audio renderer ----
 
     // Audio vars
-    let audioCtx = null;
-    let sourceBufferAudioWorklet = null;
+    let audioPlayer = null;
     let systemAudioLatencyMs = 0;
-    let audioSharedBuffer = null;
     // Set once if the browser does not honor the requested AudioContext sample rate
     let audioSampleRateWarned = false;
 
@@ -571,13 +560,6 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
 
-    // Check setting to use SharedArrayBuffer
-    if (crossOriginIsolated) {
-        console.log("crossOriginIsolated enabled, we can use SharedArrayBuffer");
-    } else {
-        console.warn("crossOriginIsolated NOT enabled, we can NOT use SharedArrayBuffer");
-    }
-
     // To update track names
     namespace.addEventListener("input", function (e) {
         updateFullTrackNameUI();
@@ -631,11 +613,22 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    async function updatePlayerBuffer() {
+        playerBufferMs = Number(document.getElementById('playerBufferMs').value);
+        if (audioPlayer != null) {
+            audioPlayer.setJitterDelay(playerBufferMs / 1000);
+            // The renderer cushion is only (re)applied when a segment starts, so
+            // force a gap to re-prime the buffer at the new size right away.
+            audioPlayer.forceGap();
+        }
+    }
+
     async function start() {
         document.getElementById("btnStart").disabled = true;
         document.getElementById("btnStop").disabled = false;
         document.getElementById("btnJitterAudioUpdate").disabled = false;
         document.getElementById("btnJitterVideoUpdate").disabled = false;
+        document.getElementById("btnPlayerBufferUpdate").disabled = false;
 
         playerBufferMs = Number(document.getElementById('playerBufferMs').value);
         playerMaxBufferMs = Number(document.getElementById('playerMaxBufferMs').value);
@@ -693,22 +686,19 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnStop").disabled = true
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
+        document.getElementById("btnPlayerBufferUpdate").disabled = true;
 
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
         videoDecoderWorker.postMessage(stopMsg);
         audioDecoderWorker.postMessage(stopMsg);
 
-        if (audioCtx != null) {
-            await audioCtx.close();
+        if (audioPlayer != null) {
+            await audioPlayer.close();
         }
-        audioCtx = null;
-        sourceBufferAudioWorklet = null;
+        audioPlayer = null;
         audioSampleRateWarned = false;
-        if (audioSharedBuffer != null) {
-            audioSharedBuffer.Clear();
-            audioSharedBuffer = null;
-        }
+        systemAudioLatencyMs = 0;
 
         clearTimingInfo();
 
@@ -795,39 +785,6 @@ LICENSE file in the root directory of this source tree.
         buffersInfo.renderer.video.lengthMs = -1;
     }
 
-    async function initializeAudioContext(desiredSampleRate) {
-        return new Promise((resolve) => {
-            if (audioCtx == null) {
-                audioCtx = new AudioContext({ latencyHint: "interactive", sampleRate: desiredSampleRate });
-                // Add worklet
-                audioCtx.audioWorklet.addModule('../../dist/render/source_buffer_worklet.js')
-                    .then(data => {
-                        sourceBufferAudioWorklet = new AudioWorkletNode(audioCtx, 'source-buffer');
-                        // AudioWorkletNode can be interoperable with other native AudioNodes.
-
-                        sourceBufferAudioWorklet.port.onmessage = (e) => {
-                            // Handling data from the processor.
-                            processWorkerMessage(e);
-                        };
-                        sourceBufferAudioWorklet.onprocessorerror = (event) => {
-                            console.error('Audio worklet error. Err: ' + JSON.stringify(event));
-                        };
-
-                        // Connect to audio renderer
-                        sourceBufferAudioWorklet.connect(audioCtx.destination);
-
-                        systemAudioLatencyMs = (audioCtx.outputLatency + audioCtx.baseLatency) * 1000;
-                        console.debug('Audio system latency (ms): ' + systemAudioLatencyMs);
-
-                        return resolve(null);
-                    });
-            }
-            else {
-                return resolve(null);
-            }
-        });
-    }
-
     function updateJitterStatsUI(mediaType, data) {
         let elementMaxSize = 'videoJitterCurrentMaxSize'
         let elementNameSize = 'videoJitterSize';
@@ -867,28 +824,22 @@ LICENSE file in the root directory of this source tree.
     function updateDecoderUI(mediaType, ts, bufferInfo) {
         let elementTsName = 'currentFrameVTS';
         let elementBufferName = 'currentDecoVBuffer';
-        let elementCompOffset = '';
         if (mediaType === 'audio') {
             elementTsName = 'currentFrameATS';
             elementBufferName = 'currentDecoABuffer';
-            elementCompOffset = 'currentDecoCompAOffset';
         }
         document.getElementById(elementTsName).value = (ts / 1000).toFixed(0);
         document.getElementById('currentFrameAVTSDiff').value = `${document.getElementById('currentFrameVTS').value - document.getElementById('currentFrameATS').value} ms`;
 
         document.getElementById(elementBufferName).value = `${bufferInfo.size} (${bufferInfo.lengthMs.toFixed(0)} ms)`;
-
-        if (elementCompOffset != '') {
-            document.getElementById(elementCompOffset).value = `${(bufferInfo.timestampCompensationOffset / 1000).toFixed(0)} ms`;
-        }
     }
 
-    function updateRendererAudioUI(ts, bufferInfo, totalSilenceInsertedMs) {
+    function updateRendererAudioUI(ts, bufferInfo, gapsRecovered) {
         document.getElementById('currentRendererATS').value = (ts / 1000).toFixed(0);
         document.getElementById('currentRendererAVTSDiff').value = `${document.getElementById('currentRendererVTS').value - document.getElementById('currentRendererATS').value} ms`;
 
-        document.getElementById('currentRendererABuffer').value = `${bufferInfo.size} samples (${bufferInfo.lengthMs.toFixed(0)} ms) - Max: ${buffersInfo.renderer.audio.sizeMs} ms`;
-        document.getElementById('currentRendererASilenceInserted').value = totalSilenceInsertedMs.toFixed(0);
+        document.getElementById('currentRendererABuffer').value = `${bufferInfo.lengthMs} ms`;
+        document.getElementById('currentRendererASilenceInserted').value = gapsRecovered.toFixed(0);
     }
 
     function updateRendererVideoUI(ts, bufferInfo, totalDiscarded) {
@@ -933,8 +884,10 @@ LICENSE file in the root directory of this source tree.
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
             if (wtVideoJitterBuffer != null) {
-                const orderedVideoData = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData);
-                if (orderedVideoData !== undefined) {
+                // AddItem may release several chunks at once (e.g. right after the
+                // jitter buffer is shrunk via Update); forward each in order.
+                const releasedVideo = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData);
+                for (const orderedVideoData of releasedVideo) {
                     if (timingInfo.muxer.currentVideoTs < 0) {
                         updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
                     }
@@ -964,8 +917,10 @@ LICENSE file in the root directory of this source tree.
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
 
             if (wtAudioJitterBuffer != null) {
-                const orderedAudioData = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData);
-                if (orderedAudioData !== undefined) {
+                // AddItem may release several chunks at once (e.g. right after the
+                // jitter buffer is shrunk via Update); forward each in order.
+                const releasedAudio = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData);
+                for (const orderedAudioData of releasedAudio) {
                     if (timingInfo.muxer.currentAudioTs < 0) {
                         updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
                     }
@@ -991,54 +946,50 @@ LICENSE file in the root directory of this source tree.
             // FRAME
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.frame;
+            // The worker sends the true source timestamp (ts) of the chunk that produced
+            // this frame; the renderer uses it to anchor media time on a resume.
+            const ts = e.data.ts;
 
-            // currentAudioTs needs to be compesated with GAPs more info in audio_decoder.js
-            timingInfo.decoder.currentAudioTs = aFrame.timestamp + e.data.timestampCompensationOffset;
-            buffersInfo.decoder.audio.timestampCompensationOffset = e.data.timestampCompensationOffset;
-
+            timingInfo.decoder.currentAudioTs = ts;
             buffersInfo.decoder.audio.size = e.data.queueSize;
             buffersInfo.decoder.audio.lengthMs = e.data.queueLengthMs;
 
             updateDecoderUI('audio', timingInfo.decoder.currentAudioTs, buffersInfo.decoder.audio);
 
-            if (audioCtx == null && aFrame.sampleRate != undefined && aFrame.sampleRate > 0) {
-                // Initialize the audio when we know sampling freq used in the capture
-                await initializeAudioContext(aFrame.sampleRate);
-            }
-            // If audioSharedBuffer not initialized and is in start (render) state -> Initialize
-            if (audioCtx != null && sourceBufferAudioWorklet != null && audioSharedBuffer === null) {
-                // Playback is 1:1 (no resampling). All target browsers honor the
-                // AudioContext sample-rate constructor option; if this one does not,
-                // disable audio gracefully (log once) instead of failing per frame.
-                if (audioCtx.sampleRate !== aFrame.sampleRate) {
-                    if (!audioSampleRateWarned) {
-                        console.error(`Audio disabled: browser did not honor requested sample rate. Capture: ${aFrame.sampleRate} Hz, AudioContext: ${audioCtx.sampleRate} Hz (resampling not implemented).`);
-                        audioSampleRateWarned = true;
-                    }
-                } else {
-                    buffersInfo.renderer.audio.sizeMs = Math.max(playerMaxBufferMs, playerBufferMs * 2, 100);
-                    const bufferSizeSamples = Math.floor((buffersInfo.renderer.audio.sizeMs * aFrame.sampleRate) / 1000);
+            // Lazily create the player once we know the capture sample rate / channels.
+            // Assigned synchronously (before any await) so re-entrant aframe messages do
+            // not create a second player.
+            if (audioPlayer == null && aFrame.sampleRate > 0) {
+                audioPlayer = new GapTolerantPlayer({
+                    sampleRate: aFrame.sampleRate,
+                    numberOfChannels: aFrame.numberOfChannels,
+                    timebase: 1_000_000,
+                    jitterDelay: playerBufferMs / 1000,
+                    fadeIn: true,
+                    onStats: updateAudioStats,
+                    onLog: (msg) => { if (VERBOSE) console.debug('[AUDIO-PLAYER] ' + msg); },
+                });
+                // The Start click was the user gesture; resume unblocks audio output.
+                await audioPlayer.resume();
 
-                    audioSharedBuffer = new CicularAudioSharedBuffer();
-                    audioSharedBuffer.Init(aFrame.numberOfChannels, bufferSizeSamples, audioCtx.sampleRate);
-                    audioSharedBuffer.SetCallbacks(updateListDroppedFrame);
-
-                    // Set the audio context sampling freq, and pass buffers
-                    sourceBufferAudioWorklet.port.postMessage({ type: 'iniabuffer', config: { contextSampleFrequency: audioCtx.sampleRate, circularBufferSizeSamples: bufferSizeSamples, cicularAudioSharedBuffers: audioSharedBuffer.GetSharedBuffers() } });
+                // Playback is 1:1 (no resampling). If the browser did not honor the
+                // requested sample rate, disable audio gracefully (log once).
+                if (audioPlayer.sampleRate !== aFrame.sampleRate && !audioSampleRateWarned) {
+                    console.error(`Audio disabled: browser did not honor requested sample rate. Capture: ${aFrame.sampleRate} Hz, AudioContext: ${audioPlayer.sampleRate} Hz (resampling not implemented).`);
+                    audioSampleRateWarned = true;
                 }
             }
 
-            if (audioSharedBuffer != null) {
-                // Uses compensated TS
-                audioSharedBuffer.Add(aFrame, timingInfo.decoder.currentAudioTs);
-
-                // Gate playback start here too (not only in the rAF loop), so audio can
-                // start even if the page is hidden during startup.
-                maybeStartAudioPlayback();
+            if (audioPlayer != null && !audioSampleRateWarned) {
+                // addFrame takes ownership of aFrame and closes it.
+                audioPlayer.addFrame(aFrame, ts);
 
                 if (animFrame === null) {
                     animFrame = requestAnimationFrame(audioTimestamps);
                 }
+            } else {
+                // Audio disabled or player not ready: release the frame.
+                aFrame.close();
             }
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.frame;
@@ -1114,56 +1065,36 @@ LICENSE file in the root directory of this source tree.
         list.appendChild(entry);
     }
 
+    // Driven by the player's onStats callback (a setInterval that keeps running even
+    // when the tab is hidden), so the audio UI and the video master clock stay fresh
+    // regardless of requestAnimationFrame throttling.
     function updateAudioStats(data) {
-        // Audio render stats
-        timingInfo.renderer.currentAudioTS = data.currentTimestamp;
-
-        buffersInfo.renderer.audio.size = data.queueSize; // In samples
-        buffersInfo.renderer.audio.lengthMs = data.queueLengthMs; // In ms
-        if (data.isPlaying) {
-            buffersInfo.renderer.audio.state = AUDIO_PLAYING;
+        // playingTimestamp is in seconds (already latency-adjusted). Convert to µs to
+        // match the rest of the timing info; null means silence (nothing sounding yet).
+        if (data.playingTimestamp != null) {
+            timingInfo.renderer.currentAudioTS = Math.floor(data.playingTimestamp * 1_000_000);
         }
+        buffersInfo.renderer.audio.state = data.ctxState === 'running' ? AUDIO_PLAYING : AUDIO_STOPPED;
+        // buffersInfo.renderer.audio.size = data.AAqueueSize;
+        buffersInfo.renderer.audio.lengthMs = data.bufferAhead * 1000;
 
-        updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.totalSilenceInsertedMs);
-    }
-
-    function updateAudioState() {
-        if (buffersInfo.renderer.audio.lengthMs >= playerBufferMs && buffersInfo.renderer.audio.state === AUDIO_STOPPED) {
-            audioSharedBuffer.Play();
+        if (audioPlayer != null) {
+            systemAudioLatencyMs = audioPlayer.systemLatencyMs;
         }
-    }
-
-    // Starts playback once enough audio is buffered. Driven from the aframe message
-    // handler (in addition to the rAF loop) so playback can begin even when the page is
-    // hidden during startup - requestAnimationFrame is paused while hidden, but message
-    // handlers and the AudioWorklet keep running. Play() is idempotent.
-    function maybeStartAudioPlayback() {
-        if (audioSharedBuffer == null) {
-            return;
-        }
-        const stats = audioSharedBuffer.GetStats();
-        if (!stats.isPlaying && stats.queueLengthMs >= playerBufferMs) {
-            audioSharedBuffer.Play();
-        }
+        updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.gapsRecovered);
     }
 
     function audioTimestamps(wcTimestamp) {
         const wcInterval = wcTimestamp - wcLastRender;
 
-        if (audioSharedBuffer != null) {
-            updateAudioStats(audioSharedBuffer.GetStats());
-
-            updateAudioState();
-        }
-
         // Update every 10ms
-        if ((audioCtx != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
+        if ((audioPlayer != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
             wcLastRender = wcTimestamp;
 
             if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTS >= 0) {
-                // Assuming audioTS in microseconds
-                const compensatedAudioTS = Math.max(0, timingInfo.renderer.currentAudioTS - (systemAudioLatencyMs * 1000));
-                const retData = videoRendererBuffer.GetItemByTs(compensatedAudioTS);
+                // currentAudioTS is the media timestamp already sounding at the speakers
+                // (latency-adjusted by the player), so use it directly to pick the frame.
+                const retData = videoRendererBuffer.GetItemByTs(timingInfo.renderer.currentAudioTS);
                 if (retData.vFrame != null) {
                     setVideoSize(retData.vFrame);
                     videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
@@ -1208,6 +1139,7 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
+    document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not

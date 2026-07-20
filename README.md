@@ -36,11 +36,10 @@ moq-encoder-player/
 │   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
 │   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
 │   ├── packager/           #   mi_packager.ts                    (media-interop packager)
-│   ├── render/             #   audio_circular_buffer.ts, video_render_buffer.ts,
-│   │                       #   source_buffer_worklet.ts          (AudioWorklet)
+│   ├── render/             #   audio_player.ts (Web Audio renderer), video_render_buffer.ts
 │   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, time_buffer_checker.ts, utils.ts,
 │   │   └── media/          #   avcc_parser.ts ...
-│   └── types/              #   globals.d.ts (ambient types for WebTransport / AudioWorklet)
+│   └── types/              #   globals.d.ts (ambient types for WebTransport / WebCodecs)
 ├── tests/                  # Jest unit tests for the pure utilities
 ├── dist/                   # Compiled JavaScript + type declarations (generated, git-ignored)
 ├── .github/workflows/      # CI: lint + build + test
@@ -53,7 +52,7 @@ moq-encoder-player/
 
 ## Development (build, run, test)
 
-Requirements: [Node.js](https://nodejs.org/) 18+ (for the toolchain) and [Python 3](https://realpython.com/installing-python/) (for the local dev web server, which sets the cross-origin-isolation headers required by `SharedArrayBuffer`).
+Requirements: [Node.js](https://nodejs.org/) 18+ (for the toolchain) and [Python 3](https://realpython.com/installing-python/) (for the local dev web server). The included dev server also sets cross-origin-isolation headers, but the player no longer requires them (audio playback dropped `SharedArrayBuffer`); any static server over HTTPS works.
 
 Install dependencies once:
 
@@ -247,7 +246,7 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 
 ## Player
 
-The encoder implements MOQT subscriber role. It uses [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext) / [Worklet](https://developer.mozilla.org/en-US/docs/Web/API/Worklet), [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer), and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics)
+The encoder implements MOQT subscriber role. It uses [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext) (audio is scheduled with `AudioBufferSourceNode` on the AudioContext clock — no `SharedArrayBuffer` or AudioWorklet)
 
 ![Player block diagram](./pics/player-block-diagram.png)
 Fig5: Player block diagram
@@ -256,11 +255,11 @@ Fig5: Player block diagram
 
 To keep the audio and video in-sync the following strategy is applied:
 
-- Audio renderer (`audio_circular_buffer.ts`) keeps track of last played timestamp (delivered to audio device by `source_buffer_worklet.ts`) by using PTS value in the current playing `AudioData` frame and adding the duration of the number of samples delivered. This information is accessible from player page via `timingInfo.renderer.currentAudioTS`, who also adds the hardware latency provided by `AudioContext`.
-- Every time we sent new audio samples to audio renderer the video renderer `video_render_buffer` (who contains YUV/RGB frames + timestamps) gets called and:
+- Audio renderer (`audio_player.ts`, `GapTolerantPlayer`) schedules each decoded `AudioData` frame on the AudioContext clock and exposes the media timestamp currently sounding at the speakers (already latency-adjusted) via its `playingTimestamp` stat. The player page mirrors it into `timingInfo.renderer.currentAudioTS`.
+- Every time the stats callback fires (and in the render loop) the video renderer `video_render_buffer` (who contains YUV/RGB frames + timestamps) gets called and:
   - Returns / paints the oldest closest (or equal) frame to current audio ts (`timingInfo.renderer.currentAudioTS`)
   - Discards (frees) all frames older current ts (except the returned one)
-- It is worth saying that `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync. To work around that problem we calculate all the audio GAPs duration `timestampOffset` (by last playedTS - newTS, ideally = 0 if NO gaps), and we compensate the issued PTS by that.
+- `AudioDecoder` does NOT track timestamps, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). Rather than compute an explicit gap offset, `audio_decoder.ts` mirrors the decoder's input queue and reconciles it on the `dequeue` event so each output frame carries the **true source timestamp** of the chunk that produced it; `GapTolerantPlayer` re-anchors media time to that timestamp whenever a new contiguous segment starts (after an underrun/gap).
 
 ### src/receiver/moq_demuxer_downloader.ts
 
@@ -296,30 +295,24 @@ Since we do not have any guarantee that QUIC streams are delivered in order we n
 
 ### src/decode/audio_decoder.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) when it receives and audio chunk it decodes it and it sends the audio PCM samples to the audio renderer.
-`AudioDecoder` does NOT track timestamps on decoded data, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync.
-To work around that problem we calculate all the audio GAPs duration `timestampOffset` and we publish that to allow other elements in the pipeline to have accurate idea of live head position
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that decodes each audio chunk and posts the decoded `AudioData` frames (with a timestamp) to the main-thread renderer.
+`AudioDecoder` does NOT track timestamps on decoded data, it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time). That means a dropped audio packet would collapse the timeline and desync A/V.
 
-- Receives audio chunk
-  - If discontinuity detected (reported by jitter_buffer.ts) then calculate lost time by:
-    - `lostTime = currentChunkTimestamp - lastChunkSentTimestamp;` Where `lastChunkSentTimestamp = lastSentChunk.timestamp + lastSentChunk.duration`
-    - `timestampOffset += lostTime`
-- Decode chunk and deliver PCM data
+To recover the true position it mirrors the decoder's input queue (`pendingTs`) and reconciles it on the `dequeue` event:
 
-### src/render/audio_circular_buffer.ts
+- Receives audio chunk → push `chunk.timestamp` to `pendingTs`, then `decode()`.
+- On `dequeue`: `consumed = pendingTs.length - decodeQueueSize`; the most recent consumed chunk's timestamp becomes the timestamp for the frames about to be output.
+- Posts `{ type: 'aframe', frame, ts }` — `ts` is the **true source timestamp** of the chunk that produced the frame. The renderer uses it to anchor media time on a resume, superseding the old explicit gap-offset compensation.
 
-Leverages [SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer) and [Atomic](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics) to implement following mechanisms to share data in a "multi thread" environment:
+### src/render/audio_player.ts
 
-- Circular buffer (`sharedAudiobuffers`): Main buffer used to share audio PCM data from decoder to renderer `source_buffer_worklet.ts`
-- State communication (`sharedStates`): Use to share states and data between renderer `source_buffer_worklet.ts` and main thread
+`GapTolerantPlayer` — the Web Audio renderer. It keeps a `nextPlayTime` cursor on the AudioContext clock and schedules each decoded frame with an `AudioBufferSourceNode`:
 
-### src/render/source_buffer_worklet.ts
+- `addFrame(audioData, ts)`: converts the `AudioData` to an `AudioBuffer` and starts it at `nextPlayTime`, then advances the cursor by the frame's duration.
+- Gap tolerance: if the network stalls, `nextPlayTime` falls into the past; the player resumes at `currentTime` (clamped) so late audio plays immediately instead of piling up. A real gap re-pads the `jitterDelay` cushion and re-anchors media time to the incoming frame's `ts`.
+- Exposes `playingTimestamp` (media time currently at the speakers, already latency-adjusted) via its `onStats` callback — the A/V master clock.
 
-[AudioWorkletProcessor](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API), implements an audio source Worklet that sends audio samples to renderer.
-
-- It reads new audio samples from circular buffer
-- The samples are played at sampling freq rate
-  - In case the buffer is exhausted (underrun) it will insert silence samples and notify timing according to that.
+No `SharedArrayBuffer`, `Atomics`, or AudioWorklet are used, so the player no longer needs cross-origin isolation.
 - Reports last PTS rendered (this is used to sync video to the audio track, so to keep A/V in sync)
 
 ### src/decode/video_decoder.ts
@@ -420,7 +413,7 @@ npm run build
 ./start-http-server-cross-origin-isolated.py
 ```
 
-Note: You need to use this script to **run the player** because it adds some needed headers (more info [here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer#security_requirements))
+Note: this script adds cross-origin-isolation headers. The player no longer requires them (audio playback dropped `SharedArrayBuffer`), so any static HTTPS server works — but this script remains a convenient default.
 
 - Load encoder webpage, url: http://localhost:8080/demo/encoder/?local
   - Click "Start"

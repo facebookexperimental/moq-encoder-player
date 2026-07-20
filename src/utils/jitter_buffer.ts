@@ -42,8 +42,7 @@ export class JitterBuffer {
     this.lastCorrectObjId = undefined;
   }
 
-  AddItem(chunk: any, groupId: number, objId: number, extraData: any) {
-    let r;
+  AddItem(chunk: any, groupId: number, objId: number, extraData: any): any[] {
     // Order by (groupId, objId)
     if (this.elementsList.length <= 0) {
       this.elementsList.push({ chunk, groupId, objId, extraData });
@@ -78,9 +77,14 @@ export class JitterBuffer {
       }
     }
 
-    // Get 1st element if jitter buffer full
-    if (this.totalLengthMs >= this.bufferSizeMs) {
-      r = this.elementsList.shift();
+    // Release every element that overflows the target size, not just one. A
+    // single `if` only drains one element per arrival, so in steady state the
+    // buffer stays one-in/one-out and a lowered `bufferSizeMs` (e.g. via
+    // UpdateMaxSize) could never shrink the already-accumulated backlog. The
+    // `while` drains the excess in one pass so latency drops immediately.
+    const released: any[] = [];
+    while (this.totalLengthMs >= this.bufferSizeMs && this.elementsList.length > 0) {
+      const r = this.elementsList.shift();
 
       // Check for discontinuities in the stream
       r.isDisco = false;
@@ -121,8 +125,9 @@ export class JitterBuffer {
         this.lastCorrectObjId = r.objId;
       }
       this.totalLengthMs -= r.chunk.duration / 1000;
+      released.push(r);
     }
-    return r;
+    return released;
   }
 
   GetStats() {

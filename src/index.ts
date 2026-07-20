@@ -9,10 +9,9 @@ LICENSE file in the root directory of this source tree.
  * Public entry point of the library.
  *
  * It re-exports the reusable, side-effect-free modules. The Web Worker entry
- * points (capture/, encode/, decode/, sender/, receiver/) and the AudioWorklet
- * processor (render/source_buffer_worklet) are NOT re-exported here because
- * importing them runs their top-level side effects (they register message
- * listeners / processors). Those are loaded directly by the demos as workers.
+ * points (capture/, encode/, decode/, sender/, receiver/) are NOT re-exported
+ * here because importing them runs their top-level side effects (they register
+ * message listeners). Those are loaded directly by the demos as workers.
  */
 
 // Generic utilities
@@ -37,4 +36,4 @@ export * from './packager/mi_packager.js';
 
 // Render buffers
 export * from './render/video_render_buffer.js';
-export * from './render/audio_circular_buffer.js';
+export * from './render/audio_player.js';

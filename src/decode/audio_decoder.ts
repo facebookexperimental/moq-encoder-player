@@ -5,6 +5,22 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+/*
+ * Audio decoder Web Worker.
+ *
+ * Thin wrapper around the WebCodecs `AudioDecoder` that also reports which fed
+ * chunk each decoded frame came from. The decoder re-times its own output
+ * contiguously (anchored to the first chunk) and can't represent gaps, so the
+ * fed timestamp is the only reliable source of the true media position at a
+ * resume. A decoded chunk can produce any number of output frames, so we can't
+ * pair timestamps to frames on the `output` callback. Instead we mirror the
+ * decoder's input queue in `pendingTs` and reconcile it on the `dequeue` event:
+ * whatever left the input queue is now being decoded, and the most recent of
+ * those chunks owns the frames about to be output. The renderer (GapTolerantPlayer)
+ * uses this true `ts` to anchor media time, which supersedes the old manual
+ * discontinuity/timestamp-offset compensation.
+ */
+
 import { sendMessageToMain, StateEnum } from '../utils/utils.js';
 import { TsQueue } from '../utils/ts_queue.js';
 import { MIPayloadTypeEnum } from '../packager/mi_packager.js';
@@ -17,11 +33,12 @@ let workerState = StateEnum.Created;
 
 let audioDecoder: any = null;
 
-// The Audio decoder does NOT track timestamps (bummer), it just uses the 1st one sent and at every decoded audio sample adds 1/fs (so sample time)
-// That means if we drop and audio packet those timestamps will be collapsed creating A/V out of sync
-let timestampOffset = 0;
-let lastChunkSentTimestamp = -1;
+// Timestamps of chunks still in the decoder's input queue, in feed order.
+let pendingTs: number[] = [];
+// Timestamp of the chunk whose frames are currently being output.
+let currentTs = -1;
 
+// Tracks decode-queue length (ms) for stats/backpressure warnings only.
 const ptsQueue = new TsQueue();
 
 function processAudioFrame(aFrame: any) {
@@ -29,9 +46,9 @@ function processAudioFrame(aFrame: any) {
     {
       type: 'aframe',
       frame: aFrame,
+      ts: currentTs,
       queueSize: ptsQueue.getPtsQueueLengthInfo().size,
       queueLengthMs: ptsQueue.getPtsQueueLengthInfo().lengthMs,
-      timestampCompensationOffset: timestampOffset,
     },
     [aFrame],
   );
@@ -47,9 +64,27 @@ function initializeDecoder(config: any) {
     },
   });
 
+  // Keep pendingTs (and the stats queue) in sync with the input queue as chunks
+  // are consumed. Reading decodeQueueSize here (rather than counting per event)
+  // tolerates the event coalescing multiple decrements: whatever left the queue
+  // is spliced off, and the most recently consumed chunk becomes the timestamp
+  // for its output frames.
   audioDecoder.addEventListener('dequeue', () => {
-    if (audioDecoder != null) {
-      ptsQueue.removeUntil(audioDecoder.decodeQueueSize);
+    if (audioDecoder == null) {
+      return;
+    }
+    ptsQueue.removeUntil(audioDecoder.decodeQueueSize);
+
+    const consumed = pendingTs.length - audioDecoder.decodeQueueSize;
+    if (consumed > 0 && consumed <= pendingTs.length) {
+      currentTs = pendingTs[consumed - 1];
+      pendingTs.splice(0, consumed);
+    } else if (consumed !== 0) {
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'warning',
+        `Unexpected dequeue event. Queue size: ${audioDecoder.decodeQueueSize} and consumed: ${consumed}`,
+      );
     }
   });
 
@@ -81,8 +116,8 @@ self.addEventListener('message', async function (e) {
       ptsQueue.clear();
     }
     workerState = StateEnum.Created;
-    timestampOffset = 0;
-    lastChunkSentTimestamp = -1;
+    pendingTs = [];
+    currentTs = -1;
   } else if (type === 'audiochunk') {
     if (audioDecoder != null) {
       sendMessageToMain(
@@ -128,16 +163,11 @@ self.addEventListener('message', async function (e) {
     }
     ptsQueue.addToPtsQueue(e.data.chunk.timestamp, e.data.chunk.duration);
 
-    if (e.data.isDisco && lastChunkSentTimestamp >= 0) {
-      const addTs = e.data.chunk.timestamp - lastChunkSentTimestamp;
-      sendMessageToMain(
-        WORKER_PREFIX,
-        'warning',
-        `disco at obj: ${e.data.groupId}/${e.data.objId}, ts: ${e.data.chunk.timestamp}, added: ${addTs}`,
-      );
-      timestampOffset += addTs;
+    // Seed before the first dequeue fires so the very first frame has a timestamp.
+    if (currentTs < 0) {
+      currentTs = e.data.chunk.timestamp;
     }
-    lastChunkSentTimestamp = e.data.chunk.timestamp + e.data.chunk.duration;
+    pendingTs.push(e.data.chunk.timestamp);
 
     audioDecoder.decode(e.data.chunk);
 
