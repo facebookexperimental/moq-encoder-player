@@ -441,11 +441,9 @@ function moqCreateSetupMessageBytes(): Uint8Array {
   const options = moqCreateKvpDeltaBytes([
     moqCreateKvPair(MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION, MOQ_IMPLEMENTATION_NAME),
   ]);
-  return concatBuffer([
-    numberToVarInt(MOQ_MESSAGE_SETUP),
-    numberTo2BytesArray(options.byteLength, MOQ_USE_LITTLE_ENDIAN),
-    options,
-  ]);
+  // Route SETUP through frameControlMessage too, so it is logged on send like
+  // every other control message (same [type][u16 len][body] framing).
+  return frameControlMessage(MOQ_MESSAGE_SETUP, [options]);
 }
 
 export async function moqSendSetup(writerStream: WritableStream<Uint8Array>): Promise<void> {
@@ -742,6 +740,170 @@ export async function moqParseMsg(readerStream: ReadableStream<Uint8Array>): Pro
   return moqParseControlMessageWithType(readerStream, msgType);
 }
 
+// Human-readable name for a MOQ control/request message type (for logging).
+const MOQ_MESSAGE_NAMES: Record<number, string> = {
+  [MOQ_MESSAGE_SETUP]: 'SETUP',
+  [MOQ_MESSAGE_GOAWAY]: 'GOAWAY',
+  [MOQ_MESSAGE_REQUEST_UPDATE]: 'REQUEST_UPDATE',
+  [MOQ_MESSAGE_SUBSCRIBE]: 'SUBSCRIBE',
+  [MOQ_MESSAGE_SUBSCRIBE_OK]: 'SUBSCRIBE_OK',
+  [MOQ_MESSAGE_REQUEST_ERROR]: 'REQUEST_ERROR',
+  [MOQ_MESSAGE_PUBLISH_NAMESPACE]: 'PUBLISH_NAMESPACE',
+  [MOQ_MESSAGE_REQUEST_OK]: 'REQUEST_OK',
+  [MOQ_MESSAGE_NAMESPACE]: 'NAMESPACE',
+  [MOQ_MESSAGE_PUBLISH_DONE]: 'PUBLISH_DONE',
+  [MOQ_MESSAGE_TRACK_STATUS]: 'TRACK_STATUS',
+  [MOQ_MESSAGE_NAMESPACE_DONE]: 'NAMESPACE_DONE',
+  [MOQ_MESSAGE_PUBLISH_BLOCKED]: 'PUBLISH_BLOCKED',
+  [MOQ_MESSAGE_FETCH]: 'FETCH',
+  [MOQ_MESSAGE_FETCH_OK]: 'FETCH_OK',
+  [MOQ_MESSAGE_PUBLISH]: 'PUBLISH',
+  [MOQ_MESSAGE_SUBSCRIBE_NAMESPACE]: 'SUBSCRIBE_NAMESPACE',
+  [MOQ_MESSAGE_SUBSCRIBE_TRACKS]: 'SUBSCRIBE_TRACKS',
+};
+
+export function moqMessageName(msgType: number): string {
+  return MOQ_MESSAGE_NAMES[msgType] ?? 'UNKNOWN';
+}
+
+// JSON.stringify replacer that renders byte blobs compactly instead of dumping
+// every index — keeps the control-message log readable.
+function moqLogReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    return `Uint8Array(${value.byteLength})`;
+  }
+  if (value instanceof ArrayBuffer) {
+    return `ArrayBuffer(${value.byteLength})`;
+  }
+  return value;
+}
+
+// ---- readable control-message parameter logging ----------------------------
+
+// Message Parameter type (draft-18 §15.7) -> name.
+const MOQ_PARAMETER_NAMES: Record<number, string> = {
+  [MOQ_PARAMETER_OBJECT_DELIVERY_TIMEOUT]: 'OBJECT_DELIVERY_TIMEOUT',
+  [MOQ_PARAMETER_AUTHORIZATION_TOKEN]: 'AUTHORIZATION_TOKEN',
+  [MOQ_PARAMETER_RENDEZVOUS_TIMEOUT]: 'RENDEZVOUS_TIMEOUT',
+  [MOQ_PARAMETER_SUBGROUP_DELIVERY_TIMEOUT]: 'SUBGROUP_DELIVERY_TIMEOUT',
+  [MOQ_PARAMETER_EXPIRES]: 'EXPIRES',
+  [MOQ_PARAMETER_LARGEST_OBJECT]: 'LARGEST_OBJECT',
+  [MOQ_PARAMETER_FILL_TIMEOUT]: 'FILL_TIMEOUT',
+  [MOQ_PARAMETER_FORWARD]: 'FORWARD',
+  [MOQ_PARAMETER_SUBSCRIBER_PRIORITY]: 'SUBSCRIBER_PRIORITY',
+  [MOQ_PARAMETER_SUBSCRIPTION_FILTER]: 'SUBSCRIPTION_FILTER',
+  [MOQ_PARAMETER_GROUP_ORDER]: 'GROUP_ORDER',
+  [MOQ_PARAMETER_NEW_GROUP_REQUEST]: 'NEW_GROUP_REQUEST',
+  [MOQ_PARAMETER_TRACK_NAMESPACE_PREFIX]: 'TRACK_NAMESPACE_PREFIX',
+};
+
+// Setup Option type (draft-18 §15.4) -> name (a separate namespace from params).
+const MOQ_SETUP_OPTION_NAMES: Record<number, string> = {
+  [MOQ_SETUP_OPTION_PATH]: 'PATH',
+  [MOQ_SETUP_OPTION_AUTHORIZATION_TOKEN]: 'AUTHORIZATION_TOKEN',
+  [MOQ_SETUP_OPTION_MAX_AUTH_TOKEN_CACHE_SIZE]: 'MAX_AUTH_TOKEN_CACHE_SIZE',
+  [MOQ_SETUP_OPTION_AUTHORITY]: 'AUTHORITY',
+  [MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION]: 'MOQT_IMPLEMENTATION',
+};
+
+// Decode a byte blob to text when it is printable ASCII, else show its size.
+function moqReadableBytes(bytes: Uint8Array): string {
+  const printable = bytes.every((b) => b >= 0x20 && b <= 0x7e);
+  if (printable && bytes.byteLength > 0) {
+    return `"${new TextDecoder().decode(bytes)}"`;
+  }
+  const hex = Array.from(bytes.subarray(0, 16))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return bytes.byteLength <= 16 ? `0x${hex}` : `0x${hex}… (${bytes.byteLength} bytes)`;
+}
+
+// Render one parameter value in a readable way (decodes tokens, locations, bytes).
+function moqReadableParamValue(val: KvPairValue): unknown {
+  if (val instanceof Uint8Array) {
+    return moqReadableBytes(val);
+  }
+  if (typeof val === 'object' && val !== null) {
+    if ('aliasType' in val && 'tokenType' in val && 'value' in val) {
+      const t = val as Token;
+      return `token(alias=${t.aliasType}, type=${t.tokenType}, value=${moqReadableBytes(t.value)})`;
+    }
+    if ('group' in val && 'obj' in val) {
+      const l = val as Location;
+      return `{group: ${l.group}, obj: ${l.obj}}`;
+    }
+  }
+  return val; // number / string
+}
+
+// Turn a KvPair[] into a readable { "NAME(0xNN)": value } object for logging.
+// `isSetupOptions` selects the name table (Setup Options vs Message Parameters).
+function moqReadableKvPairs(kvs: KvPair[], isSetupOptions: boolean): Record<string, unknown> {
+  const names = isSetupOptions ? MOQ_SETUP_OPTION_NAMES : MOQ_PARAMETER_NAMES;
+  const out: Record<string, unknown> = {};
+  for (const kv of kvs) {
+    const label = `${names[kv.name] ?? 'UNKNOWN'}(0x${kv.name.toString(16)})`;
+    out[label] = moqReadableParamValue(kv.val);
+  }
+  return out;
+}
+
+// Shallow-copy parsed message data, replacing the KvPair arrays (Message
+// Parameters and Setup Options) with readable name->value maps. Object/Track
+// Properties are a different type namespace, so they are left as-is.
+function moqReadableData(data: MoqMessageData): unknown {
+  if (data === null || typeof data !== 'object') {
+    return data;
+  }
+  const out: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) };
+  if (Array.isArray(out.parameters)) {
+    out.parameters = moqReadableKvPairs(out.parameters as KvPair[], false);
+  }
+  if (Array.isArray(out.options)) {
+    out.options = moqReadableKvPairs(out.options as KvPair[], true);
+  }
+  return out;
+}
+
+// Dump one MOQ control message at info level, with parameters rendered
+// readably. Used for both received (RECV) and sent (SENT) messages so the whole
+// control plane is visible from a single, consistent log format.
+function logMoqControlMessage(
+  direction: 'RECV' | 'SENT',
+  msgType: number,
+  data: MoqMessageData,
+): void {
+  console.info(
+    `[MOQ] ${direction} control message ${moqMessageName(msgType)} (0x${msgType.toString(16)}): ${JSON.stringify(moqReadableData(data), moqLogReplacer)}`,
+  );
+}
+
+// Decode a control/request message body (a BufReader positioned at the payload,
+// i.e. after the type + length). Shared by the receive path and the send-side
+// logger, so both render identical structured data.
+function parseControlMessageBody(msgType: number, r: BufReader): MoqMessageData {
+  switch (msgType) {
+    case MOQ_MESSAGE_SETUP:
+      return moqParseSetup(r);
+    case MOQ_MESSAGE_SUBSCRIBE:
+      return moqParseSubscribe(r);
+    case MOQ_MESSAGE_SUBSCRIBE_OK:
+      return moqParseSubscribeOk(r);
+    case MOQ_MESSAGE_PUBLISH:
+      return moqParsePublish(r);
+    case MOQ_MESSAGE_PUBLISH_DONE:
+      return moqParsePublishDone(r);
+    case MOQ_MESSAGE_REQUEST_OK:
+      return moqParseRequestOk(r);
+    case MOQ_MESSAGE_REQUEST_ERROR:
+      return moqParseRequestError(r);
+    case MOQ_MESSAGE_REQUEST_UPDATE:
+      return moqParseRequestUpdate(r);
+    default:
+      return moqParseUnknown(r);
+  }
+}
+
 // Parse a control/request message whose leading type varint was already read.
 export async function moqParseControlMessageWithType(
   readerStream: ReadableStream<Uint8Array>,
@@ -749,37 +911,14 @@ export async function moqParseControlMessageWithType(
 ): Promise<MoqMessage> {
   const len = await moqIntReadBytesOrThrow(readerStream, 2);
   const payload = len > 0 ? await buffReadOrThrow(readerStream, len) : new Uint8Array(0);
-  const r = new BufReader(payload);
+  const data = parseControlMessageBody(msgType, new BufReader(payload));
 
-  let data: MoqMessageData;
-  switch (msgType) {
-    case MOQ_MESSAGE_SETUP:
-      data = moqParseSetup(r);
-      break;
-    case MOQ_MESSAGE_SUBSCRIBE:
-      data = moqParseSubscribe(r);
-      break;
-    case MOQ_MESSAGE_SUBSCRIBE_OK:
-      data = moqParseSubscribeOk(r);
-      break;
-    case MOQ_MESSAGE_PUBLISH:
-      data = moqParsePublish(r);
-      break;
-    case MOQ_MESSAGE_PUBLISH_DONE:
-      data = moqParsePublishDone(r);
-      break;
-    case MOQ_MESSAGE_REQUEST_OK:
-      data = moqParseRequestOk(r);
-      break;
-    case MOQ_MESSAGE_REQUEST_ERROR:
-      data = moqParseRequestError(r);
-      break;
-    case MOQ_MESSAGE_REQUEST_UPDATE:
-      data = moqParseRequestUpdate(r);
-      break;
-    default:
-      data = moqParseUnknown(r);
-  }
+  // Dump every received MOQ control message. This is the single chokepoint all
+  // received control/request messages pass through (moqParseMsg and the direct
+  // peer-SETUP parse both call this), while OBJECT/datagram headers are parsed
+  // elsewhere — so exactly the control plane is logged.
+  logMoqControlMessage('RECV', msgType, data);
+
   return { type: msgType, data };
 }
 
@@ -1000,14 +1139,30 @@ export function getTrackFullName(namespace: string, trackName: string): string {
   return namespace + trackName;
 }
 
-// Frame a control/request message: [type varint][u16 length][body...].
+// Frame a control/request message: [type varint][u16 length][body...]. Every
+// sent control message is built here, so this is the single chokepoint for
+// dumping outgoing control messages (OBJECT/subgroup framing is built elsewhere).
 function frameControlMessage(type: number, body: Uint8Array[]): Uint8Array {
   const totalLength = getArrayBufferByteLength(body);
+  logSentControlMessage(type, body);
   return concatBuffer([
     numberToVarInt(type),
     numberTo2BytesArray(totalLength, MOQ_USE_LITTLE_ENDIAN),
     ...body,
   ]);
+}
+
+// Re-parse a just-built message body and log it as SENT, mirroring the RECV log.
+// Best-effort: logging must never break message construction/sending.
+function logSentControlMessage(msgType: number, body: Uint8Array[]): void {
+  try {
+    const data = parseControlMessageBody(msgType, new BufReader(concatBuffer(body)));
+    logMoqControlMessage('SENT', msgType, data);
+  } catch {
+    console.info(
+      `[MOQ] SENT control message ${moqMessageName(msgType)} (0x${msgType.toString(16)})`,
+    );
+  }
 }
 
 function moqCreateStringBytes(str: string): Uint8Array {
