@@ -55,6 +55,26 @@ LICENSE file in the root directory of this source tree.
         .tab-panel.active {
             display: block;
         }
+
+        /* Named sub-boxes inside "Advanced" (grouped settings) */
+        fieldset.settings-box {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin: 10px;
+            padding: 8px 10px;
+            overflow: hidden; /* establish a BFC so the floated rows are contained */
+        }
+        fieldset.settings-box legend {
+            color: var(--text);
+            padding: 0 6px;
+        }
+        /* "(<value>)" applied hint shown right after a live-tunable field's input */
+        .applied-value {
+            color: var(--muted);
+            font-size: 0.85em;
+            font-style: italic;
+            margin-right: 6px;
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
@@ -88,17 +108,24 @@ LICENSE file in the root directory of this source tree.
                     <label>Token (type = out of band):<input id="authInfo" type="text" value="secret"></label>
                     (Leave it blank to NOT use it)
                     <div class="clear"></div>
-                    <label>Audio render player buffer (ms):<input id="playerBufferMs" type="text" value="100"><button id="btnPlayerBufferUpdate" type="button" disabled>Update</button></label>
-                    <label>(it waits until audio buffers this amount to start playback; Update forces a gap to re-apply live)</label>
-                    <div class="clear"></div>
-                    <label>Playback target latency (ms):<input id="playbackTargetLatencyMs" type="number" step="1" max="30000" value="500"><button id="btnPlaybackTargetLatencyUpdate" type="button" disabled>Update</button></label>
-                    <label>(target end-to-end latency; min = "Audio render player buffer" + "Audio jitter buffer buffer for this player", max = 30000)</label>
-                    <div class="clear"></div>
-                    <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
-                            value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
-                    <label>Video jitter buffer buffer for this player (ms):<input id="videoJitterBufferMs" type="text"
-                            value="300" size="8"><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
-                    <div class="clear"></div>
+                    <fieldset class="settings-box">
+                        <legend>Latency related settings</legend>
+                        <label>Playback target latency (ms):<input id="playbackTargetLatencyMs" type="number" step="1" min="10" max="30000" value="200"><span class="applied-value" id="appliedPlaybackTargetLatencyMs">(-)</span><button id="btnPlaybackTargetLatencyUpdate" type="button" disabled>Update</button></label>
+                        <div class="clear"></div>
+                        <fieldset class="settings-box">
+                            <legend>Detailed buffer size (better do not touch)</legend>
+                            <label>Audio render buffer (ms):<input id="playerBufferMs" type="number" step="1" min="0" value="200"><span class="applied-value" id="appliedPlayerBufferMs">(-)</span><button id="btnPlayerBufferUpdate" type="button" disabled>Update</button></label>
+                            <div class="clear"></div>
+                            <label>Audio max de-jitter size (ms):<input id="audioJitterBufferMs" type="number" step="1" min="0"
+                                    value="160"><span class="applied-value" id="appliedAudioJitterBufferMs">(-)</span><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
+                            <div class="clear"></div>
+                            <label>Video max de-jitter size (ms):<input id="videoJitterBufferMs" type="number" step="1" min="0"
+                                    value="160"><span class="applied-value" id="appliedVideoJitterBufferMs">(-)</span><button id="btnJitterVideoUpdate" type="button" disabled>Update</button></label>
+                            <div class="clear"></div>
+                            <label>De-jitter is dynamic it buffers up to maxDejitterSizeMs to fill a discontinuity, if no discontinuities, buffer size is 0</label>
+                            <div class="clear"></div>
+                        </fieldset>
+                    </fieldset>
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -317,11 +344,14 @@ LICENSE file in the root directory of this source tree.
     }
 
     // We will start playback when this amount of data is in the audio rendered buffer
-    let playerBufferMs = 100;
+    let playerBufferMs = 200;
 
-    // Playback target latency (ms). Bounds:
-    //   min = audio render buffer + audio jitter buffer, max = PLAYBACK_TARGET_LATENCY_MAX_MS
+    // Playback target latency (ms). Any value in [min, max] is allowed. Setting it
+    // derives the detailed buffer sizes (see updatePlaybackTargetLatency).
+    const PLAYBACK_TARGET_LATENCY_MIN_MS = 10;
     const PLAYBACK_TARGET_LATENCY_MAX_MS = 30000;
+    // Audio/video de-jitter size is derived as (target latency - this headroom).
+    const PLAYBACK_TARGET_LATENCY_DEJITTER_HEADROOM_MS = 40;
 
     // Current workers
     let muxerDownloaderWorker = null;
@@ -604,11 +634,32 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
+    // Show the last value that was actually pushed into the pipeline (on Start or an
+    // Update), so the user can tell the edited field apart from what is live.
+    function setAppliedLabel(appliedId, valueMs) {
+        document.getElementById(appliedId).textContent = `(${valueMs})`;
+    }
+
+    // Snapshot all four live-tunable fields as "applied" (used on Start).
+    function refreshAllAppliedLabels() {
+        setAppliedLabel('appliedPlaybackTargetLatencyMs', Number(document.getElementById('playbackTargetLatencyMs').value));
+        setAppliedLabel('appliedPlayerBufferMs', Number(document.getElementById('playerBufferMs').value));
+        setAppliedLabel('appliedAudioJitterBufferMs', Number(document.getElementById('audioJitterBufferMs').value));
+        setAppliedLabel('appliedVideoJitterBufferMs', Number(document.getElementById('videoJitterBufferMs').value));
+    }
+
+    function clearAppliedLabels() {
+        for (const id of ['appliedPlaybackTargetLatencyMs', 'appliedPlayerBufferMs', 'appliedAudioJitterBufferMs', 'appliedVideoJitterBufferMs']) {
+            document.getElementById(id).textContent = '(-)';
+        }
+    }
+
     async function updateJitterAudio() {
         const maxSizeMs = Number(document.getElementById('audioJitterBufferMs').value);
         if (wtAudioJitterBuffer != null) {
             wtAudioJitterBuffer.UpdateMaxSize(maxSizeMs);
         }
+        setAppliedLabel('appliedAudioJitterBufferMs', maxSizeMs);
     }
 
     async function updateJitterVideo() {
@@ -616,6 +667,7 @@ LICENSE file in the root directory of this source tree.
         if (wtVideoJitterBuffer != null) {
             wtVideoJitterBuffer.UpdateMaxSize(maxSizeMs);
         }
+        setAppliedLabel('appliedVideoJitterBufferMs', maxSizeMs);
     }
 
     async function updatePlayerBuffer() {
@@ -626,6 +678,7 @@ LICENSE file in the root directory of this source tree.
             // force a gap to re-prime the buffer at the new size right away.
             audioPlayer.forceGap();
         }
+        setAppliedLabel('appliedPlayerBufferMs', playerBufferMs);
     }
 
     // Minimum audio latency budget = audio render buffer + audio jitter buffer.
@@ -637,29 +690,42 @@ LICENSE file in the root directory of this source tree.
         return render + jitter;
     }
 
-    // Clamp the playback-target-latency field to an integer in [base, max]. Used
-    // when the user edits the field directly.
+    // Clamp the playback-target-latency field to an integer in
+    // [PLAYBACK_TARGET_LATENCY_MIN_MS, PLAYBACK_TARGET_LATENCY_MAX_MS]. Used when the
+    // user edits the field directly.
     function clampPlaybackTargetLatency() {
-        const base = getAudioBaseLatencyMs();
         const input = document.getElementById('playbackTargetLatencyMs');
-        input.min = base;
         let val = Math.round(Number(input.value));
         if (!Number.isFinite(val)) {
-            val = base;
+            val = PLAYBACK_TARGET_LATENCY_MIN_MS;
         }
-        input.value = Math.max(base, Math.min(val, PLAYBACK_TARGET_LATENCY_MAX_MS));
+        input.value = Math.max(PLAYBACK_TARGET_LATENCY_MIN_MS, Math.min(val, PLAYBACK_TARGET_LATENCY_MAX_MS));
     }
 
-    // When the audio render or jitter buffer changes, the allowed range shifts. If
-    // the target latency now falls outside [base, max], reset it to base + 50.
-    function refreshPlaybackTargetLatencyRange() {
-        const base = getAudioBaseLatencyMs();
-        const input = document.getElementById('playbackTargetLatencyMs');
-        input.min = base;
-        const val = Math.round(Number(input.value));
-        if (!Number.isFinite(val) || val < base || val > PLAYBACK_TARGET_LATENCY_MAX_MS) {
-            input.value = Math.min(base + 50, PLAYBACK_TARGET_LATENCY_MAX_MS);
+    // Derive the detailed buffer-size fields from the current playback target latency
+    // (without applying them to the pipeline). Called live while the user types:
+    //   audio/video max de-jitter size = max(target - headroom, 0)
+    //   audio render buffer            = target
+    function derivePlaybackTargetLatencyFields() {
+        const playTargetLatMs = Number(document.getElementById('playbackTargetLatencyMs').value);
+        if (!Number.isFinite(playTargetLatMs)) {
+            return;
         }
+        const dejitterMs = Math.max(playTargetLatMs - PLAYBACK_TARGET_LATENCY_DEJITTER_HEADROOM_MS, 0);
+        document.getElementById('audioJitterBufferMs').value = dejitterMs;
+        document.getElementById('videoJitterBufferMs').value = dejitterMs;
+        document.getElementById('playerBufferMs').value = playTargetLatMs;
+    }
+
+    // Update button: clamp, derive the detailed buffer sizes and apply them all live.
+    async function updatePlaybackTargetLatency() {
+        clampPlaybackTargetLatency();
+        derivePlaybackTargetLatencyFields();
+
+        await updateJitterAudio();
+        await updateJitterVideo();
+        await updatePlayerBuffer();
+        setAppliedLabel('appliedPlaybackTargetLatencyMs', Number(document.getElementById('playbackTargetLatencyMs').value));
     }
 
     // Lock/unlock the connection/track configuration controls while (un)playing.
@@ -696,6 +762,9 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = false;
 
         playerBufferMs = Number(document.getElementById('playerBufferMs').value);
+
+        // These are the values the pipeline is being created with.
+        refreshAllAppliedLabels();
 
         createVideoRendererBuffer();
 
@@ -753,6 +822,8 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
         document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = true;
+
+        clearAppliedLabels();
 
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
@@ -1229,19 +1300,19 @@ LICENSE file in the root directory of this source tree.
     }
 
     // Add listeners from HTML
-    window.addEventListener("load", (event) => {initFromQS(); refreshPlaybackTargetLatencyRange();});
+    window.addEventListener("load", (event) => {initFromQS();});
     document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
     document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
 
-    // Playback target latency: clamp to [base, max] on direct edit, and re-validate
-    // its range whenever the audio render or jitter buffer changes (reset to
-    // base + 50 if it falls out of range). (Live update button wired up later.)
-    document.getElementById('playbackTargetLatencyMs').addEventListener("change", () => {clampPlaybackTargetLatency();});
-    document.getElementById('playerBufferMs').addEventListener("change", () => {refreshPlaybackTargetLatencyRange();});
-    document.getElementById('audioJitterBufferMs').addEventListener("change", () => {refreshPlaybackTargetLatencyRange();});
+    // Playback target latency: while typing, derive the detailed buffer-size fields on
+    // the fly; clamp to [min, max] once the edit is committed. Neither touches the
+    // pipeline - Update applies the derived values live.
+    document.getElementById('playbackTargetLatencyMs').addEventListener("input", () => {derivePlaybackTargetLatencyFields();});
+    document.getElementById('playbackTargetLatencyMs').addEventListener("change", () => {clampPlaybackTargetLatency(); derivePlaybackTargetLatencyFields();});
+    document.getElementById('btnPlaybackTargetLatencyUpdate').addEventListener("click", (event) => {updatePlaybackTargetLatency();});
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not
