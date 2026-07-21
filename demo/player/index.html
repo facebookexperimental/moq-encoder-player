@@ -876,6 +876,61 @@ LICENSE file in the root directory of this source tree.
         addTimelineGap(mediaType, data.numTotalGaps);
     }
 
+    // Forward jitter-buffer output to the video pipeline. The buffer releases
+    // objects both from AddItem (new object) and MarkEndOfGroup (a retroactive
+    // end-of-group can unblock a group boundary that was waiting), so both feed
+    // through here.
+    function processReleasedVideo(releasedVideo) {
+        if (wtVideoJitterBuffer == null) {
+            return;
+        }
+        for (const orderedVideoData of releasedVideo) {
+            if (timingInfo.muxer.currentVideoTs < 0) {
+                updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
+            }
+            if (orderedVideoData.isDisco) {
+                console.warn(`VIDEO DISCO detected at (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
+            }
+            if (orderedVideoData.repeatedOrBackwards) {
+                console.warn(`VIDEO Repeated or backwards chunk, discarding, (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
+            } else {
+                // Adds pts to wallClk info
+                latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
+
+                timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
+                updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
+                videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
+            }
+        }
+        updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
+    }
+
+    // Forward jitter-buffer output to the audio pipeline (see processReleasedVideo).
+    function processReleasedAudio(releasedAudio) {
+        if (wtAudioJitterBuffer == null) {
+            return;
+        }
+        for (const orderedAudioData of releasedAudio) {
+            if (timingInfo.muxer.currentAudioTs < 0) {
+                updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
+            }
+            if (orderedAudioData.isDisco) {
+                console.warn(`AUDIO DISCO detected at (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
+            }
+            if (orderedAudioData.repeatedOrBackwards) {
+                console.warn(`AUDIO Repeated or backwards chunk, discarding, (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
+            } else {
+                // Adds pts to wallClk info
+                latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
+
+                timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
+                updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
+                audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
+            }
+        }
+        updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
+    }
+
     function updateFirstChunkTSUI(mediaType, ts) {
         let elementName = 'firstChunkVts';
         if (mediaType === 'audio') {
@@ -958,30 +1013,9 @@ LICENSE file in the root directory of this source tree.
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
 
             if (wtVideoJitterBuffer != null) {
-                // AddItem may release several chunks at once (e.g. right after the
-                // jitter buffer is shrunk via Update); forward each in order.
-                const releasedVideo = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup);
-                for (const orderedVideoData of releasedVideo) {
-                    if (timingInfo.muxer.currentVideoTs < 0) {
-                        updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
-                    }
-
-                    // Download is sequential
-                    if (orderedVideoData.isDisco) {
-                        console.warn(`VIDEO DISCO detected at (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
-                    }
-                    if (orderedVideoData.repeatedOrBackwards) {
-                        console.warn(`VIDEO Repeated or backwards chunk, discarding, (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
-                    } else {
-                        // Adds pts to wallClk info
-                        latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
-
-                        timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
-                        updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                        videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
-                    }
-                }
-                updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
+                // Pull-through jitter buffer: releases the contiguous run now, or
+                // holds a gap for up to bufferSizeMs. May release several at once.
+                processReleasedVideo(wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup));
             }
         } else if (e.data.type === "audiochunk") {
             const chunk = e.data.chunk;
@@ -991,41 +1025,18 @@ LICENSE file in the root directory of this source tree.
             const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
 
             if (wtAudioJitterBuffer != null) {
-                // AddItem may release several chunks at once (e.g. right after the
-                // jitter buffer is shrunk via Update); forward each in order.
-                const releasedAudio = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup);
-                for (const orderedAudioData of releasedAudio) {
-                    if (timingInfo.muxer.currentAudioTs < 0) {
-                        updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
-                    }
-
-                    // Download is sequential
-                    if (orderedAudioData.isDisco) {
-                        console.warn(`AUDIO DISCO detected at (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
-                    }
-                    if (orderedAudioData.repeatedOrBackwards) {
-                        console.warn(`AUDIO Repeated or backwards chunk, discarding, (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
-                    } else {
-                        // Adds pts to wallClk info
-                        latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
-
-                        timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
-
-                        updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                        audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
-                    }
-                }
-                updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
+                // Pull-through jitter buffer: releases the contiguous run now, or
+                // holds a gap for up to bufferSizeMs. May release several at once.
+                processReleasedAudio(wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup));
             }
         } else if (e.data.type === "endofgroup") {
             // MoQ end-of-group: the group (e.data.groupId) is complete and its
-            // last object was e.data.lastObjId. Feed it to the matching jitter
-            // buffer so it can tell a cleanly-finished group from one whose tail
-            // objects were lost.
-            const jb = e.data.mediaType === 'audio' ? wtAudioJitterBuffer
-                : (e.data.mediaType === 'video' ? wtVideoJitterBuffer : null);
-            if (jb != null) {
-                jb.MarkEndOfGroup(e.data.groupId, e.data.lastObjId);
+            // last object was e.data.lastObjId. This can unblock a group boundary
+            // the buffer was waiting on, so forward anything it releases.
+            if (e.data.mediaType === 'audio' && wtAudioJitterBuffer != null) {
+                processReleasedAudio(wtAudioJitterBuffer.MarkEndOfGroup(e.data.groupId, e.data.lastObjId));
+            } else if (e.data.mediaType === 'video' && wtVideoJitterBuffer != null) {
+                processReleasedVideo(wtVideoJitterBuffer.MarkEndOfGroup(e.data.groupId, e.data.lastObjId));
             }
             // FRAME
         } else if (e.data.type === "aframe") {
