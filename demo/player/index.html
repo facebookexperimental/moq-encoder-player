@@ -173,7 +173,7 @@ LICENSE file in the root directory of this source tree.
                 <form>
                     <label>Buffer current max size:</label><input id="audioJitterCurrentMaxSize" type="text" value="" readonly>
                     <div class="clear"></div>
-                    <label>Buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
+                    <label>Current buffer size:</label><input id="audioJitterSize" type="text" value="" readonly>
                     <div class="clear"></div>
                     <label>Gaps detected:</label><input id="audioJitterGaps" type="text" value="" readonly>
                     <div class="clear"></div>
@@ -182,7 +182,7 @@ LICENSE file in the root directory of this source tree.
                 <form>
                     <label>Buffer current max size:</label><input id="videoJitterCurrentMaxSize" type="text" value="" readonly>
                     <div class="clear"></div>
-                    <label>Buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
+                    <label>Current buffer size:</label><input id="videoJitterSize" type="text" value="" readonly>
                     <div class="clear"></div>
                     <label>Gaps detected:</label><input id="videoJitterGaps" type="text" value="" readonly>
                     <div class="clear"></div>
@@ -861,9 +861,17 @@ LICENSE file in the root directory of this source tree.
             elementNameGaps = 'audioJitterGaps';
         }
 
-        document.getElementById(elementNameSize).value = data.size;
+        // Current fill: real element count and its duration in ms.
+        const curLenMs = Math.round(data.totalLengthMs);
+        document.getElementById(elementNameSize).value = `${data.size} (${curLenMs}ms)`;
         document.getElementById(elementNameGaps).value = `${data.numTotalGaps} (${data.numTotalLostStreams} streams lost)`;
-        document.getElementById(elementMaxSize).value = `${data.currentMaSizeMs} ms`;
+        // Max size: configured ms plus an element estimate derived from the
+        // current fill ratio (assumes roughly uniform element durations).
+        const maxSizeMs = Math.round(data.currentMaSizeMs);
+        const maxSizeElements = data.totalLengthMs > 0
+            ? Math.round(data.size * data.currentMaSizeMs / data.totalLengthMs)
+            : 0;
+        document.getElementById(elementMaxSize).value = `${maxSizeElements} (${maxSizeMs}ms)`;
 
         addTimelineGap(mediaType, data.numTotalGaps);
     }
@@ -952,7 +960,7 @@ LICENSE file in the root directory of this source tree.
             if (wtVideoJitterBuffer != null) {
                 // AddItem may release several chunks at once (e.g. right after the
                 // jitter buffer is shrunk via Update); forward each in order.
-                const releasedVideo = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData);
+                const releasedVideo = wtVideoJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup);
                 for (const orderedVideoData of releasedVideo) {
                     if (timingInfo.muxer.currentVideoTs < 0) {
                         updateFirstChunkTSUI("video", orderedVideoData.chunk.timestamp);
@@ -985,7 +993,7 @@ LICENSE file in the root directory of this source tree.
             if (wtAudioJitterBuffer != null) {
                 // AddItem may release several chunks at once (e.g. right after the
                 // jitter buffer is shrunk via Update); forward each in order.
-                const releasedAudio = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData);
+                const releasedAudio = wtAudioJitterBuffer.AddItem(chunk, groupId, objId, extraData, e.data.isLastInGroup);
                 for (const orderedAudioData of releasedAudio) {
                     if (timingInfo.muxer.currentAudioTs < 0) {
                         updateFirstChunkTSUI("audio", orderedAudioData.chunk.timestamp);
@@ -1008,6 +1016,16 @@ LICENSE file in the root directory of this source tree.
                     }
                 }
                 updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
+            }
+        } else if (e.data.type === "endofgroup") {
+            // MoQ end-of-group: the group (e.data.groupId) is complete and its
+            // last object was e.data.lastObjId. Feed it to the matching jitter
+            // buffer so it can tell a cleanly-finished group from one whose tail
+            // objects were lost.
+            const jb = e.data.mediaType === 'audio' ? wtAudioJitterBuffer
+                : (e.data.mediaType === 'video' ? wtVideoJitterBuffer : null);
+            if (jb != null) {
+                jb.MarkEndOfGroup(e.data.groupId, e.data.lastObjId);
             }
             // FRAME
         } else if (e.data.type === "aframe") {

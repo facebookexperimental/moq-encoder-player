@@ -156,6 +156,11 @@ export interface MoqInitOptions {
  * `groupId`/`objectId` are the MoQ ordering keys. For subgroup streams `objectId`
  * is the receiver-counted arrival index within the group (the wire object-id
  * delta is always 0 in this mapping); for datagrams it is the wire object id.
+ *
+ * `isLastInGroup` is true when the object carries the end-of-group signal inline,
+ * i.e. datagrams (one object per group, end-of-group bit on the object). Subgroup
+ * streams signal end-of-group retroactively instead (see `EndOfGroupCallback`),
+ * so this is false for them.
  */
 export type ObjectCallback = (
   reader: ReadableStream<Uint8Array>,
@@ -163,7 +168,18 @@ export type ObjectCallback = (
   length?: number,
   groupId?: number,
   objectId?: number,
+  isLastInGroup?: boolean,
 ) => Promise<boolean> | boolean;
+
+/**
+ * Called when the transport learns retroactively that a group is complete,
+ * carrying the group id and the object id of its final object. Used for subgroup
+ * streams, where end-of-group is a MOQ_OBJ_STATUS_END_OF_GROUP status object that
+ * trails the group's last payload object -- so it cannot ride on that object and
+ * is delivered out of band. Datagrams carry end-of-group inline on the object
+ * instead (see `ObjectCallback`'s `isLastInGroup`).
+ */
+export type EndOfGroupCallback = (groupId: number, lastObjId: number) => void;
 
 export interface SubscriptionInfo {
   namespace: string[];
@@ -813,6 +829,7 @@ export class Subscription {
 
   private moq: Moq;
   private onObject: ObjectCallback;
+  private onEndOfGroup: EndOfGroupCallback | undefined;
   // draft-18: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
   // any REQUEST_UPDATE flow back on it. Objects still arrive on separate uni
   // subgroup streams / datagrams, routed by track alias.
@@ -828,6 +845,7 @@ export class Subscription {
     authInfo: string | undefined,
     onObject: ObjectCallback,
     subscribeStream: WebTransportBidirectionalStream,
+    onEndOfGroup?: EndOfGroupCallback,
   ) {
     this.moq = moq;
     this.namespace = namespace;
@@ -837,6 +855,7 @@ export class Subscription {
     this.authInfo = authInfo;
     this.onObject = onObject;
     this.subscribeStream = subscribeStream;
+    this.onEndOfGroup = onEndOfGroup;
   }
 
   /** Snapshot of the subscription's identity. */
@@ -901,8 +920,19 @@ export class Subscription {
     length?: number,
     groupId?: number,
     objectId?: number,
+    isLastInGroup?: boolean,
   ): Promise<boolean> {
-    return this.onObject(reader, extensionHeaders, length, groupId, objectId);
+    // Datagrams pass isLastInGroup=true inline (end-of-group bit on the object),
+    // so it rides with the object to the callback. Subgroup streams leave it
+    // false and signal end-of-group retroactively via _signalEndOfGroup.
+    return this.onObject(reader, extensionHeaders, length, groupId, objectId, isLastInGroup);
+  }
+
+  // Signal that a group finished at `lastObjId` (MoQ end-of-group), retroactively.
+  // Called by the subgroup receive loop on the trailing end-of-group marker;
+  // no-op when the subscriber did not register a callback.
+  _signalEndOfGroup(groupId: number, lastObjId: number): void {
+    this.onEndOfGroup?.(groupId, lastObjId);
   }
 }
 
@@ -1142,13 +1172,15 @@ export class Moq {
    * SUBSCRIBE on it, and await SUBSCRIBE_OK read back on the same stream. Objects
    * arrive on separate unidirectional subgroup streams / datagrams, routed to
    * `onObject` by the negotiated track alias. A rejection is retried after
-   * `SLEEP_SUBSCRIBE_ERROR_MS` with a fresh request stream.
+   * `SLEEP_SUBSCRIBE_ERROR_MS` with a fresh request stream. `onEndOfGroup`, if
+   * given, fires when each group completes (MoQ end-of-group).
    */
   async subscribe(
     namespace: string[],
     name: string,
     authInfo: string | undefined,
     onObject: ObjectCallback,
+    onEndOfGroup?: EndOfGroupCallback,
   ): Promise<Subscription> {
     if (this._state !== MoqState.Running) {
       if (this._state === MoqState.Idle) {
@@ -1180,6 +1212,7 @@ export class Moq {
           authInfo,
           onObject,
           subStream,
+          onEndOfGroup,
         );
         this.subscriptions.push(sub);
         this.subscriptionsByAlias.set(trackAlias, sub);
@@ -1557,6 +1590,7 @@ export class Moq {
     }
     let isEOF = false;
     let numObjRead = 0;
+    let endOfGroupSignaled = false;
     // Reconstruct the per-object id from arrival order: the subgroup wire format
     // carries an object-id delta of 0 for every object (see writeObject), so the
     // parsed objSeq is unusable. QUIC delivers a subgroup stream in order and the
@@ -1567,7 +1601,15 @@ export class Moq {
       try {
         const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
         isEOF = isEndOfGroupStatus(objHeader.status);
-        if (!isEOF && objHeader.payloadLength > 0) {
+        if (isEOF) {
+          // Explicit MoQ end-of-group marker (zero-payload status object). It
+          // trails the group's last payload object, so objIndex-1 is that
+          // object's id.
+          if (objIndex > 0) {
+            sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
+            endOfGroupSignaled = true;
+          }
+        } else if (objHeader.payloadLength > 0) {
           isEOF = await sub._deliver(
             readerStream,
             objHeader.extensionHeaders,
@@ -1591,6 +1633,16 @@ export class Moq {
           throw err;
         }
       }
+    }
+    // A subgroup stream carries exactly one group. If it ended without an
+    // explicit end-of-group status object -- the common case for one object per
+    // group, where the stream just FINs (often the relay closes it as soon as the
+    // single object is delivered, before the publisher's trailing marker rolls
+    // out on the next group) -- the finished stream still means the group is
+    // complete at the last object read. Signal it so the receiver does not treat
+    // the next group's first object as a discontinuity.
+    if (!endOfGroupSignaled && objIndex > 0) {
+      sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
     }
   }
 
@@ -1620,14 +1672,18 @@ export class Moq {
         continue;
       }
       // Status datagrams carry no payload (length 0 still decodes headers).
-      const length = moqDecodeDatagramType(header.type).isStatus ? 0 : undefined;
-      // Datagram headers carry a real object id (unlike subgroup streams).
+      const datagramType = moqDecodeDatagramType(header.type);
+      const length = datagramType.isStatus ? 0 : undefined;
+      // Datagram headers carry a real object id (unlike subgroup streams) and the
+      // end-of-group bit inline, so it rides with the object to the callback as
+      // isLastInGroup (no separate retroactive signal needed for datagrams).
       await sub._deliver(
         readable,
         header.extensionHeaders ?? [],
         length,
         header.groupSeq,
         header.objSeq,
+        datagramType.isEndOfGroup,
       );
     }
   }

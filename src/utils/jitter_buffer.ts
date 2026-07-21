@@ -26,6 +26,9 @@ export class JitterBuffer {
   numTotalLostStreams: number;
   lastCorrectGroupId: number | undefined;
   lastCorrectObjId: number | undefined;
+  // Whether the last released object was the last of its group (its end-of-group
+  // was signaled). Decides what the next object must be to stay contiguous.
+  lastWasLastInGroup: boolean;
 
   constructor(maxSizeMs?: number, droppedCallback?: (info: any) => void) {
     this.bufferSizeMs = DEFAULT_BUFFER_SIZE_MS;
@@ -40,12 +43,39 @@ export class JitterBuffer {
     this.numTotalLostStreams = 0;
     this.lastCorrectGroupId = undefined;
     this.lastCorrectObjId = undefined;
+    this.lastWasLastInGroup = false;
   }
 
-  AddItem(chunk: any, groupId: number, objId: number, extraData: any): any[] {
+  // Flag the object (groupId, lastObjId) as the last of its group. The MoQ
+  // end-of-group signal for subgroup streams (a MOQ_OBJ_STATUS_END_OF_GROUP
+  // status object) is retroactive -- it names the group's last object after that
+  // object was already handed to AddItem -- so the flag is set out of band here.
+  // (Datagrams carry the flag inline via AddItem's isLastInGroup, so they never
+  // call this.) The object is normally still buffered when the signal arrives;
+  // if it was already released, record it on the release cursor so the next
+  // object (the first of the following group) is not flagged as a discontinuity.
+  MarkEndOfGroup(groupId: number, lastObjId: number) {
+    for (const el of this.elementsList) {
+      if (el.groupId === groupId && el.objId === lastObjId) {
+        el.isLastInGroup = true;
+        return;
+      }
+    }
+    if (groupId === this.lastCorrectGroupId && lastObjId === this.lastCorrectObjId) {
+      this.lastWasLastInGroup = true;
+    }
+  }
+
+  AddItem(
+    chunk: any,
+    groupId: number,
+    objId: number,
+    extraData: any,
+    isLastInGroup = false,
+  ): any[] {
     // Order by (groupId, objId)
     if (this.elementsList.length <= 0) {
-      this.elementsList.push({ chunk, groupId, objId, extraData });
+      this.elementsList.push({ chunk, groupId, objId, extraData, isLastInGroup });
       this.totalLengthMs += chunk.duration / 1000;
     } else {
       const head = this.elementsList[0];
@@ -65,13 +95,13 @@ export class JitterBuffer {
         while (n < this.elementsList.length && !exit) {
           const el = this.elementsList[n];
           if (keyCmp(groupId, objId, el.groupId, el.objId) < 0) {
-            this.elementsList.splice(n, 0, { chunk, groupId, objId, extraData });
+            this.elementsList.splice(n, 0, { chunk, groupId, objId, extraData, isLastInGroup });
             exit = true;
           }
           n++;
         }
         if (exit === false) {
-          this.elementsList.push({ chunk, groupId, objId, extraData });
+          this.elementsList.push({ chunk, groupId, objId, extraData, isLastInGroup });
         }
         this.totalLengthMs += chunk.duration / 1000;
       }
@@ -86,43 +116,39 @@ export class JitterBuffer {
     while (this.totalLengthMs >= this.bufferSizeMs && this.elementsList.length > 0) {
       const r = this.elementsList.shift();
 
-      // Check for discontinuities in the stream
+      // Flag discontinuities. Given the previous released object, the next one is
+      // contiguous when: it opens the next group (objId 0) if that previous object
+      // was its group's last; otherwise it is the next object in the same group.
+      // Anything else is a discontinuity -- a gap, or an end-of-group that never
+      // arrived.
       r.isDisco = false;
       r.repeatedOrBackwards = false;
       if (this.lastCorrectGroupId !== undefined && this.lastCorrectObjId !== undefined) {
         const lastG = this.lastCorrectGroupId;
         const lastO = this.lastCorrectObjId;
-        // Contiguous: next object in the same group, or the first object of the
-        // next group (a new group always restarts objId at 0).
-        const contiguous =
-          (r.groupId === lastG && r.objId === lastO + 1) ||
-          (r.groupId === lastG + 1 && r.objId === 0);
+        const contiguous = this.lastWasLastInGroup
+          ? r.groupId === lastG + 1 && r.objId === 0
+          : r.groupId === lastG && r.objId === lastO + 1;
         if (!contiguous) {
           r.isDisco = true;
           this.numTotalGaps++;
-          // Approximate loss: object gaps within a group are exact; across group
-          // boundaries the previous group's tail count is unknown, so a whole
-          // skipped group counts as a single lost unit.
+          // Rough loss estimate for the stats UI: object delta within a group,
+          // group delta across groups.
           if (r.groupId === lastG) {
             this.numTotalLostStreams += Math.abs(r.objId - lastO);
           } else {
             this.numTotalLostStreams += Math.abs(r.groupId - lastG);
           }
-
-          // Check for repeated and backwards keys
+          // Repeated or backwards key: do not let it move the cursor backwards.
           if (keyCmp(r.groupId, r.objId, lastG, lastO) <= 0) {
             r.repeatedOrBackwards = true;
-          } else {
-            this.lastCorrectGroupId = r.groupId;
-            this.lastCorrectObjId = r.objId;
           }
-        } else {
-          this.lastCorrectGroupId = r.groupId;
-          this.lastCorrectObjId = r.objId;
         }
-      } else {
+      }
+      if (!r.repeatedOrBackwards) {
         this.lastCorrectGroupId = r.groupId;
         this.lastCorrectObjId = r.objId;
+        this.lastWasLastInGroup = r.isLastInGroup === true;
       }
       this.totalLengthMs -= r.chunk.duration / 1000;
       released.push(r);
@@ -147,6 +173,7 @@ export class JitterBuffer {
     this.numTotalLostStreams = 0;
     this.lastCorrectGroupId = undefined;
     this.lastCorrectObjId = undefined;
+    this.lastWasLastInGroup = false;
   }
 
   UpdateMaxSize(bufferSizeMs: number) {
