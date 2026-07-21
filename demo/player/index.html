@@ -91,8 +91,8 @@ LICENSE file in the root directory of this source tree.
                     <label>Audio render player buffer (ms):<input id="playerBufferMs" type="text" value="100"><button id="btnPlayerBufferUpdate" type="button" disabled>Update</button></label>
                     <label>(it waits until audio buffers this amount to start playback; Update forces a gap to re-apply live)</label>
                     <div class="clear"></div>
-                    <label>Max audio player buffer (ms):<input id="playerMaxBufferMs" type="text" value="800"></label>
-                    <label>(this + jitter is the max latency allowed)</label>
+                    <label>Playback target latency (ms):<input id="playbackTargetLatencyMs" type="number" step="1" max="30000" value="500"><button id="btnPlaybackTargetLatencyUpdate" type="button" disabled>Update</button></label>
+                    <label>(target end-to-end latency; min = "Audio render player buffer" + "Audio jitter buffer buffer for this player", max = 30000)</label>
                     <div class="clear"></div>
                     <label>Audio jitter buffer buffer for this player (ms):<input id="audioJitterBufferMs" type="text"
                             value="300" size="8"><button id="btnJitterAudioUpdate" type="button" disabled>Update</button></label>
@@ -319,8 +319,9 @@ LICENSE file in the root directory of this source tree.
     // We will start playback when this amount of data is in the audio rendered buffer
     let playerBufferMs = 100;
 
-    // This + jitter is the max latency allowed
-    let playerMaxBufferMs = 300;
+    // Playback target latency (ms). Bounds:
+    //   min = audio render buffer + audio jitter buffer, max = PLAYBACK_TARGET_LATENCY_MAX_MS
+    const PLAYBACK_TARGET_LATENCY_MAX_MS = 30000;
 
     // Current workers
     let muxerDownloaderWorker = null;
@@ -350,7 +351,7 @@ LICENSE file in the root directory of this source tree.
             video: { size: -1, lengthMs: -1 },
         },
         renderer: {
-            audio: { size: -1, lengthMs: -1, sizeMs: -1, state: AUDIO_STOPPED },
+            audio: { size: -1, lengthMs: -1, state: AUDIO_STOPPED },
             video: { size: -1, lengthMs: -1, },
         },
     }
@@ -398,7 +399,12 @@ LICENSE file in the root directory of this source tree.
     let timelineGaps = [];    // { tMs, mediaType, cum } one entry per detected gap
     let gapCum = { audio: 0, video: 0 }; // running session totals of detected gaps
     let timelineStartMs = -1; // Date.now() when start was pressed
-    let timelineAnimFrame = null;
+    // The timeline is driven by a timer (not requestAnimationFrame) so it keeps
+    // updating even when the tab is hidden / not in focus - rAF is paused while
+    // hidden, but setInterval keeps firing (and is not throttled in Chrome while
+    // audio is playing, which is the player's normal state).
+    let timelineTimer = null;
+    const TIMELINE_UPDATE_EVERY_MS = 20;
 
     function startTimeline() {
         // Clear and restart on every Start press
@@ -406,15 +412,15 @@ LICENSE file in the root directory of this source tree.
         timelineGaps = [];
         gapCum = { audio: 0, video: 0 };
         timelineStartMs = Date.now();
-        if (timelineAnimFrame === null) {
-            timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        if (timelineTimer === null) {
+            timelineTimer = setInterval(drawTimeline, TIMELINE_UPDATE_EVERY_MS);
         }
     }
 
     function stopTimeline() {
-        if (timelineAnimFrame != null) {
-            cancelAnimationFrame(timelineAnimFrame);
-            timelineAnimFrame = null;
+        if (timelineTimer != null) {
+            clearInterval(timelineTimer);
+            timelineTimer = null;
         }
     }
 
@@ -502,8 +508,9 @@ LICENSE file in the root directory of this source tree.
             timelineGaps.shift();
         }
 
-        // Left axis scale: 0 .. max(Max audio player buffer (ms), max observed buffer)
-        let leftYMax = buffersInfo.renderer.audio.sizeMs > 0 ? buffersInfo.renderer.audio.sizeMs : playerMaxBufferMs;
+        // Left axis scale baseline: twice the audio latency budget (render buffer +
+        // audio jitter buffer), then expanded to fit the largest observed buffer.
+        let leftYMax = 2 * getAudioBaseLatencyMs();
         for (let i = 0; i < timelineSamples.length; i++) {
             leftYMax = Math.max(leftYMax, timelineSamples[i].audio, timelineSamples[i].video);
         }
@@ -551,8 +558,6 @@ LICENSE file in the root directory of this source tree.
 
         drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
         drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
-
-        timelineAnimFrame = requestAnimationFrame(drawTimeline);
     }
 
     // Read & parse QS data
@@ -623,15 +628,74 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
+    // Minimum audio latency budget = audio render buffer + audio jitter buffer.
+    // This is also the minimum allowed playback target latency, and half the
+    // timeline graph's baseline Y-axis scale.
+    function getAudioBaseLatencyMs() {
+        const render = Math.round(Number(document.getElementById('playerBufferMs').value)) || 0;
+        const jitter = Math.round(Number(document.getElementById('audioJitterBufferMs').value)) || 0;
+        return render + jitter;
+    }
+
+    // Clamp the playback-target-latency field to an integer in [base, max]. Used
+    // when the user edits the field directly.
+    function clampPlaybackTargetLatency() {
+        const base = getAudioBaseLatencyMs();
+        const input = document.getElementById('playbackTargetLatencyMs');
+        input.min = base;
+        let val = Math.round(Number(input.value));
+        if (!Number.isFinite(val)) {
+            val = base;
+        }
+        input.value = Math.max(base, Math.min(val, PLAYBACK_TARGET_LATENCY_MAX_MS));
+    }
+
+    // When the audio render or jitter buffer changes, the allowed range shifts. If
+    // the target latency now falls outside [base, max], reset it to base + 50.
+    function refreshPlaybackTargetLatencyRange() {
+        const base = getAudioBaseLatencyMs();
+        const input = document.getElementById('playbackTargetLatencyMs');
+        input.min = base;
+        const val = Math.round(Number(input.value));
+        if (!Number.isFinite(val) || val < base || val > PLAYBACK_TARGET_LATENCY_MAX_MS) {
+            input.value = Math.min(base + 50, PLAYBACK_TARGET_LATENCY_MAX_MS);
+        }
+    }
+
+    // Lock/unlock the connection/track configuration controls while (un)playing.
+    // The Start/Stop buttons and Advanced toggle keep their own state, and the
+    // live-updatable controls (audio render buffer, audio/video jitter buffers and
+    // their Update buttons) are exempt so they can still be tuned while playing.
+    function setOptionsDisabled(disabled) {
+        const keepEnabled = new Set([
+            'btnStart', 'btnStop', 'btnToggleAdvanced',
+            'playerBufferMs', 'btnPlayerBufferUpdate',
+            'audioJitterBufferMs', 'btnJitterAudioUpdate',
+            'videoJitterBufferMs', 'btnJitterVideoUpdate',
+            'playbackTargetLatencyMs', 'btnPlaybackTargetLatencyUpdate',
+        ]);
+        const form = document.querySelector('.boxed .styleform form');
+        if (form == null) {
+            return;
+        }
+        form.querySelectorAll('input, select, button').forEach((el) => {
+            if (keepEnabled.has(el.id)) {
+                return;
+            }
+            el.disabled = disabled;
+        });
+    }
+
     async function start() {
+        setOptionsDisabled(true);
         document.getElementById("btnStart").disabled = true;
         document.getElementById("btnStop").disabled = false;
         document.getElementById("btnJitterAudioUpdate").disabled = false;
         document.getElementById("btnJitterVideoUpdate").disabled = false;
         document.getElementById("btnPlayerBufferUpdate").disabled = false;
+        document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = false;
 
         playerBufferMs = Number(document.getElementById('playerBufferMs').value);
-        playerMaxBufferMs = Number(document.getElementById('playerMaxBufferMs').value);
 
         createVideoRendererBuffer();
 
@@ -682,11 +746,13 @@ LICENSE file in the root directory of this source tree.
 
         stopTimeline();
 
+        setOptionsDisabled(false);
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
+        document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = true;
 
         const stopMsg = { type: "stop" };
         muxerDownloaderWorker.postMessage(stopMsg);
@@ -1134,12 +1200,19 @@ LICENSE file in the root directory of this source tree.
     }
 
     // Add listeners from HTML
-    window.addEventListener("load", (event) => {initFromQS();});
+    window.addEventListener("load", (event) => {initFromQS(); refreshPlaybackTargetLatencyRange();});
     document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
     document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
+
+    // Playback target latency: clamp to [base, max] on direct edit, and re-validate
+    // its range whenever the audio render or jitter buffer changes (reset to
+    // base + 50 if it falls out of range). (Live update button wired up later.)
+    document.getElementById('playbackTargetLatencyMs').addEventListener("change", () => {clampPlaybackTargetLatency();});
+    document.getElementById('playerBufferMs').addEventListener("change", () => {refreshPlaybackTargetLatencyRange();});
+    document.getElementById('audioJitterBufferMs').addEventListener("change", () => {refreshPlaybackTargetLatencyRange();});
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not

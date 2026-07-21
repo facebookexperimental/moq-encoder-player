@@ -81,6 +81,11 @@ import {
   type ParsedSubscribe,
   MOQ_ALPN_DRAFT18_VERSION,
 } from './moqt.js';
+import {
+  WireDropSimulator,
+  wireDropConfigIsActive,
+  type WireDropConfig,
+} from './wire_drop_simulator.js';
 
 const LOG_PREFIX = '[MOQ]';
 
@@ -308,6 +313,21 @@ export class Track {
   // group's objects (deltas) are dropped too until the next group is accepted.
   private skipDeltasUntilNewGroup = false;
 
+  // Optional simulated packet loss on the send path (A/V-sync / loss-recovery
+  // testing). null = disabled. The drop unit follows the mapping: one datagram
+  // per object, or one subgroup stream per group. See writeObject/shouldDropOnWire.
+  private dropSim: WireDropSimulator | null = null;
+  // Group currently being dropped as a whole (subgroup mapping): once the first
+  // object of a group is chosen for drop, every object of that group is dropped
+  // so the entire QUIC stream is skipped. undefined = current group is kept.
+  private droppedGroupId: number | undefined = undefined;
+  // Number of upcoming wire units to force-drop on demand (manual burst),
+  // independent of the periodic drop simulator. Consumed one unit at a time.
+  private forcedDropRemaining = 0;
+  // Fired for every object skipped by the drop simulator (not for real drops
+  // like queue/stream-cap). Lets the sender surface simulated loss in the UI.
+  onWireDrop?: (obj: ObjData) => void;
+
   constructor(
     moq: Moq,
     namespace: string[],
@@ -425,6 +445,25 @@ export class Track {
     this.queue.push(obj);
     void this.drain();
     return obj;
+  }
+
+  /**
+   * Enable or disable simulated packet loss on this track's send path. Pass
+   * `null` (or an inactive config) to disable. Used only for testing; genuine
+   * publication never sets this.
+   */
+  setWireDropConfig(cfg: WireDropConfig | null): void {
+    this.dropSim = wireDropConfigIsActive(cfg) ? new WireDropSimulator(cfg!) : null;
+    this.droppedGroupId = undefined;
+  }
+
+  /**
+   * Force-drop the next `count` wire units on demand (a manual loss burst), on
+   * top of (and independent of) any periodic drop policy. The unit follows the
+   * mapping: `count` datagrams, or `count` subgroup streams (groups). Testing only.
+   */
+  forceDropBurst(count: number): void {
+    this.forcedDropRemaining += Math.max(1, Math.floor(count) || 1);
   }
 
   /** Snapshot of the track's identity and live counters. */
@@ -618,8 +657,10 @@ export class Track {
           continue;
         }
         try {
-          await this.writeObject(obj);
-          obj.status = 'sent';
+          const written = await this.writeObject(obj);
+          // A simulated wire drop returns false: the id was consumed (so the
+          // receiver sees a gap) but nothing hit the wire, so it is not 'sent'.
+          obj.status = written ? 'sent' : 'dropped';
         } catch (err) {
           obj.status = 'dropped';
           console.error(`${LOG_PREFIX} Failed to write object ${obj.groupId}/${obj.objId}: ${err}`);
@@ -637,7 +678,48 @@ export class Track {
     }
   }
 
-  private async writeObject(obj: ObjData): Promise<void> {
+  // Decide whether this object should be dropped by the simulated-loss policy.
+  // Datagram mapping: the unit is one datagram (one object). Subgroup mapping:
+  // the unit is one QUIC stream (one group), so the decision is taken once on the
+  // group's first object and applied to every object in that group.
+  private shouldDropOnWire(obj: ObjData): boolean {
+    if (this.moqMapping === MoqMapping.ObjectPerDatagram) {
+      // Datagram: the unit is one object (one datagram).
+      return this.decideDropUnit();
+    }
+    // Subgroup mapping: the unit is one QUIC stream (one group); decide once on
+    // the group's first object and apply it to every object in that group.
+    if (obj.newGroup) {
+      this.droppedGroupId = this.decideDropUnit() ? obj.groupId : undefined;
+    }
+    return this.droppedGroupId === obj.groupId;
+  }
+
+  // Decide whether the current wire unit should be dropped. A forced manual burst
+  // takes precedence over (and does not advance) the periodic drop simulator.
+  private decideDropUnit(): boolean {
+    if (this.forcedDropRemaining > 0) {
+      this.forcedDropRemaining--;
+      return true;
+    }
+    if (this.dropSim !== null) {
+      return this.dropSim.shouldDrop();
+    }
+    return false;
+  }
+
+  // Writes one object to the wire. Returns true when the bytes were written,
+  // false when the object was intentionally skipped by the drop simulator (its
+  // id was still consumed, so the receiver sees a real gap).
+  private async writeObject(obj: ObjData): Promise<boolean> {
+    if (this.shouldDropOnWire(obj)) {
+      // Simulated wire loss: skip the datagram / subgroup stream entirely.
+      if (this.onWireDrop !== undefined) {
+        this.onWireDrop(obj);
+      }
+      return false;
+    }
+
     if (this.moqMapping === MoqMapping.ObjectPerDatagram) {
       const writer = this.moq._wt().datagrams.writable.getWriter();
       try {
@@ -654,7 +736,7 @@ export class Track {
       } finally {
         writer.releaseLock();
       }
-      return;
+      return true;
     }
 
     if (this.moqMapping !== MoqMapping.SubgroupPerGroup) {
@@ -700,6 +782,7 @@ export class Track {
       throw err;
     }
     this.groupLastObj.set(obj.groupId, obj.objId);
+    return true;
   }
 
   // Close a rolled-off subgroup stream in the background: send end-of-group +
