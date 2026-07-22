@@ -91,6 +91,9 @@ export class MoqSender {
         case 'forceDropBurst':
           this.handleForceDropBurst(e.data);
           break;
+        case 'forceHoldBurst':
+          this.handleForceHoldBurst(e.data);
+          break;
         case 'stop':
           this.handleStop();
           break;
@@ -434,6 +437,16 @@ export class MoqSender {
       return;
     }
     track.forceDropBurst(data?.burst ?? 1);
+  }
+
+  /** Force-hold (stall then clump) the next burst for one media type, on demand. */
+  private handleForceHoldBurst(data: any): void {
+    const track = this.tracks[data?.mediaType];
+    if (track === undefined) {
+      // Not publishing / no subscriber yet: nothing to hold.
+      return;
+    }
+    track.forceHoldBurst(data?.burst ?? 1);
   }
 
   // -------------------------------------------------------------------------

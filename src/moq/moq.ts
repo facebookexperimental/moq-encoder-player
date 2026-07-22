@@ -347,6 +347,11 @@ export class Track {
   // Number of upcoming wire units to force-drop on demand (manual burst),
   // independent of the periodic drop simulator. Consumed one unit at a time.
   private forcedDropRemaining = 0;
+  // Manual "hold" burst: while > 0, upcoming objects are buffered instead of
+  // written (a stall), then released together once the count reaches 0 (a clump).
+  // Independent of the periodic hold simulator. See forceHoldBurst / drain.
+  private forcedHoldRemaining = 0;
+  private forcedHoldBuffer: ObjData[] = [];
   // Fired for every object skipped by the drop simulator (not for real drops
   // like queue/stream-cap). Lets the sender surface simulated loss in the UI.
   onWireDrop?: (obj: ObjData) => void;
@@ -507,6 +512,16 @@ export class Track {
     this.forcedDropRemaining += Math.max(1, Math.floor(count) || 1);
   }
 
+  /**
+   * Force-hold the next `count` objects on demand (a manual slowness burst): they
+   * are buffered as they arrive (a stall) and released together once the burst is
+   * full (a clump), on top of (and independent of) any periodic hold policy.
+   * Testing only.
+   */
+  forceHoldBurst(count: number): void {
+    this.forcedHoldRemaining += Math.max(1, Math.floor(count) || 1);
+  }
+
   /** Snapshot of the track's identity and live counters. */
   getInfo(): TrackInfo {
     return {
@@ -529,10 +544,13 @@ export class Track {
     }
     this.closed = true;
 
-    // Drop anything still queued.
-    for (const obj of this.queue) {
+    // Drop anything still queued, including a manual hold burst that never
+    // reached its release count.
+    for (const obj of [...this.forcedHoldBuffer, ...this.queue]) {
       obj.status = 'aborted';
     }
+    this.forcedHoldBuffer = [];
+    this.forcedHoldRemaining = 0;
     this.queue = [];
 
     // Close every open subgroup stream with an end-of-group object.
@@ -695,6 +713,20 @@ export class Track {
         const obj = this.queue[0];
         if (obj.status === 'aborted') {
           this.queue.shift();
+          continue;
+        }
+        // Manual forced hold: buffer arriving objects (a stall) and release the
+        // whole burst together once it is full (a clump). Objects normally arrive
+        // one at a time between drains, so this stalls the wire until the count is
+        // reached, then re-queues the burst at the front to be written in one go.
+        if (this.forcedHoldRemaining > 0) {
+          this.queue.shift();
+          this.forcedHoldBuffer.push(obj);
+          this.forcedHoldRemaining--;
+          if (this.forcedHoldRemaining === 0) {
+            this.queue.unshift(...this.forcedHoldBuffer);
+            this.forcedHoldBuffer = [];
+          }
           continue;
         }
         // Simulated slowness: the hold sim buffers bursts of objects and returns

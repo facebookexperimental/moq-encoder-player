@@ -238,10 +238,36 @@ LICENSE file in the root directory of this source tree.
 
     <!-- Preview -->
     <div class="boxed">
-        <video height="50%" id="vPreview" autoplay muted></video>
-        <div class="clear"></div>
-        <button id="btnForceDropVideo" type="button" disabled>Force drop burst of video QUIC stream</button>
-        <button id="btnForceDropAudio" type="button" disabled>Force drop burst of audio QUIC stream / Datagram</button>
+        <video height="50%" id="vPreview" autoplay muted style="margin:0 auto"></video>
+    </div>
+
+    <!-- Inject network issues -->
+    <div class="boxed">
+        <h2>Inject network issues (QUICStream level)</h2>
+        <div style="display:flex; gap:32px; align-items:flex-start; flex-wrap:wrap">
+            <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
+                <h3>Drop</h3>
+                <div style="display:flex; gap:6px; align-items:center">
+                    <input id="forceDropVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
+                    <button id="btnForceDropVideo" type="button" disabled>Video</button>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center">
+                    <input id="forceDropAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
+                    <button id="btnForceDropAudio" type="button" disabled>Audio</button>
+                </div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
+                <h3>Hold</h3>
+                <div style="display:flex; gap:6px; align-items:center">
+                    <input id="forceHoldVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
+                    <button id="btnForceHoldVideo" type="button" disabled>Video</button>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center">
+                    <input id="forceHoldAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
+                    <button id="btnForceHoldAudio" type="button" disabled>Audio</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Send queue / open streams timeline (last 60s) -->
@@ -1056,14 +1082,34 @@ LICENSE file in the root directory of this source tree.
         return { mode, interval, burst };
     }
 
+    // Read a manual burst size (1..100000) from one of the "Inject network issues"
+    // numeric inputs to the left of a button, e.g. inputId "forceDropVideoBurst".
+    function readForceBurst(inputId) {
+        const raw = parseInt(document.getElementById(inputId).value) || 1;
+        return Math.min(100000, Math.max(1, raw));
+    }
+
     // Force a one-off drop burst on the live sender for one media type. The burst
-    // length uses the configured "burst length of the drop" for that media type.
+    // length comes from the numeric input to the left of the button.
     function forceDropBurst(mediaType) {
         if (muxerSenderWorker == null) {
             return;
         }
-        const burst = Math.max(1, parseInt(document.getElementById(`${mediaType}DropBurst`).value) || 1);
+        const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+        const burst = readForceBurst(`forceDrop${cap}Burst`);
         muxerSenderWorker.postMessage({ type: "forceDropBurst", mediaType, burst });
+    }
+
+    // Force a one-off hold (stall then clump) on the live sender for one media
+    // type. The burst length comes from the numeric input to the left of the
+    // button, mirroring forceDropBurst.
+    function forceHoldBurst(mediaType) {
+        if (muxerSenderWorker == null) {
+            return;
+        }
+        const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+        const burst = readForceBurst(`forceHold${cap}Burst`);
+        muxerSenderWorker.postMessage({ type: "forceHoldBurst", mediaType, burst });
     }
 
     // The interval / burst inputs only make sense when a drop mode is selected;
@@ -1260,9 +1306,11 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("videoEncodingOptions").disabled = false
             document.getElementById("videoSources").disabled = false
             document.getElementById("audioSources").disabled = isSelectedVideoSourceScreen();
-            // Force-drop buttons only make sense while live.
+            // Force drop/hold buttons only make sense while live.
             document.getElementById("btnForceDropVideo").disabled = true
             document.getElementById("btnForceDropAudio").disabled = true
+            document.getElementById("btnForceHoldVideo").disabled = true
+            document.getElementById("btnForceHoldAudio").disabled = true
             // Restore controls whose enabled state is conditional on another input.
             UIUseToken(document.getElementById('useAuthToken').checked);
             updateDropModeUI('video');
@@ -1275,6 +1323,8 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("btnStop").disabled = false
             document.getElementById("btnForceDropVideo").disabled = false
             document.getElementById("btnForceDropAudio").disabled = false
+            document.getElementById("btnForceHoldVideo").disabled = false
+            document.getElementById("btnForceHoldAudio").disabled = false
         } else if (mode == "processingUpdate") {
             // Processing preview update
             document.getElementById("btnStart").disabled = true
@@ -1284,6 +1334,8 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("audioSources").disabled = true
             document.getElementById("btnForceDropVideo").disabled = true
             document.getElementById("btnForceDropAudio").disabled = true
+            document.getElementById("btnForceHoldVideo").disabled = true
+            document.getElementById("btnForceHoldAudio").disabled = true
         } else {
             console.error(`enableUI unknown mode ${mode}`);
         }
@@ -1621,4 +1673,6 @@ LICENSE file in the root directory of this source tree.
 
     document.getElementById('btnForceDropVideo').addEventListener("click", () => { forceDropBurst("video"); });
     document.getElementById('btnForceDropAudio').addEventListener("click", () => { forceDropBurst("audio"); });
+    document.getElementById('btnForceHoldVideo').addEventListener("click", () => { forceHoldBurst("video"); });
+    document.getElementById('btnForceHoldAudio').addEventListener("click", () => { forceHoldBurst("audio"); });
 </script>

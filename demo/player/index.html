@@ -82,9 +82,6 @@ LICENSE file in the root directory of this source tree.
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: PLAYER</h1>
     <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/">MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
-    <label>(Encoder audio sampling frequency should be the same than audioContext (player) sampling frequency, this is
-        almost guaranteed if you use same browser (computer) for encode and playback. The fix is simple but not done yet
-        :-))</label>
     <!-- Connection / track -->
     <div class="boxed">
         <div class="styleform">
@@ -136,6 +133,16 @@ LICENSE file in the root directory of this source tree.
     <!-- Player -->
     <div class="boxed">
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
+    </div>
+
+    <!-- Latency timeline (last 60s) -->
+    <div class="boxed">
+        <h2>Latency (last 60s)</h2>
+        <canvas id="latencyTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio latency (ms)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video latency (ms)</label>
+        </div>
     </div>
 
     <!-- Renderer buffer / gaps timeline (last 60s) -->
@@ -438,14 +445,23 @@ LICENSE file in the root directory of this source tree.
     let timelineTimer = null;
     const TIMELINE_UPDATE_EVERY_MS = 20;
 
+    // Latency timeline (audio & video capture-to-render latency). Shares the same
+    // 60s window, colors and update timer as the renderer buffer timeline above.
+    let latencySamples = []; // { tMs, audio, video } latency (ms); null when unknown
+    let lastAudioLatencyMs = -1; // latest reported audio latency, -1 until known
+    let lastVideoLatencyMs = -1; // latest reported video latency, -1 until known
+
     function startTimeline() {
         // Clear and restart on every Start press
         timelineSamples = [];
         timelineGaps = [];
         gapCum = { audio: 0, video: 0 };
+        latencySamples = [];
+        lastAudioLatencyMs = -1;
+        lastVideoLatencyMs = -1;
         timelineStartMs = Date.now();
         if (timelineTimer === null) {
-            timelineTimer = setInterval(drawTimeline, TIMELINE_UPDATE_EVERY_MS);
+            timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); }, TIMELINE_UPDATE_EVERY_MS);
         }
     }
 
@@ -590,6 +606,100 @@ LICENSE file in the root directory of this source tree.
 
         drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
         drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
+    }
+
+    function drawLatencySeries(ctx, w, h, nowMs, key, color, yMax) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < latencySamples.length; i++) {
+            const s = latencySamples[i];
+            // Break the line across stretches where this media type has no value
+            if (s[key] == null || s[key] < 0) {
+                started = false;
+                continue;
+            }
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / yMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+    function drawLatencyTimeline() {
+        const canvas = document.getElementById('latencyTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Sample the latest reported latency values (same as the Latency tab)
+        if (timelineStartMs >= 0) {
+            const a = lastAudioLatencyMs >= 0 ? lastAudioLatencyMs : null;
+            const v = lastVideoLatencyMs >= 0 ? lastVideoLatencyMs : null;
+            latencySamples.push({ tMs: nowMs, audio: a, video: v });
+        }
+
+        // Drop samples that scrolled off the left edge
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (latencySamples.length > 0 && latencySamples[0].tMs < oldestVisible) {
+            latencySamples.shift();
+        }
+
+        // Y axis scale: 0 .. 5 * playback target latency. Read live from the input
+        // on every draw so the range follows whenever the target latency changes.
+        const targetLatencyMs = Number(document.getElementById('playbackTargetLatencyMs').value);
+        const yMax = Math.max((targetLatencyMs > 0 ? targetLatencyMs : 0) * 5, 1);
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillText(Math.round(yMax) + ' ms', 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0', 2, h - 2);
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-60s', 2, h - 12);
+
+        drawLatencySeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, yMax);
+        drawLatencySeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, yMax);
     }
 
     // Read & parse QS data
@@ -1053,10 +1163,12 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateVideoLatencyUI(latencyMs) {
+        lastVideoLatencyMs = latencyMs;
         document.getElementById('latencyVideoMs').value = `${latencyMs.toFixed(0)} ms`;
     }
 
     function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
+        lastAudioLatencyMs = totalLatencyMs;
         document.getElementById('latencyAudioMs').value = `${totalLatencyMs.toFixed(0)} ms (System: ${systemAudioLatencyMs.toFixed(0)} ms)`;
     }
 
