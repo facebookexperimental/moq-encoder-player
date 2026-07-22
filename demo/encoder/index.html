@@ -168,6 +168,28 @@ LICENSE file in the root directory of this source tree.
                         <label>Those drops are at QUIC STREAM / datagram level, so the data dropped will depend on the selected QUIC mapping</label>
                         <div class="clear"></div>
                     </div>
+                    <div class="boxed">
+                        <h3>Simulated slowness (A/V sync testing)</h3>
+                        <div class="clear"></div>
+                        <label>Video hold:<select id="videoHoldMode">
+                            <option value="none" selected>None</option>
+                            <option value="random">Random</option>
+                            <option value="fixed">Fixed</option>
+                        </select></label>
+                        <label><span id="videoHoldIntervalLabel">Video hold every: </span><input id="videoHoldInterval" type="number" min="1" step="1" value="10" size="6"></label>
+                        <label>Video burst length:<input id="videoHoldBurst" type="number" min="1" step="1" value="1" size="6"></label>
+                        <div class="clear"></div>
+                        <label>Audio hold:<select id="audioHoldMode">
+                            <option value="none" selected>None</option>
+                            <option value="random">Random</option>
+                            <option value="fixed">Fixed</option>
+                        </select></label>
+                        <label><span id="audioHoldIntervalLabel">Audio hold every: </span><input id="audioHoldInterval" type="number" min="1" step="1" value="10" size="6"></label>
+                        <label>Audio burst length:<input id="audioHoldBurst" type="number" min="1" step="1" value="1" size="6"></label>
+                        <div class="clear"></div>
+                        <label>Those holds are at QUIC STREAM / datagram level, so the data hold will depend on the selected QUIC mapping</label>
+                        <div class="clear"></div>
+                    </div>
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -716,6 +738,8 @@ LICENSE file in the root directory of this source tree.
         initMOQMappingModesUI();
         updateDropModeUI("video");
         updateDropModeUI("audio");
+        updateHoldModeUI("video");
+        updateHoldModeUI("audio");
         initStreamIDUI();
         initFromQS();
         initEncodingOptionsUI();
@@ -1023,6 +1047,15 @@ LICENSE file in the root directory of this source tree.
         return { mode, interval, burst };
     }
 
+    // Read the simulated-slowness (hold) settings for a media type ("video"/"audio")
+    // into a config object consumed by the sender worker (see WireHoldConfig).
+    function readHoldConfig(mediaType) {
+        const mode = document.getElementById(`${mediaType}HoldMode`).value;
+        const interval = Math.max(1, parseInt(document.getElementById(`${mediaType}HoldInterval`).value) || 1);
+        const burst = Math.max(1, parseInt(document.getElementById(`${mediaType}HoldBurst`).value) || 1);
+        return { mode, interval, burst };
+    }
+
     // Force a one-off drop burst on the live sender for one media type. The burst
     // length uses the configured "burst length of the drop" for that media type.
     function forceDropBurst(mediaType) {
@@ -1045,6 +1078,20 @@ LICENSE file in the root directory of this source tree.
         const label = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
         document.getElementById(`${mediaType}DropIntervalLabel`).textContent =
             mode === 'random' ? `${label} one drop between 1 and this: ` : `${label} one drop every: `;
+    }
+
+    // The interval / burst inputs only make sense when a hold mode is selected;
+    // grey them out for "None". The interval label also depends on the mode:
+    // "Random" treats the value as an upper bound, "Fixed" as a fixed period.
+    function updateHoldModeUI(mediaType) {
+        const mode = document.getElementById(`${mediaType}HoldMode`).value;
+        const disabled = mode === 'none';
+        document.getElementById(`${mediaType}HoldInterval`).disabled = disabled;
+        document.getElementById(`${mediaType}HoldBurst`).disabled = disabled;
+
+        const label = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+        document.getElementById(`${mediaType}HoldIntervalLabel`).textContent =
+            mode === 'random' ? `${label} hold between 1 and this: ` : `${label} hold every: `;
     }
 
     function initMOQMappingModesUI(selectElement) {
@@ -1220,6 +1267,8 @@ LICENSE file in the root directory of this source tree.
             UIUseToken(document.getElementById('useAuthToken').checked);
             updateDropModeUI('video');
             updateDropModeUI('audio');
+            updateHoldModeUI('video');
+            updateHoldModeUI('audio');
         } else if (mode == "publishing") {
             setAllOptionsDisabled(true);
             document.getElementById("btnStart").disabled = true
@@ -1524,6 +1573,7 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["video"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsVideo').value);
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
         muxerSenderConfig.moqTracks["video"].dropConfig = readDropConfig("video");
+        muxerSenderConfig.moqTracks["video"].holdConfig = readHoldConfig("video");
         if (document.getElementById('authInfo').disabled) {
             muxerSenderConfig.moqTracks["video"].authInfo = ""
         } else {
@@ -1536,6 +1586,7 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
         muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
         muxerSenderConfig.moqTracks["audio"].dropConfig = readDropConfig("audio");
+        muxerSenderConfig.moqTracks["audio"].holdConfig = readHoldConfig("audio");
         if (document.getElementById('authInfo').disabled) {
             muxerSenderConfig.moqTracks["audio"].authInfo = ""
         } else {
@@ -1564,6 +1615,9 @@ LICENSE file in the root directory of this source tree.
 
     document.getElementById('videoDropMode').addEventListener("change", () => { updateDropModeUI("video"); });
     document.getElementById('audioDropMode').addEventListener("change", () => { updateDropModeUI("audio"); });
+
+    document.getElementById('videoHoldMode').addEventListener("change", () => { updateHoldModeUI("video"); });
+    document.getElementById('audioHoldMode').addEventListener("change", () => { updateHoldModeUI("audio"); });
 
     document.getElementById('btnForceDropVideo').addEventListener("click", () => { forceDropBurst("video"); });
     document.getElementById('btnForceDropAudio').addEventListener("click", () => { forceDropBurst("audio"); });

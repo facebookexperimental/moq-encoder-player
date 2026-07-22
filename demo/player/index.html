@@ -250,6 +250,8 @@ LICENSE file in the root directory of this source tree.
                     <label>Gaps recovered:</label><input id="currentRendererASilenceInserted" type="text"
                         value="" readonly>
                     <div class="clear"></div>
+                    <label>System added latency:</label><input id="currentRendererASystemLatency" type="text" value="" readonly>
+                    <div class="clear"></div>
                 </form>
                 <h3>Video</h3>
                 <form>
@@ -1247,6 +1249,7 @@ LICENSE file in the root directory of this source tree.
         if (audioPlayer != null) {
             systemAudioLatencyMs = audioPlayer.systemLatencyMs;
         }
+        document.getElementById('currentRendererASystemLatency').value = `${systemAudioLatencyMs.toFixed(0)} ms`;
         updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.gapsRecovered);
     }
 

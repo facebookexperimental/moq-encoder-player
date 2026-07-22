@@ -8,7 +8,7 @@ LICENSE file in the root directory of this source tree.
 import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../../moq/moqt.js';
 import { MIPackager, MIPayloadTypeEnum } from '../../packager/mi_packager.js';
-import type { WireDropConfig } from '../../moq/wire_drop_simulator.js';
+import type { WireDropConfig, WireHoldConfig } from '../../moq/network_simulator.js';
 
 const WORKER_PREFIX = '[MOQ-SENDER]';
 
@@ -27,6 +27,8 @@ export interface TrackData {
   newSubgroupEvery?: number;
   // Optional simulated packet loss on the send path (testing only).
   dropConfig?: WireDropConfig;
+  // Optional simulated slowness (hold) on the send path (testing only).
+  holdConfig?: WireHoldConfig;
 }
 
 // Configuration passed in the `init` message (formerly `muxerSenderConfig`).
@@ -198,14 +200,16 @@ export class MoqSender {
       trackData.authInfo,
       trackData.moqMapping as MoqMapping,
     );
-    this.applyWireDrop(mediaType, track, trackData);
+    this.applyWireImpairments(mediaType, track, trackData);
     return track;
   }
 
-  // Attach the optional simulated-loss policy (testing) to a freshly created
-  // track and route its skipped objects to the dropped-stats UI.
-  private applyWireDrop(mediaType: string, track: Track, trackData: TrackData): void {
+  // Attach the optional simulated-impairment policies (testing) to a freshly
+  // created track: simulated loss (drop) routed to the dropped-stats UI, and
+  // simulated slowness (hold).
+  private applyWireImpairments(mediaType: string, track: Track, trackData: TrackData): void {
     track.setWireDropConfig(trackData.dropConfig ?? null);
+    track.setWireHoldConfig(trackData.holdConfig ?? null);
     track.onWireDrop = (obj) => {
       const info = obj.getInfo();
       this.emitDropped(
@@ -233,7 +237,7 @@ export class MoqSender {
         authInfo: trackData.authInfo,
         onSubscribed: (track) => {
           this.tracks[mediaType] = track;
-          this.applyWireDrop(mediaType, track, trackData);
+          this.applyWireImpairments(mediaType, track, trackData);
           console.log(`${WORKER_PREFIX} Serving ${mediaType} track (subscriber joined)`);
         },
         onUnsubscribed: () => {

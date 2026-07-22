@@ -85,7 +85,10 @@ import {
   WireDropSimulator,
   wireDropConfigIsActive,
   type WireDropConfig,
-} from './wire_drop_simulator.js';
+  WireHoldSimulator,
+  wireHoldConfigIsActive,
+  type WireHoldConfig,
+} from './network_simulator.js';
 
 const LOG_PREFIX = '[MOQ]';
 
@@ -337,6 +340,10 @@ export class Track {
   // object of a group is chosen for drop, every object of that group is dropped
   // so the entire QUIC stream is skipped. undefined = current group is kept.
   private droppedGroupId: number | undefined = undefined;
+  // Optional simulated slowness on the send path (A/V-sync testing). null =
+  // disabled. Holds bursts of objects and releases them together, so the receiver
+  // sees a stall followed by a clump. Operates per object regardless of mapping.
+  private holdSim: WireHoldSimulator<ObjData> | null = null;
   // Number of upcoming wire units to force-drop on demand (manual burst),
   // independent of the periodic drop simulator. Consumed one unit at a time.
   private forcedDropRemaining = 0;
@@ -471,6 +478,24 @@ export class Track {
   setWireDropConfig(cfg: WireDropConfig | null): void {
     this.dropSim = wireDropConfigIsActive(cfg) ? new WireDropSimulator(cfg!) : null;
     this.droppedGroupId = undefined;
+  }
+
+  /**
+   * Enable or disable simulated slowness (a stall-then-clump hold) on this
+   * track's send path. Pass `null` (or an inactive config) to disable, flushing
+   * anything still held. Used only for testing; genuine publication never sets this.
+   */
+  setWireHoldConfig(cfg: WireHoldConfig | null): void {
+    if (this.holdSim !== null) {
+      // Release whatever is still buffered (in order, at the front) so no object
+      // is stranded, then let the drain send it.
+      const held = this.holdSim.flush();
+      if (held.length > 0) {
+        this.queue.unshift(...held);
+        void this.drain();
+      }
+    }
+    this.holdSim = wireHoldConfigIsActive(cfg) ? new WireHoldSimulator<ObjData>(cfg!) : null;
   }
 
   /**
@@ -672,21 +697,36 @@ export class Track {
           this.queue.shift();
           continue;
         }
-        try {
-          const written = await this.writeObject(obj);
-          // A simulated wire drop returns false: the id was consumed (so the
-          // receiver sees a gap) but nothing hit the wire, so it is not 'sent'.
-          obj.status = written ? 'sent' : 'dropped';
-        } catch (err) {
-          obj.status = 'dropped';
-          console.error(`${LOG_PREFIX} Failed to write object ${obj.groupId}/${obj.objId}: ${err}`);
+        // Simulated slowness: the hold sim buffers bursts of objects and returns
+        // them together on flush; between bursts (and when disabled) the object
+        // passes straight through. The object leaves the queue as soon as the sim
+        // takes ownership; queue backlog therefore only reflects not-yet-offered
+        // objects, keeping the no-hold path (below) unchanged.
+        const toWrite = this.holdSim !== null ? this.holdSim.offer(obj) : [obj];
+        if (this.holdSim !== null) {
+          this.queue.shift();
         }
-        this.queue.shift();
-        if (obj.status === 'sent') {
-          this.moq._markObjectSent();
-          if (obj.callback) {
-            obj.callback(obj);
+        for (const o of toWrite) {
+          try {
+            const written = await this.writeObject(o);
+            // A simulated wire drop returns false: the id was consumed (so the
+            // receiver sees a gap) but nothing hit the wire, so it is not 'sent'.
+            o.status = written ? 'sent' : 'dropped';
+          } catch (err) {
+            o.status = 'dropped';
+            console.error(`${LOG_PREFIX} Failed to write object ${o.groupId}/${o.objId}: ${err}`);
           }
+          if (o.status === 'sent') {
+            this.moq._markObjectSent();
+            if (o.callback) {
+              o.callback(o);
+            }
+          }
+        }
+        // No hold sim: the object stayed in the queue during its write (so the
+        // backlog counters and the full-queue policy see it); shift it now.
+        if (this.holdSim === null) {
+          this.queue.shift();
         }
       }
     } finally {

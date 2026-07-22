@@ -9,7 +9,10 @@ import {
   WireDropSimulator,
   WireDropMode,
   wireDropConfigIsActive,
-} from '../src/moq/wire_drop_simulator.js';
+  WireHoldSimulator,
+  wireHoldConfigIsActive,
+  BurstMode,
+} from '../src/moq/network_simulator.js';
 
 // Run the simulator over `count` units and return the indexes that were dropped.
 function droppedIndexes(sim: WireDropSimulator, count: number): number[] {
@@ -110,5 +113,66 @@ describe('WireDropSimulator - random', () => {
       expect(runLengths[r] % 3).toBe(0);
     }
     expect(runLengths.length).toBeGreaterThan(0);
+  });
+});
+
+// Feed indexes 0..count-1 through the hold sim and return the flat emission
+// order (the sequence in which units are actually released to the wire).
+function emissionOrder(sim: WireHoldSimulator<number>, count: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(...sim.offer(i));
+  }
+  out.push(...sim.flush());
+  return out;
+}
+
+describe('wireHoldConfigIsActive', () => {
+  it('is false for none / null / unknown modes, true for random / fixed', () => {
+    expect(wireHoldConfigIsActive(null)).toBe(false);
+    expect(wireHoldConfigIsActive({ mode: BurstMode.None, interval: 10, burst: 2 })).toBe(false);
+    expect(wireHoldConfigIsActive({ mode: 'garbage', interval: 10, burst: 2 })).toBe(false);
+    expect(wireHoldConfigIsActive({ mode: BurstMode.Random, interval: 10, burst: 2 })).toBe(true);
+    expect(wireHoldConfigIsActive({ mode: BurstMode.Fixed, interval: 10, burst: 2 })).toBe(true);
+  });
+});
+
+describe('WireHoldSimulator - none', () => {
+  it('passes every unit straight through, one at a time, in order', () => {
+    const sim = new WireHoldSimulator<number>({ mode: BurstMode.None, interval: 3, burst: 3 });
+    for (let i = 0; i < 5; i++) {
+      expect(sim.offer(i)).toEqual([i]);
+    }
+  });
+});
+
+describe('WireHoldSimulator - fixed', () => {
+  it('holds a burst and releases it together when the buffer fills', () => {
+    const sim = new WireHoldSimulator<number>({ mode: BurstMode.Fixed, interval: 10, burst: 3 });
+    // Units 0..8 pass straight through; the burst is units 9,10,11.
+    for (let i = 0; i < 9; i++) {
+      expect(sim.offer(i)).toEqual([i]);
+    }
+    expect(sim.offer(9)).toEqual([]); // held (buffer 1/3)
+    expect(sim.offer(10)).toEqual([]); // held (buffer 2/3)
+    expect(sim.offer(11)).toEqual([9, 10, 11]); // buffer full -> released together
+    expect(sim.offer(12)).toEqual([12]); // back to straight-through
+  });
+
+  it('never drops or reorders units: emission order is the input order', () => {
+    const sim = new WireHoldSimulator<number>({ mode: BurstMode.Fixed, interval: 5, burst: 4 });
+    const order = emissionOrder(sim, 100);
+    expect(order).toEqual(Array.from({ length: 100 }, (_, i) => i));
+  });
+
+  it('flush releases a partially-filled burst so nothing is stranded', () => {
+    const sim = new WireHoldSimulator<number>({ mode: BurstMode.Fixed, interval: 10, burst: 5 });
+    for (let i = 0; i < 9; i++) {
+      sim.offer(i);
+    }
+    expect(sim.offer(9)).toEqual([]); // burst starts, held
+    expect(sim.offer(10)).toEqual([]); // still filling (buffer 2/5)
+    expect(sim.flush()).toEqual([9, 10]); // partial burst drained
+    expect(sim.flush()).toEqual([]); // nothing left
   });
 });
