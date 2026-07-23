@@ -134,7 +134,7 @@ export class GapTolerantPlayer {
   }
 
   /**
-   * Request a playback rate in (0, 10]. This only records the request: it does
+   * Request a playback rate in [0.5, 2]. This only records the request: it does
    * NOT retune sources already scheduled, because changing playbackRate on a
    * playing node shifts when it ends but not the fixed start time of the node
    * after it, which would open a gap or overlap. Instead addFrame adopts the
@@ -143,8 +143,8 @@ export class GapTolerantPlayer {
    * contiguous. Note: playbackRate also shifts pitch (tape-speed behavior).
    */
   setPlaybackSpeed(speed: number): void {
-    if (!(speed > 0 && speed <= 10)) {
-      throw new RangeError(`playback speed must be in (0, 10], got ${speed}`);
+    if (!(speed >= 0.5 && speed <= 2)) {
+      throw new RangeError(`playback speed must be in [0.5, 2], got ${speed}`);
     }
     this.requestedPlaybackSpeed = speed;
   }

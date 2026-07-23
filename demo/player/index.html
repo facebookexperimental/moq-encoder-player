@@ -130,9 +130,9 @@ LICENSE file in the root directory of this source tree.
                         <label>On target range (%):<input id="onTargetRangePerct" type="number" step="1" min="1" max="99" value="20"></label>
                         <label>This latency range is considered on target, e.g. 20 means between target * 0.8 and target * 1.2 is OK, so NO speed compensation.</label>
                         <div class="clear"></div>
-                        <label>Speed up:<input id="playbackSpeedUp" type="number" step="0.1" min="1.1" max="9.9" value="1.1"></label>
+                        <label>Speed up:<input id="playbackSpeedUp" type="number" step="0.1" min="1.1" max="2" value="1.1"></label>
                         <div class="clear"></div>
-                        <label>Slow down:<input id="playbackSlowDown" type="number" step="0.1" min="0.1" max="0.9" value="0.9"></label>
+                        <label>Slow down:<input id="playbackSlowDown" type="number" step="0.1" min="0.5" max="0.9" value="0.9"></label>
                         <div class="clear"></div>
                         <button id="btnPlaybackCompensationUpdate" type="button" disabled>Update config</button>
                         <div class="clear"></div>
@@ -156,6 +156,7 @@ LICENSE file in the root directory of this source tree.
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio latency (ms)</label>
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video latency (ms)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#ffd700;vertical-align:middle"></span> Playback speed (right axis, 0.5-2x)</label>
         </div>
     </div>
 
@@ -463,9 +464,13 @@ LICENSE file in the root directory of this source tree.
 
     // Latency timeline (audio & video capture-to-render latency). Shares the same
     // 60s window, colors and update timer as the renderer buffer timeline above.
-    let latencySamples = []; // { tMs, audio, video } latency (ms); null when unknown
+    let latencySamples = []; // { tMs, audio, video, speed } latency (ms) + playback speed; null/-1 when unknown
     let lastAudioLatencyMs = -1; // latest reported audio latency, -1 until known
     let lastVideoLatencyMs = -1; // latest reported video latency, -1 until known
+    let lastPlaybackSpeed = -1;  // latest playback speed (1 = normal), -1 until known
+    const PLAYBACK_SPEED_COLOR = '#ffd700'; // yellow, plotted on the latency graph right axis
+    const PLAYBACK_SPEED_MIN = 0.5;         // right axis range: 0.5 .. 2
+    const PLAYBACK_SPEED_MAX = 2;
 
     function startTimeline() {
         // Clear and restart on every Start press
@@ -475,6 +480,7 @@ LICENSE file in the root directory of this source tree.
         latencySamples = [];
         lastAudioLatencyMs = -1;
         lastVideoLatencyMs = -1;
+        lastPlaybackSpeed = -1;
         timelineStartMs = Date.now();
         if (timelineTimer === null) {
             timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); }, TIMELINE_UPDATE_EVERY_MS);
@@ -624,7 +630,7 @@ LICENSE file in the root directory of this source tree.
         drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
     }
 
-    function drawLatencySeries(ctx, w, h, nowMs, key, color, yMax) {
+    function drawLatencySeries(ctx, w, h, nowMs, key, color, yMax, yMin = 0) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -638,7 +644,7 @@ LICENSE file in the root directory of this source tree.
             }
             // Right edge = now, anything older moves toward the left edge
             const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
-            const y = h - (s[key] / yMax) * h;
+            const y = h - ((s[key] - yMin) / (yMax - yMin)) * h;
             if (!started) {
                 ctx.moveTo(x, y);
                 started = true;
@@ -671,7 +677,8 @@ LICENSE file in the root directory of this source tree.
         if (timelineStartMs >= 0) {
             const a = lastAudioLatencyMs >= 0 ? lastAudioLatencyMs : null;
             const v = lastVideoLatencyMs >= 0 ? lastVideoLatencyMs : null;
-            latencySamples.push({ tMs: nowMs, audio: a, video: v });
+            const s = lastPlaybackSpeed >= 0 ? lastPlaybackSpeed : null;
+            latencySamples.push({ tMs: nowMs, audio: a, video: v, speed: s });
         }
 
         // Drop samples that scrolled off the left edge
@@ -714,8 +721,18 @@ LICENSE file in the root directory of this source tree.
         ctx.textAlign = 'left';
         ctx.fillText('-60s', 2, h - 12);
 
+        // Right axis labels (playback speed, PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
+        ctx.fillStyle = PLAYBACK_SPEED_COLOR;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('speed ' + PLAYBACK_SPEED_MAX + 'x', w - 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(PLAYBACK_SPEED_MIN + 'x', w - 2, h - 12);
+
         drawLatencySeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, yMax);
         drawLatencySeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, yMax);
+        // Playback speed on its own right-axis scale (PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
+        drawLatencySeries(ctx, w, h, nowMs, 'speed', PLAYBACK_SPEED_COLOR, PLAYBACK_SPEED_MAX, PLAYBACK_SPEED_MIN);
     }
 
     // Read & parse QS data
@@ -1449,6 +1466,7 @@ LICENSE file in the root directory of this source tree.
 
         if (audioPlayer != null) {
             systemAudioLatencyMs = audioPlayer.systemLatencyMs;
+            lastPlaybackSpeed = audioPlayer.getRequestedPlaybackSpeed();
         }
         document.getElementById('currentRendererASystemLatency').value = `${systemAudioLatencyMs.toFixed(0)} ms`;
         updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.gapsRecovered);

@@ -32,9 +32,9 @@ export interface PlaybackRateControllerOptions {
   targetLatencyMs: number;
   /** Half-width of the do-nothing band as a fraction of target, 0 < v < 1. Default 0.2. */
   onTargetPerct?: number;
-  /** Rate applied while draining an over-full buffer, 1 < v < 10. Default 1.1. */
+  /** Rate applied while draining an over-full buffer, 1 < v <= 2. Default 1.1. */
   speedUp?: number;
-  /** Rate applied while refilling an under-full buffer, 0 < v < 1. Default 0.9. */
+  /** Rate applied while refilling an under-full buffer, 0.5 <= v < 1. Default 0.9. */
   slowDown?: number;
   onLog?: (msg: string) => void;
 }
@@ -81,8 +81,13 @@ export class PlaybackRateController {
       throw new RangeError(`targetLatencyMs must be > 0, got ${targetLatencyMs}`);
     }
     assertRange('onTargetPerct', onTargetPerct, 0, 1);
-    assertRange('speedUp', speedUp, 1, 10);
-    assertRange('slowDown', slowDown, 0, 1);
+    // Playback speed envelope accepted by GapTolerantPlayer is [0.5, 2].
+    if (!(speedUp > 1 && speedUp <= 2)) {
+      throw new RangeError(`speedUp must be in (1, 2], got ${speedUp}`);
+    }
+    if (!(slowDown >= 0.5 && slowDown < 1)) {
+      throw new RangeError(`slowDown must be in [0.5, 1), got ${slowDown}`);
+    }
 
     this.targetLatencyMs = targetLatencyMs;
     this.onTargetPerct = onTargetPerct;

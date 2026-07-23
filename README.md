@@ -464,5 +464,5 @@ moq-encoder-player is released under the [MIT License](https://github.com/facebo
 TODO:
 - Check token in all messages, not just when encoder receives SUBSCRIBE
 - When it drops 100+ audio streams it breaks (I’m guessing I’m trying to send 100 streams at same time hitting browser limit)
-- Report current speed on the UI
-- Update docs with new jitter, players,block
+- Fix latency measurement, it is broken (at least after update target)
+- Add new A/V sync strategy to docs
