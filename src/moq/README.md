@@ -149,7 +149,7 @@ sequenceDiagram
   Moq-->>App: Subscription
   loop per received object (routed by Track Alias)
     Relay-->>Moq: Object (subgroup stream / datagram)
-    Moq->>App: onObject(reader, extHeaders, length) → isEof
+    Moq->>App: onObject(reader, extHeaders, length, groupId, objectId) → isEof
   end
 ```
 
@@ -374,6 +374,9 @@ type ObjectCallback = (
   reader: ReadableStream<Uint8Array>, // positioned at the object payload
   extensionHeaders: KvPair[],         // object extension headers
   length?: number,                    // payload byte length; undefined => read to end (datagram)
+  groupId?: number,                   // MoQ group id (ordering key)
+  objectId?: number,                  // MoQ object id within the group; for subgroup streams this
+                                      // is the receiver-counted arrival index (wire delta is 0)
 ) => Promise<boolean> | boolean;      // return true when this was the last object (EOF)
 ```
 

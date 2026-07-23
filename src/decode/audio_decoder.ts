@@ -88,7 +88,7 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(
         WORKER_PREFIX,
         'debug',
-        `audio-${e.data.seqId} Received init, but AudioDecoder already initialized`,
+        `audio-${e.data.groupId}/${e.data.objId} Received init, but AudioDecoder already initialized`,
       );
     } else {
       let config;
@@ -109,7 +109,7 @@ self.addEventListener('message', async function (e) {
         sendMessageToMain(
           WORKER_PREFIX,
           'error',
-          `audio-${e.data.seqId} Unsupported audio packager type: ${e.data.packagerType}, can NOT configure decoder`,
+          `audio-${e.data.groupId}/${e.data.objId} Unsupported audio packager type: ${e.data.packagerType}, can NOT configure decoder`,
         );
         return;
       }
@@ -119,7 +119,7 @@ self.addEventListener('message', async function (e) {
     sendMessageToMain(
       WORKER_PREFIX,
       'debug',
-      `audio-${e.data.seqId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`,
+      `audio-${e.data.groupId}/${e.data.objId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`,
     );
 
     if (workerState !== StateEnum.Running) {
@@ -133,7 +133,7 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(
         WORKER_PREFIX,
         'warning',
-        `disco at seqId: ${e.data.seqId}, ts: ${e.data.chunk.timestamp}, added: ${addTs}`,
+        `disco at obj: ${e.data.groupId}/${e.data.objId}, ts: ${e.data.chunk.timestamp}, added: ${addTs}`,
       );
       timestampOffset += addTs;
     }

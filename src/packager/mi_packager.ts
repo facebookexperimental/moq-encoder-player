@@ -155,9 +155,12 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.pts = r.num;
 
+        // dts is present on the wire (3rd varint) but unused on playback: the
+        // sender sets dts === pts (no B-frames) and WebCodecs decodes from
+        // submission order. Read it only to advance the offset for the fields
+        // that follow; don't store it.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.dts = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
@@ -251,7 +254,6 @@ export class MIPackager {
         type: this.type,
         seqId: this.seqId,
         pts: this.pts,
-        dts: this.dts,
         timebase: this.timebase,
         duration: this.duration,
         wallclock: this.wallclock,

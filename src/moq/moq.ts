@@ -143,14 +143,21 @@ export interface MoqInitOptions {
 /**
  * Called for every object received on a subscription. It is handed the raw
  * payload reader (a `ReadableStream` positioned at the object payload), the
- * object extension headers, and the payload length (`undefined` means "read to
- * the end of the datagram"). It returns whether this was the last object
- * (end of stream). Media decoding lives in the caller, keeping `Moq` media-free.
+ * object extension headers, the payload length (`undefined` means "read to the
+ * end of the datagram"), and the MoQ transport-native group/object ids for this
+ * object. It returns whether this was the last object (end of stream). Media
+ * decoding lives in the caller, keeping `Moq` media-free.
+ *
+ * `groupId`/`objectId` are the MoQ ordering keys. For subgroup streams `objectId`
+ * is the receiver-counted arrival index within the group (the wire object-id
+ * delta is always 0 in this mapping); for datagrams it is the wire object id.
  */
 export type ObjectCallback = (
   reader: ReadableStream<Uint8Array>,
   extensionHeaders: KvPair[],
   length?: number,
+  groupId?: number,
+  objectId?: number,
 ) => Promise<boolean> | boolean;
 
 export interface SubscriptionInfo {
@@ -809,8 +816,10 @@ export class Subscription {
     reader: ReadableStream<Uint8Array>,
     extensionHeaders: KvPair[],
     length?: number,
+    groupId?: number,
+    objectId?: number,
   ): Promise<boolean> {
-    return this.onObject(reader, extensionHeaders, length);
+    return this.onObject(reader, extensionHeaders, length, groupId, objectId);
   }
 }
 
@@ -1465,6 +1474,12 @@ export class Moq {
     }
     let isEOF = false;
     let numObjRead = 0;
+    // Reconstruct the per-object id from arrival order: the subgroup wire format
+    // carries an object-id delta of 0 for every object (see writeObject), so the
+    // parsed objSeq is unusable. QUIC delivers a subgroup stream in order and the
+    // publisher writes objects in send order, so the count is the object id
+    // within this group.
+    let objIndex = 0;
     while (this._state !== MoqState.Closed && !isEOF) {
       try {
         const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
@@ -1474,7 +1489,10 @@ export class Moq {
             readerStream,
             objHeader.extensionHeaders,
             objHeader.payloadLength,
+            header.groupSeq,
+            objIndex,
           );
+          objIndex++;
         }
         numObjRead++;
       } catch (err: any) {
@@ -1520,7 +1538,14 @@ export class Moq {
       }
       // Status datagrams carry no payload (length 0 still decodes headers).
       const length = moqDecodeDatagramType(header.type).isStatus ? 0 : undefined;
-      await sub._deliver(readable, header.extensionHeaders ?? [], length);
+      // Datagram headers carry a real object id (unlike subgroup streams).
+      await sub._deliver(
+        readable,
+        header.extensionHeaders ?? [],
+        length,
+        header.groupSeq,
+        header.objSeq,
+      );
     }
   }
 
