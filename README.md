@@ -451,19 +451,18 @@ ENJOY YOUR POCing!!! :-)
 You should see same UI that is shown in testing section above
 
 ## TODO
+- Check token in all messages, not just when encoder receives SUBSCRIBE
+- When it drops 100+ audio streams it breaks (I’m guessing I’m trying to send 100 streams at same time hitting browser limit)
+- Fix latency measurement, it is broken (at least after update target)
+- Add new A/V sync strategy to docs
+- Adopt LOCvX instead of MOQ-MI
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
 - All:
   - Accept B frames (DTS)
 
+
 ## License
 
 moq-encoder-player is released under the [MIT License](https://github.com/facebookincubator/rush/blob/master/LICENSE).
-
-TODO:
-- Check token in all messages, not just when encoder receives SUBSCRIBE
-- When it drops 100+ audio streams it breaks (I’m guessing I’m trying to send 100 streams at same time hitting browser limit)
-- Fix latency measurement, it is broken (at least after update target)
-- Add new A/V sync strategy to docs
-- Adopt LOCvX instead of MOQ-MI
