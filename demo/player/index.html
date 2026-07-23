@@ -123,6 +123,20 @@ LICENSE file in the root directory of this source tree.
                             <div class="clear"></div>
                         </fieldset>
                     </fieldset>
+                    <fieldset class="settings-box">
+                        <legend>Playback compensation</legend>
+                        <label><input id="enableSpeedCompensation" type="checkbox" checked> Enable speed compensation</label>
+                        <div class="clear"></div>
+                        <label>On target range (%):<input id="onTargetRangePerct" type="number" step="1" min="1" max="99" value="20"></label>
+                        <label>This latency range is considered on target, e.g. 20 means between target * 0.8 and target * 1.2 is OK, so NO speed compensation.</label>
+                        <div class="clear"></div>
+                        <label>Speed up:<input id="playbackSpeedUp" type="number" step="0.1" min="1.1" max="9.9" value="1.1"></label>
+                        <div class="clear"></div>
+                        <label>Slow down:<input id="playbackSlowDown" type="number" step="0.1" min="0.1" max="0.9" value="0.9"></label>
+                        <div class="clear"></div>
+                        <button id="btnPlaybackCompensationUpdate" type="button" disabled>Update config</button>
+                        <div class="clear"></div>
+                    </fieldset>
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -318,6 +332,7 @@ LICENSE file in the root directory of this source tree.
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
     import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
     import { GapTolerantPlayer } from "../../dist/render/audio_player.js"
+    import { PlaybackRateController } from "../../dist/render/playback_rate_controller.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { MI_PACKAGER_VERSION, MIgetTrackName } from "../../dist/packager/mi_packager.js"
@@ -399,6 +414,7 @@ LICENSE file in the root directory of this source tree.
 
     // Audio vars
     let audioPlayer = null;
+    let playbackRateController = null;
     let systemAudioLatencyMs = 0;
     // Set once if the browser does not honor the requested AudioContext sample rate
     let audioSampleRateWarned = false;
@@ -802,16 +818,18 @@ LICENSE file in the root directory of this source tree.
         return render + jitter;
     }
 
-    // Clamp the playback-target-latency field to an integer in
-    // [PLAYBACK_TARGET_LATENCY_MIN_MS, PLAYBACK_TARGET_LATENCY_MAX_MS]. Used when the
-    // user edits the field directly.
-    function clampPlaybackTargetLatency() {
-        const input = document.getElementById('playbackTargetLatencyMs');
-        let val = Math.round(Number(input.value));
-        if (!Number.isFinite(val)) {
-            val = PLAYBACK_TARGET_LATENCY_MIN_MS;
+    // Validate the playback-target-latency field is within
+    // [PLAYBACK_TARGET_LATENCY_MIN_MS, PLAYBACK_TARGET_LATENCY_MAX_MS]. The value is
+    // left untouched (not clamped); returns true when valid, otherwise logs an error
+    // and returns false.
+    function validatePlaybackTargetLatency() {
+        const raw = document.getElementById('playbackTargetLatencyMs').value;
+        const val = Number(raw);
+        if (!Number.isFinite(val) || val < PLAYBACK_TARGET_LATENCY_MIN_MS || val > PLAYBACK_TARGET_LATENCY_MAX_MS) {
+            console.error(`[PLAYER] Playback target latency must be in [${PLAYBACK_TARGET_LATENCY_MIN_MS}, ${PLAYBACK_TARGET_LATENCY_MAX_MS}] ms, got ${raw}`);
+            return false;
         }
-        input.value = Math.max(PLAYBACK_TARGET_LATENCY_MIN_MS, Math.min(val, PLAYBACK_TARGET_LATENCY_MAX_MS));
+        return true;
     }
 
     // Derive the detailed buffer-size fields from the current playback target latency
@@ -829,15 +847,65 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('playerBufferMs').value = playTargetLatMs;
     }
 
-    // Update button: clamp, derive the detailed buffer sizes and apply them all live.
+    // Update button: validate, derive the detailed buffer sizes and apply them all
+    // live. Out-of-range values are rejected (errored) rather than applied.
     async function updatePlaybackTargetLatency() {
-        clampPlaybackTargetLatency();
+        if (!validatePlaybackTargetLatency()) {
+            return;
+        }
         derivePlaybackTargetLatencyFields();
 
         await updateJitterAudio();
         await updateJitterVideo();
         await updatePlayerBuffer();
         setAppliedLabel('appliedPlaybackTargetLatencyMs', Number(document.getElementById('playbackTargetLatencyMs').value));
+
+        // Keep the speed-compensation controller steering toward the same target.
+        if (playbackRateController != null) {
+            playbackRateController.setTargetLatency(Number(document.getElementById('playbackTargetLatencyMs').value));
+        }
+    }
+
+    // ---- Playback speed compensation (PlaybackRateController) ----
+    // The "On target range" field is a percent (e.g. 20 -> a +/-0.2 band around
+    // the target); the controller wants it as a 0..1 fraction.
+    function playbackCompensationConfig() {
+        return {
+            targetLatencyMs: Number(document.getElementById('playbackTargetLatencyMs').value),
+            onTargetPerct: Number(document.getElementById('onTargetRangePerct').value) / 100,
+            speedUp: Number(document.getElementById('playbackSpeedUp').value),
+            slowDown: Number(document.getElementById('playbackSlowDown').value),
+        };
+    }
+
+    function speedCompensationEnabled() {
+        return document.getElementById('enableSpeedCompensation').checked;
+    }
+
+    // "Update config" button: push the current fields into the controller live.
+    function updatePlaybackCompensation() {
+        if (playbackRateController == null) {
+            return;
+        }
+        try {
+            playbackRateController.updateConfig(playbackCompensationConfig());
+        } catch (err) {
+            console.error('[PLAYBACK-COMP] invalid config, not applied: ' + err.message);
+        }
+    }
+
+    // Enable/disable live. Enabling just lets the stats loop resume feeding the
+    // controller; disabling snaps back to 1x and clears the controller state so a
+    // later re-enable re-decides from normal.
+    function onToggleSpeedCompensation() {
+        if (!speedCompensationEnabled()) {
+            if (playbackRateController != null) {
+                playbackRateController.reset();
+            }
+            if (audioPlayer != null) {
+                audioPlayer.setPlaybackSpeed(1);
+            }
+        }
     }
 
     // Lock/unlock the connection/track configuration controls while (un)playing.
@@ -851,6 +919,8 @@ LICENSE file in the root directory of this source tree.
             'audioJitterBufferMs', 'btnJitterAudioUpdate',
             'videoJitterBufferMs', 'btnJitterVideoUpdate',
             'playbackTargetLatencyMs', 'btnPlaybackTargetLatencyUpdate',
+            'enableSpeedCompensation', 'onTargetRangePerct', 'playbackSpeedUp',
+            'playbackSlowDown', 'btnPlaybackCompensationUpdate',
         ]);
         const form = document.querySelector('.boxed .styleform form');
         if (form == null) {
@@ -872,6 +942,7 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnJitterVideoUpdate").disabled = false;
         document.getElementById("btnPlayerBufferUpdate").disabled = false;
         document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = false;
+        document.getElementById("btnPlaybackCompensationUpdate").disabled = false;
 
         playerBufferMs = Number(document.getElementById('playerBufferMs').value);
 
@@ -934,6 +1005,7 @@ LICENSE file in the root directory of this source tree.
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
         document.getElementById("btnPlaybackTargetLatencyUpdate").disabled = true;
+        document.getElementById("btnPlaybackCompensationUpdate").disabled = true;
 
         clearAppliedLabels();
 
@@ -946,6 +1018,7 @@ LICENSE file in the root directory of this source tree.
             await audioPlayer.close();
         }
         audioPlayer = null;
+        playbackRateController = null;
         audioSampleRateWarned = false;
         systemAudioLatencyMs = 0;
 
@@ -1249,6 +1322,13 @@ LICENSE file in the root directory of this source tree.
                     onStats: updateAudioStats,
                     onLog: (msg) => { if (VERBOSE) console.debug('[AUDIO-PLAYER] ' + msg); },
                 });
+                // Speed-compensation controller: decision-only, fed from the audio
+                // stats loop (see updateAudioStats). Seeded from the current UI fields.
+                playbackRateController = new PlaybackRateController({
+                    ...playbackCompensationConfig(),
+                    onLog: (msg) => { if (VERBOSE) console.debug('[PLAYBACK-COMP] ' + msg); },
+                });
+
                 // The Start click was the user gesture; resume unblocks audio output.
                 await audioPlayer.resume();
 
@@ -1358,6 +1438,15 @@ LICENSE file in the root directory of this source tree.
         // buffersInfo.renderer.audio.size = data.AAqueueSize;
         buffersInfo.renderer.audio.lengthMs = data.bufferAhead * 1000;
 
+        // Feed the live render-buffer size to the speed-compensation controller and
+        // apply any speed change it commands (null = keep current speed).
+        if (audioPlayer != null && playbackRateController != null && speedCompensationEnabled()) {
+            const newSpeed = playbackRateController.currentRenderBuffer(buffersInfo.renderer.audio.lengthMs);
+            if (newSpeed != null) {
+                audioPlayer.setPlaybackSpeed(newSpeed);
+            }
+        }
+
         if (audioPlayer != null) {
             systemAudioLatencyMs = audioPlayer.systemLatencyMs;
         }
@@ -1423,11 +1512,13 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
 
     // Playback target latency: while typing, derive the detailed buffer-size fields on
-    // the fly; clamp to [min, max] once the edit is committed. Neither touches the
-    // pipeline - Update applies the derived values live.
+    // the fly; validate the range (error if out of range, not clamped) once the edit is
+    // committed. Neither touches the pipeline - Update applies the derived values live.
     document.getElementById('playbackTargetLatencyMs').addEventListener("input", () => {derivePlaybackTargetLatencyFields();});
-    document.getElementById('playbackTargetLatencyMs').addEventListener("change", () => {clampPlaybackTargetLatency(); derivePlaybackTargetLatencyFields();});
+    document.getElementById('playbackTargetLatencyMs').addEventListener("change", () => {validatePlaybackTargetLatency(); derivePlaybackTargetLatencyFields();});
     document.getElementById('btnPlaybackTargetLatencyUpdate').addEventListener("click", (event) => {updatePlaybackTargetLatency();});
+    document.getElementById('btnPlaybackCompensationUpdate').addEventListener("click", () => {updatePlaybackCompensation();});
+    document.getElementById('enableSpeedCompensation').addEventListener("change", () => {onToggleSpeedCompensation();});
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not

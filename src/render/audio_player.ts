@@ -56,6 +56,14 @@ export class GapTolerantPlayer {
   private lastBufferDuration = 0;
   private opts: PlayerOptions;
 
+  /**
+   * Playback rate control. `setPlaybackSpeed` only records the request; it is
+   * adopted by `addFrame` at the moment the next frame is scheduled (at the
+   * nextPlayTime boundary), which keeps playback contiguous — see setPlaybackSpeed.
+   */
+  private requestedPlaybackSpeed = 1; // set by setPlaybackSpeed(), pending until next frame
+  private currentPlaybackSpeed = 1; // speed adopted by the most recently scheduled frame
+
   private rendered = 0;
   private gapsRecovered = 0;
   private statsTimer: number | null = null;
@@ -69,6 +77,8 @@ export class GapTolerantPlayer {
    */
   private anchorTs = 0;
   private anchorCtxStart = -1;
+  /** Playback speed the current segment plays at, so the media↔clock slope is right. */
+  private anchorSpeed = 1;
 
   /**
    * Buffer sources scheduled but not yet finished. Tracked so forceGap() can
@@ -123,6 +133,38 @@ export class GapTolerantPlayer {
     this.opts.fadeIn = enabled;
   }
 
+  /**
+   * Request a playback rate in (0, 10]. This only records the request: it does
+   * NOT retune sources already scheduled, because changing playbackRate on a
+   * playing node shifts when it ends but not the fixed start time of the node
+   * after it, which would open a gap or overlap. Instead addFrame adopts the
+   * requested speed when it schedules the next frame — at the nextPlayTime
+   * boundary where the previous audio cleanly ends — so playback stays
+   * contiguous. Note: playbackRate also shifts pitch (tape-speed behavior).
+   */
+  setPlaybackSpeed(speed: number): void {
+    if (!(speed > 0 && speed <= 10)) {
+      throw new RangeError(`playback speed must be in (0, 10], got ${speed}`);
+    }
+    this.requestedPlaybackSpeed = speed;
+  }
+
+  /** The last speed passed to setPlaybackSpeed (may still be pending). */
+  getRequestedPlaybackSpeed(): number {
+    return this.requestedPlaybackSpeed;
+  }
+
+  /**
+   * Speed adopted by the most recently scheduled frame. Equals the requested
+   * value once a frame has been scheduled after the change; it trails while a
+   * request is pending (e.g. the feed is stalled). Already-queued audio still
+   * finishes at the rate it was scheduled with, so the audible speed can lag
+   * this by up to bufferAhead while that queue drains.
+   */
+  getCurrentPlaybackSpeed(): number {
+    return this.currentPlaybackSpeed;
+  }
+
   /** Must be called from a user gesture so the browser unblocks audio. */
   async resume(): Promise<void> {
     if (this.ctx.state === 'suspended') {
@@ -151,6 +193,13 @@ export class GapTolerantPlayer {
     // Free the hardware-backed object immediately.
     audioData.close();
     this.rendered++;
+
+    // Adopt any pending playback-speed request at this scheduling boundary. A
+    // speed change begins a new constant-speed run, so it re-anchors media time
+    // just like a gap does (see newSegment below).
+    const speed = this.requestedPlaybackSpeed;
+    const speedChanged = speed !== this.currentPlaybackSpeed;
+    this.currentPlaybackSpeed = speed;
 
     const currentTime = this.ctx.currentTime;
 
@@ -189,13 +238,15 @@ export class GapTolerantPlayer {
     // real gap, and is just the next contiguous frame after a small one — at ctx
     // time nextPlayTime. This single anchor maps the clock to media time for the
     // whole segment (playback within a segment is contiguous).
-    if (newSegment) {
+    if (newSegment || speedChanged) {
       this.anchorTs = ts;
       this.anchorCtxStart = this.nextPlayTime;
+      this.anchorSpeed = speed;
     }
 
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = speed;
 
     // Only fade the leading edge of a resume. Fading *every* contiguous frame
     // would dip the gain to 0 at each frame boundary — audible amplitude
@@ -216,8 +267,11 @@ export class GapTolerantPlayer {
     };
 
     source.start(this.nextPlayTime);
-    this.lastBufferDuration = buffer.duration;
-    this.nextPlayTime += buffer.duration;
+    // Effective clock time consumed by this buffer at the current rate, so the
+    // cursor stays contiguous and the bufferAhead stat is honest.
+    const effectiveDuration = buffer.duration / speed;
+    this.lastBufferDuration = effectiveDuration;
+    this.nextPlayTime += effectiveDuration;
   }
 
   private currentPlayingTimestamp(): number | null {
@@ -225,8 +279,9 @@ export class GapTolerantPlayer {
     const latency = this.ctx.outputLatency || this.ctx.baseLatency || 0;
     const audible = this.ctx.currentTime - latency;
     if (audible < this.anchorCtxStart) return null; // pre-roll silence before this segment
-    // anchorTs/timebase + samplesPlayedSinceAnchor/sampleRate (== elapsed seconds).
-    return this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart);
+    // anchorTs/timebase + media seconds elapsed since the anchor. At playback
+    // speed s, media advances s× clock time, so scale the elapsed clock term.
+    return this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart) * this.anchorSpeed;
   }
 
   /**
