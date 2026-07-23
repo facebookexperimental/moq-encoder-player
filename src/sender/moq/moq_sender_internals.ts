@@ -165,13 +165,19 @@ export class MoqSender {
     );
     console.log(`${WORKER_PREFIX} MOQ session established`);
 
-    // Publish each configured track.
     this.tracks = {};
-    for (const [mediaType, trackData] of Object.entries(this.config.moqTracks)) {
-      this.tracks[mediaType] = await this.publishTrack(mediaType, trackData);
-      console.log(
-        `${WORKER_PREFIX} Published track ${mediaType} (${trackData.namespace}/${trackData.name})`,
-      );
+    if (this.config.usePublishNamespace) {
+      // Single PUBLISH_NAMESPACE per namespace; tracks are served lazily when a
+      // subscriber SUBSCRIBEs (see offerTrack below).
+      await this.publishNamespaceTracks();
+    } else {
+      // One PUBLISH per track (proactive publication).
+      for (const [mediaType, trackData] of Object.entries(this.config.moqTracks)) {
+        this.tracks[mediaType] = await this.publishTrack(mediaType, trackData);
+        console.log(
+          `${WORKER_PREFIX} Published track ${mediaType} (${trackData.namespace}/${trackData.name})`,
+        );
+      }
     }
 
     console.log(`${WORKER_PREFIX} MOQ Initialized, waiting for subscriptions`);
@@ -186,6 +192,44 @@ export class MoqSender {
       trackData.authInfo,
       trackData.moqMapping as MoqMapping,
     );
+  }
+
+  // Announce each unique namespace once with PUBLISH_NAMESPACE, then register a
+  // track offer per media type. The Track for a media type is created (and stored
+  // in this.tracks) only once a peer subscribes to it; until then handleChunk
+  // drops chunks for that media type.
+  private async publishNamespaceTracks(): Promise<void> {
+    // Register offers first so a SUBSCRIBE that races the announce still matches.
+    for (const [mediaType, trackData] of Object.entries(this.config!.moqTracks)) {
+      this.moq!.offerTrack({
+        namespace: trackData.namespace,
+        name: trackData.name,
+        maxQueuedObjects: trackData.maxInFlightRequests ?? Number.MAX_SAFE_INTEGER,
+        maxOpenStreams: trackData.maxOpenStreams ?? Number.MAX_SAFE_INTEGER,
+        moqMapping: trackData.moqMapping as MoqMapping,
+        authInfo: trackData.authInfo,
+        onSubscribed: (track) => {
+          this.tracks[mediaType] = track;
+          console.log(`${WORKER_PREFIX} Serving ${mediaType} track (subscriber joined)`);
+        },
+        onUnsubscribed: () => {
+          delete this.tracks[mediaType];
+          console.log(`${WORKER_PREFIX} Stopped serving ${mediaType} track (subscriber left)`);
+        },
+      });
+    }
+
+    // Announce each distinct namespace a single time.
+    const announced = new Set<string>();
+    for (const trackData of Object.values(this.config!.moqTracks)) {
+      const nsKey = trackData.namespace.join('/');
+      if (announced.has(nsKey)) {
+        continue;
+      }
+      announced.add(nsKey);
+      await this.moq!.publishNamespace(trackData.namespace, trackData.authInfo);
+      console.log(`${WORKER_PREFIX} Published namespace [${nsKey}]`);
+    }
   }
 
   // Audio is sent at higher priority than video (lower value = higher pri).
@@ -213,7 +257,9 @@ export class MoqSender {
 
     const track = this.tracks[data.mediaType];
     if (track === undefined) {
-      console.error(`${WORKER_PREFIX} Invalid chunk: ${data.mediaType} is NOT a published track`);
+      // In PUBLISH_NAMESPACE mode a track exists only once a subscriber has
+      // subscribed; drop until then instead of erroring.
+      this.emitDropped(data.seqId, data.chunk?.timestamp, 'track not subscribed yet', data.mediaType);
       return;
     }
     if (track.getInfo().numSubscribers <= 0) {

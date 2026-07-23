@@ -41,8 +41,11 @@ import {
   moqReadVarintType,
   moqParseObjectHeaderWithType,
   moqSendPublish,
+  moqSendPublishNamespace,
   moqSendPublishDone,
   moqSendSubscribe,
+  moqSendSubscribeOk,
+  moqSendRequestError,
   moqSendRequestUpdate,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
@@ -55,10 +58,15 @@ import {
   moqDecodeDatagramType,
   getTrackFullName,
   MOQ_MESSAGE_SETUP,
+  MOQ_MESSAGE_SUBSCRIBE,
+  MOQ_MESSAGE_PUBLISH_NAMESPACE,
+  MOQ_MESSAGE_SUBSCRIBE_NAMESPACE,
   MOQ_MESSAGE_PUBLISH_DONE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
   MOQ_MESSAGE_REQUEST_OK,
   MOQ_MESSAGE_REQUEST_UPDATE,
+  MOQ_REQUEST_ERROR_DOES_NOT_EXIST,
+  MOQ_REQUEST_ERROR_NOT_SUPPORTED,
   MOQ_STREAM_TYPE_PADDING,
   MOQ_PARAMETER_FORWARD,
   MOQ_OBJ_STATUS_END_OF_GROUP,
@@ -66,9 +74,11 @@ import {
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
   MOQ_STATUS_TRACK_ENDED,
   MOQ_FORWARD_TRUE,
+  MOQ_FORWARD_FALSE,
   type MoqtState,
   type KvPair,
   type ObjectHeader,
+  type ParsedSubscribe,
   MOQ_ALPN_DRAFT18_VERSION,
 } from './moqt.js';
 
@@ -159,6 +169,24 @@ export interface KeepAliveOptions {
   everyMs: number;
   namespace?: string;
   name?: string;
+}
+
+/**
+ * A track offered under a published namespace (`Moq.publishNamespace` +
+ * `Moq.offerTrack`). Unlike `addTrack` (which proactively PUBLISHes a track),
+ * an offered track is served lazily: the `Track` is created only when a peer
+ * sends a matching SUBSCRIBE, at which point `onSubscribed` fires with the live
+ * `Track` handle. `onUnsubscribed` fires when that subscription ends.
+ */
+export interface TrackOffer {
+  namespace: string[];
+  name: string;
+  maxQueuedObjects: number;
+  maxOpenStreams: number;
+  moqMapping: MoqMapping;
+  authInfo?: string;
+  onSubscribed?: (track: Track) => void;
+  onUnsubscribed?: (track: Track) => void;
 }
 
 // Subscriber state we keep per track (from SUBSCRIBE / SUBSCRIBE_UPDATE).
@@ -472,13 +500,14 @@ export class Track {
             this._setForwarding(false);
           }
         } else if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
-          console.log(`${LOG_PREFIX} publish stream PUBLISH_DONE ${JSON.stringify(msg.data)}`);
+          // Message already dumped by the central control-message logger.
           break;
         }
         // Ignore other late control messages.
       }
     } catch {
       // Stream closed/reset: the peer is done with this publication.
+      console.warn(`${LOG_PREFIX} Stream closed reset. Probably peer closed it.`);
     }
   }
 
@@ -766,7 +795,7 @@ export class Subscription {
       for (;;) {
         const msg = await moqParseMsg(this.subscribeStream.readable);
         if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
-          console.log(`${LOG_PREFIX} subscribe stream PUBLISH_DONE ${JSON.stringify(msg.data)}`);
+          // Message already dumped by the central control-message logger.
           break;
         }
       }
@@ -820,6 +849,12 @@ export class Moq {
   private subscriptions: Subscription[] = [];
   private subscriptionsByAlias = new Map<number, Subscription>();
   private incomingLoopsStarted = false;
+
+  // Publisher-serve state (Moq.publishNamespace / offerTrack). Tracks offered
+  // under an announced namespace are served on demand when a matching SUBSCRIBE
+  // arrives on an incoming bidirectional stream.
+  private trackOffers: TrackOffer[] = [];
+  private incomingBidiLoopStarted = false;
 
   // Resolves once the peer's SETUP has been received on its incoming control
   // (unidirectional) stream. draft-18 handshakes over a pair of uni streams
@@ -954,6 +989,63 @@ export class Moq {
   }
 
   /**
+   * Announce a namespace with a single PUBLISH_NAMESPACE (draft-18 §9.3),
+   * instead of one PUBLISH per track. draft-18: open a dedicated bidirectional
+   * stream, send PUBLISH_NAMESPACE on it, and await the peer's REQUEST_OK (or
+   * REQUEST_ERROR) read back on that same stream.
+   *
+   * After announcing, register the tracks you are willing to serve with
+   * `offerTrack`; each `Track` is then created lazily when a matching SUBSCRIBE
+   * arrives from a peer.
+   */
+  async publishNamespace(namespace: string[], authInfo: string | undefined): Promise<void> {
+    if (this._state !== MoqState.Running) {
+      if (this._state === MoqState.Idle) {
+        throw new Error('publishNamespace() called before init()/setup()');
+      }
+      await this.connecting;
+    }
+
+    const requestId = this.allocateClientReqId();
+    const nsStream: WebTransportBidirectionalStream =
+      await this.moqt.wt.createBidirectionalStream();
+    await moqSendPublishNamespace(nsStream.writable, requestId, namespace, authInfo);
+
+    const resp = await moqParseMsg(nsStream.readable);
+    if (resp.type !== MOQ_MESSAGE_REQUEST_OK) {
+      throw new Error(`PUBLISH_NAMESPACE rejected (${resp.type}): ${JSON.stringify(resp.data)}`);
+    }
+
+    // Accept incoming SUBSCRIBEs so offered tracks under this namespace are
+    // served. Late control messages on the announce stream (e.g. NAMESPACE_DONE)
+    // are drained in the background.
+    this.ensurePublisherBidiLoop();
+    void this.drainAnnounceStream(nsStream.readable);
+  }
+
+  /**
+   * Register a track to serve under a namespace previously announced with
+   * `publishNamespace`. The `Track` is created only when a peer SUBSCRIBEs to a
+   * matching (namespace, name); `offer.onSubscribed` then fires with the handle.
+   */
+  offerTrack(offer: TrackOffer): void {
+    this.trackOffers.push(offer);
+  }
+
+  // Drain (and ignore) any late control messages the peer sends on the
+  // PUBLISH_NAMESPACE stream after REQUEST_OK, until it closes.
+  private async drainAnnounceStream(readable: ReadableStream<Uint8Array>): Promise<void> {
+    try {
+      for (;;) {
+        // Drain and discard; each message is dumped by the central logger.
+        await moqParseMsg(readable);
+      }
+    } catch {
+      // Announce stream closed/reset.
+    }
+  }
+
+  /**
    * Subscribe to a track. draft-18: open a dedicated bidirectional stream, send
    * SUBSCRIBE on it, and await SUBSCRIBE_OK read back on the same stream. Objects
    * arrive on separate unidirectional subgroup streams / datagrams, routed to
@@ -984,7 +1076,6 @@ export class Moq {
       const subStream: WebTransportBidirectionalStream =
         await this.moqt.wt.createBidirectionalStream();
       await moqSendSubscribe(subStream.writable, requestId, namespace, name, authInfo);
-
       const resp = await moqParseMsg(subStream.readable);
       if (resp.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
         const trackAlias = resp.data.trackAlias;
@@ -1128,6 +1219,164 @@ export class Moq {
     });
   }
 
+  // Start the publisher-role incoming bidirectional-stream loop once. Only needed
+  // for the publisher-serve role (publishNamespace): peers open a bidi stream per
+  // request (SUBSCRIBE, ...). Runs in the background until close().
+  private ensurePublisherBidiLoop(): void {
+    if (this.incomingBidiLoopStarted) {
+      return;
+    }
+    this.incomingBidiLoopStarted = true;
+    this.runPublisherBidiLoop().catch((err) => {
+      if (this._state !== MoqState.Closed) {
+        console.error(`${LOG_PREFIX} Publisher bidi loop error: ${err}`);
+      }
+    });
+  }
+
+  // Accept incoming bidirectional QUIC streams for the PUBLISHER role. In the
+  // publisher-serve model (Moq.publishNamespace) each incoming bidi stream begins
+  // with a request the peer directs at us as a publisher — SUBSCRIBE, or the
+  // namespace-discovery requests we do not implement (draft-18 runs every request
+  // on its own stream).
+  private async runPublisherBidiLoop(): Promise<void> {
+    const reader = this._wt().incomingBidirectionalStreams.getReader();
+    while (this._state !== MoqState.Closed) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      // No await on purpose: handle each incoming request concurrently.
+      void this.handlePublisherBidiStream(value as WebTransportBidirectionalStream);
+    }
+  }
+
+  // Dispatch one incoming bidi request stream directed at us as a PUBLISHER.
+  // Only SUBSCRIBE is served; the namespace-discovery requests a peer may send to
+  // a publisher (PUBLISH_NAMESPACE, i.e. a peer announcing back to us, and
+  // SUBSCRIBE_NAMESPACE, prefix discovery) are consumed and politely rejected
+  // with REQUEST_ERROR NOT_SUPPORTED — this app publishes media, it does not act
+  // as a relay/aggregator.
+  private async handlePublisherBidiStream(
+    stream: WebTransportBidirectionalStream,
+  ): Promise<void> {
+    let msg;
+    try {
+      // moqParseMsg reads the length-prefixed body, so the request is fully
+      // consumed off the stream even for the types we do not implement.
+      msg = await moqParseMsg(stream.readable);
+    } catch {
+      return; // empty / garbage stream
+    }
+
+    if (msg.type === MOQ_MESSAGE_SUBSCRIBE) {
+      await this.onIncomingSubscribe(msg.data as ParsedSubscribe, stream);
+      return;
+    }
+
+    if (
+      msg.type === MOQ_MESSAGE_PUBLISH_NAMESPACE ||
+      msg.type === MOQ_MESSAGE_SUBSCRIBE_NAMESPACE
+    ) {
+      // Recognized but unimplemented namespace requests: reject so the peer gets
+      // a clean answer instead of a silently dropped/reset stream. The request
+      // itself (and our REQUEST_ERROR reply) are dumped by the central logger.
+      const name =
+        msg.type === MOQ_MESSAGE_PUBLISH_NAMESPACE ? 'PUBLISH_NAMESPACE' : 'SUBSCRIBE_NAMESPACE';
+      try {
+        await moqSendRequestError(
+          stream.writable,
+          MOQ_REQUEST_ERROR_NOT_SUPPORTED,
+          `${name} not supported`,
+        );
+        await stream.writable.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    console.warn(`${LOG_PREFIX} Unsupported incoming bidi message type 0x${msg.type.toString(16)}`);
+    try {
+      await stream.readable.cancel('unsupported');
+      await stream.writable.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  // Serve an incoming SUBSCRIBE against the registered track offers: reply
+  // SUBSCRIBE_OK on the request stream and create a Track that streams objects
+  // for it. Rejects with REQUEST_ERROR when no offer matches (namespace, name).
+  private async onIncomingSubscribe(
+    sub: ParsedSubscribe,
+    stream: WebTransportBidirectionalStream,
+  ): Promise<void> {
+    const offer = this.trackOffers.find(
+      (o) => namespaceEquals(o.namespace, sub.namespace) && o.name === sub.trackName,
+    );
+    if (offer === undefined) {
+      console.warn(
+        `${LOG_PREFIX} SUBSCRIBE for unknown track [${sub.namespace.join('/')}]/${sub.trackName}`,
+      );
+      try {
+        await moqSendRequestError(
+          stream.writable,
+          MOQ_REQUEST_ERROR_DOES_NOT_EXIST,
+          'Track not offered',
+        );
+        await stream.writable.close();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const trackAlias = this.allocateTrackAlias();
+    // Live edge: no Largest Object in SUBSCRIBE_OK.
+    await moqSendSubscribeOk(stream.writable, trackAlias);
+    console.log(
+      `${LOG_PREFIX} SUBSCRIBE_OK for [${sub.namespace.join('/')}]/${sub.trackName} (alias ${trackAlias})`,
+    );
+
+    const track = new Track(
+      this,
+      offer.namespace,
+      offer.name,
+      trackAlias,
+      sub.requestId,
+      offer.maxQueuedObjects,
+      offer.maxOpenStreams,
+      offer.authInfo,
+      offer.moqMapping,
+      stream,
+    );
+    // A SUBSCRIBE means the peer wants objects now; FORWARD defaults to 1.
+    const forward = forwardFromParameters(sub.parameters);
+    track._addSubscriber(sub.requestId, forward, sub.parameters);
+    track._setForwarding(forward !== MOQ_FORWARD_FALSE);
+    this.tracks.push(track);
+    if (offer.onSubscribed !== undefined) {
+      offer.onSubscribed(track);
+    }
+    // When the subscribe stream ends (unsubscribe / reset), stop and forget it.
+    void track._runResponseLoop().finally(() => {
+      track._setForwarding(false);
+      this.removeTrack(track);
+      if (offer.onUnsubscribed !== undefined) {
+        offer.onUnsubscribed(track);
+      }
+    });
+  }
+
+  // Drop a served track from the session (called when its subscription ends).
+  private removeTrack(track: Track): void {
+    const idx = this.tracks.indexOf(track);
+    if (idx >= 0) {
+      this.tracks.splice(idx, 1);
+    }
+  }
+
   // Accept incoming unidirectional QUIC streams and demux by their leading
   // stream type: the peer control stream (begins with SETUP), an object subgroup
   // header, or padding.
@@ -1195,8 +1444,8 @@ export class Moq {
     }
     try {
       while (this._state !== MoqState.Closed) {
-        const msg = await moqParseMsg(stream);
-        console.log(`${LOG_PREFIX} control message ${msg.type}`);
+        // Drain and discard; each message is dumped by the central logger.
+        await moqParseMsg(stream);
       }
     } catch {
       // Control stream closed.
@@ -1300,4 +1549,9 @@ function isEndOfGroupStatus(status: number | undefined): boolean {
 function forwardFromParameters(parameters: KvPair[]): number {
   const fwd = parameters.find((p) => p.name === MOQ_PARAMETER_FORWARD);
   return fwd === undefined ? MOQ_FORWARD_TRUE : (fwd.val as number);
+}
+
+// Compare two track-namespace tuples for equality.
+function namespaceEquals(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((part, i) => part === b[i]);
 }
