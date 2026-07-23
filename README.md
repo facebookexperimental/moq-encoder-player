@@ -8,7 +8,7 @@ The goal if ths code is to provide a minimal live platform implementation that h
 
 It is NOT optimized for performance / production at all since the 1st goal is experimenting / learning.
 
-![Main block diagram](./pics/basic-block-diagram.png)
+![Main block diagram](./pics/basic-block-diagram.svg)
 Fig1: Main block diagram
 
 For the server/relay side we have used [moxygen](https://github.com/facebookexperimental/moxygen).
@@ -116,7 +116,7 @@ It uses [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft
 
 The encoder implements MOQT publisher role. It is based on [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext), see the block diagram in fig3
 
-![Encoder block diagram](./pics/encoder-block-diagram.png)
+![Encoder block diagram](./pics/encoder-block-diagram.svg)
 Fig3: Encoder block diagram
 
 Note: We have used [WebTransport](https://www.w3.org/TR/webtransport/), so the underlying transport is QUIC (QUIC streams to be more accurate)
@@ -269,7 +269,7 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 
 The encoder implements MOQT subscriber role. It uses [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext) (audio is scheduled with `AudioBufferSourceNode` on the AudioContext clock — no `SharedArrayBuffer` or AudioWorklet)
 
-![Player block diagram](./pics/player-block-diagram.png)
+![Player block diagram](./pics/player-block-diagram.svg)
 Fig5: Player block diagram
 
 ### Audio video sync strategy

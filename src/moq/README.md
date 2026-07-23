@@ -4,12 +4,12 @@
 [Media over QUIC Transport (MoQT)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
 **draft-18**, running in the browser over **WebTransport**. It wraps the
 low-level wire codec in [`moqt.ts`](./moqt.ts) and the varint codec in
-[`varint.ts`](./varint.ts) and exposes three small classes:
+[`varint.ts`](./varint.ts) and exposes four small classes:
 
 | Class | Role | Created by |
 |-------|------|------------|
 | [`Moq`](#moq) | The session: transport, SETUP handshake, incoming stream loops | `new Moq()` |
-| [`Track`](#track) | A track you **publish** | `moq.addTrack(...)` |
+| [`Track`](#track) | A track you **publish** | `moq.addTrack(...)`, or served lazily via `moq.offerTrack(...)` |
 | [`Subscription`](#subscription) | A track you **subscribe** to | `moq.subscribe(...)` |
 | [`ObjData`](#objdata) | A handle to one published object | `track.sendObject(...)` |
 
@@ -102,9 +102,20 @@ stateDiagram-v2
   unidirectional control stream), and starts the incoming stream/datagram loops.
   The MoQT **version is negotiated by the transport via ALPN /
   `WT-Available-Protocols`** (draft-18), so `setup()` carries no version argument.
-- `addTrack()` / `subscribe()` also await readiness, so you can call them right
-  after `setup()`. Each opens its **own bidirectional request stream** (draft-18);
-  the peer's `REQUEST_OK` / `SUBSCRIBE_OK` (or `REQUEST_ERROR`) is read back on it.
+- `addTrack()` / `publishNamespace()` / `subscribe()` also await readiness, so you
+  can call them right after `setup()`. Each opens its **own bidirectional request
+  stream** (draft-18); the peer's `REQUEST_OK` / `SUBSCRIBE_OK` (or `REQUEST_ERROR`)
+  is read back on it.
+
+There are **two ways to publish**:
+
+- **`addTrack()`** — *proactively* PUBLISH a track (the publisher pushes it to the
+  relay right away; the relay gates delivery via Forward State). See the publish
+  flow below.
+- **`publishNamespace()` + `offerTrack()`** — announce a namespace once and serve
+  tracks *lazily*: the `Track` is created only when a peer SUBSCRIBEs to a matching
+  `(namespace, name)`. This is what the encoder demo uses by default
+  (`usePublishNamespace`). See [the announced-namespace flow](#publish-via-an-announced-namespace).
 
 ### Publish flow
 
@@ -133,6 +144,38 @@ sequenceDiagram
 > While Forward State is 0, `track.sendObject()` returns objects with status
 > `dropped` and nothing is sent — so you don't waste uplink when nobody is
 > watching. When it flips back to 1, the track resumes on a **fresh group**.
+
+### Publish via an announced namespace
+
+Instead of one `PUBLISH` per track, the publisher can announce a namespace once
+with `PUBLISH_NAMESPACE` and serve tracks on demand. Register the tracks you are
+willing to serve with `offerTrack()`; each `Track` is created lazily when a peer
+sends a matching `SUBSCRIBE`.
+
+```mermaid
+sequenceDiagram
+  participant App as Encoder app
+  participant Moq
+  participant Relay
+  App->>Moq: await publishNamespace(ns, auth)
+  Moq->>Relay: PUBLISH_NAMESPACE (on its own bidi request stream)
+  Relay-->>Moq: REQUEST_OK
+  App->>Moq: offerTrack({ ns, name, ..., onSubscribed })
+  Note over Moq: waits for a matching SUBSCRIBE
+  Relay-->>Moq: SUBSCRIBE (incoming bidi stream)
+  Moq->>Relay: SUBSCRIBE_OK (Track Alias)
+  Moq-->>App: onSubscribed(track)
+  loop per encoded frame
+    App->>Moq: track.sendObject(bytes, newGroup?, extHeaders?)
+    Moq->>Relay: Objects (subgroup stream / datagram)
+  end
+  Relay-->>Moq: (subscribe stream ends) → onUnsubscribed(track)
+```
+
+> Only `SUBSCRIBE` is served in this role; other requests a peer may direct at a
+> publisher (`PUBLISH_NAMESPACE` back at us, `SUBSCRIBE_NAMESPACE` prefix
+> discovery) are answered with `REQUEST_ERROR NOT_SUPPORTED` — this app publishes
+> media, it is not a relay/aggregator.
 
 ### Subscribe flow
 
@@ -207,16 +250,36 @@ dropped while that many streams are still open (both `<= 0` mean unbounded).
 `authInfo` is an optional auth token string.
 
 ```ts
+publishNamespace(namespace: string[], authInfo: string | undefined): Promise<void>
+```
+Announce a namespace with a single `PUBLISH_NAMESPACE`, then serve tracks lazily.
+Opens a bidirectional request stream, sends `PUBLISH_NAMESPACE`, and resolves once
+the peer replies `REQUEST_OK`. After announcing, register tracks with `offerTrack`.
+See [the announced-namespace flow](#publish-via-an-announced-namespace).
+
+```ts
+offerTrack(offer: TrackOffer): void
+```
+Register a track to serve under a namespace previously announced with
+`publishNamespace`. The [`Track`](#track) is created only when a peer SUBSCRIBEs to
+a matching `(namespace, name)`; `offer.onSubscribed(track)` then fires with the
+live handle, and `offer.onUnsubscribed(track)` fires when that subscription ends.
+See [`TrackOffer`](#trackoffer).
+
+```ts
 subscribe(
   namespace: string[],
   name: string,
   authInfo: string | undefined,
   onObject: ObjectCallback,
+  onEndOfGroup?: EndOfGroupCallback,
 ): Promise<Subscription>
 ```
 Subscribe to a track: sends `SUBSCRIBE`, resolves with a
 [`Subscription`](#subscription) on `SUBSCRIBE_OK`, and routes every received
 object to `onObject` (see [`ObjectCallback`](#objectcallback)). Retries on error.
+`onEndOfGroup`, if given, fires when each group completes (see
+[`EndOfGroupCallback`](#endofgroupcallback)).
 
 ```ts
 close(): void
@@ -283,6 +346,22 @@ close(): Promise<void>
 ```
 Stop the track: drop the queue, close open streams (end-of-group), send
 `PUBLISH_DONE`. Best-effort; idempotent.
+
+##### Send-path impairment hooks (testing only)
+
+For A/V-sync and loss-recovery experiments a track can drop or hold wire units on
+the send path (see [`network_simulator.ts`](./network_simulator.ts)). Genuine
+publication never sets these.
+
+```ts
+setWireDropConfig(cfg: WireDropConfig | null): void   // periodic simulated packet loss
+setWireHoldConfig(cfg: WireHoldConfig | null): void   // periodic simulated slowness (stall-then-clump)
+forceDropBurst(count: number): void                   // drop the next `count` wire units on demand
+forceHoldBurst(count: number): void                   // hold the next `count` objects, then release together
+onWireDrop?: (obj: ObjData) => void                   // fires for each object dropped by the drop simulator
+```
+The drop/hold *unit* follows the mapping: one datagram per object
+(`ObjectPerDatagram`) or one subgroup stream per group (`SubgroupPerGroup`).
 
 > Methods prefixed with `_` (`_setForwarding`, `_addSubscriber`, …) are internal
 > and driven by `Moq`'s control loop. Don't call them from application code.
@@ -368,6 +447,22 @@ interface KeepAliveOptions {
 }
 ```
 
+#### `TrackOffer`
+```ts
+interface TrackOffer {
+  namespace: string[];
+  name: string;
+  maxQueuedObjects: number;                 // per-track send-queue cap (<= 0 = unbounded)
+  maxOpenStreams: number;                   // open subgroup-stream cap (<= 0 = unbounded)
+  moqMapping: MoqMapping;                   // object -> QUIC wire mapping
+  authInfo?: string;                        // optional auth token
+  onSubscribed?: (track: Track) => void;    // fires when a peer SUBSCRIBEs (Track created)
+  onUnsubscribed?: (track: Track) => void;  // fires when that subscription ends
+}
+```
+Passed to `Moq.offerTrack` to serve a track lazily under a namespace announced
+with `publishNamespace`.
+
 #### `ObjectCallback`
 ```ts
 type ObjectCallback = (
@@ -377,8 +472,21 @@ type ObjectCallback = (
   groupId?: number,                   // MoQ group id (ordering key)
   objectId?: number,                  // MoQ object id within the group; for subgroup streams this
                                       // is the receiver-counted arrival index (wire delta is 0)
+  isLastInGroup?: boolean,            // true when end-of-group rides inline on this object
+                                      // (datagrams); false for subgroup streams, which signal
+                                      // end-of-group retroactively via EndOfGroupCallback
 ) => Promise<boolean> | boolean;      // return true when this was the last object (EOF)
 ```
+
+#### `EndOfGroupCallback`
+```ts
+type EndOfGroupCallback = (groupId: number, lastObjId: number) => void;
+```
+Optional callback passed to `Moq.subscribe`. Fires when the transport learns a
+group is complete. For **subgroup streams** end-of-group is a status object that
+trails the group's last payload object, so it is delivered out of band here (it
+cannot ride on the last object). **Datagrams** carry end-of-group inline instead,
+surfaced via `ObjectCallback`'s `isLastInGroup`.
 
 #### `TrackInfo` / `SubscriptionInfo` / `ObjInfo`
 ```ts
@@ -484,8 +592,11 @@ track.sendObject(new TextEncoder().encode('hello'), { priority: 128 });
 ## 5. Notes & gotchas
 
 - **Call order:** `new Moq()` → `init()` → `await setup()` → `addTrack()` /
-  `subscribe()`. `addTrack`/`subscribe` await connection readiness, so you don't
-  have to poll `state`.
+  `publishNamespace()` (+ `offerTrack()`) / `subscribe()`. These all await
+  connection readiness, so you don't have to poll `state`.
+- **Two publish models:** `addTrack()` publishes proactively; `publishNamespace()`
+  + `offerTrack()` announces once and creates a `Track` lazily per incoming
+  SUBSCRIBE (`onSubscribed`). The encoder demo defaults to the latter.
 - **`sendObject` never throws** — check `obj.getInfo().status`. A `dropped`
   status is normal back-pressure / Forward-State gating, not an error.
 - **Groups & keyframes:** for `SubgroupPerGroup`, only pass `newGroupOptions`
