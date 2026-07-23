@@ -466,3 +466,4 @@ TODO:
 - When it drops 100+ audio streams it breaks (I’m guessing I’m trying to send 100 streams at same time hitting browser limit)
 - Fix latency measurement, it is broken (at least after update target)
 - Add new A/V sync strategy to docs
+- Adopt LOCvX instead of MOQ-MI
