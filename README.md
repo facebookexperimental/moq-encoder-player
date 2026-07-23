@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-MOQT version: v16. LOC version: v3
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). MoQ Media Interop packager version: 03
 
 This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
@@ -25,27 +25,30 @@ The source code is written in [TypeScript](https://www.typescriptlang.org/) and 
 moq-encoder-player/
 ├── demo/                   # Browser demos (HTML). They load the compiled code from dist/
 │   ├── encoder/            #   index.html (full encoder), simple.html
-│   └── player/             #   index.html (full player), simple.html
+│   ├── player/             #   index.html (full player), simple.html
+│   └── shared/             #   demo.css (styles shared by the demos)
 ├── src/                    # TypeScript source code
 │   ├── index.ts            #   Library entry point (re-exports the reusable modules)
 │   ├── capture/            #   a_capture.ts, v_capture.ts        (Web Workers)
 │   ├── encode/             #   a_encoder.ts, v_encoder.ts        (Web Workers)
 │   ├── decode/             #   audio_decoder.ts, video_decoder.ts (Web Workers)
 │   ├── moq/                #   moq.ts (high-level Moq/Track/Subscription client),
-│   │                       #   moqt.ts (wire protocol), varint.ts, byte_utils.ts, buffer_utils.ts
+│   │                       #   moqt.ts (wire protocol), varint.ts, byte_utils.ts, buffer_utils.ts,
+│   │                       #   network_simulator.ts (send-path drop/hold impairments), README.md
 │   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
 │   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
 │   ├── packager/           #   mi_packager.ts                    (media-interop packager)
-│   ├── render/             #   audio_player.ts (Web Audio renderer), video_render_buffer.ts
+│   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
+│   │                       #   video_render_buffer.ts
 │   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, time_buffer_checker.ts, utils.ts,
-│   │   └── media/          #   avcc_parser.ts ...
+│   │   └── media/          #   avcc_parser.ts, avc_decoder_configuration_record_parser.ts
 │   └── types/              #   globals.d.ts (ambient types for WebTransport / WebCodecs)
 ├── tests/                  # Jest unit tests for the pure utilities
 ├── dist/                   # Compiled JavaScript + type declarations (generated, git-ignored)
 ├── .github/workflows/      # CI: lint + build + test
 ├── tsconfig.json           # TypeScript compiler options
 ├── jest.config.js          # Test runner configuration
-├── .eslintrc.js            # ESLint configuration
+├── eslint.config.js        # ESLint configuration (flat config)
 ├── .prettierrc             # Prettier configuration
 └── package.json            # NPM dependencies, scripts and metadata
 ```
@@ -163,26 +166,41 @@ const muxerSenderConfig = {
         urlHostPort: '',
         urlPath: '',
 
+        keepAlivesEveryMs: 5000,
+
+        certificateHash: null,
+
+        // Announce each namespace once with PUBLISH_NAMESPACE and serve tracks
+        // lazily on subscribe, instead of one PUBLISH per track.
+        usePublishNamespace: true,
+
         moqTracks: {
             "audio": {
-                id: 0,
-                namespace: "vc",
-                name: "aaa/audio",
-                maxInFlightRequests: 100,
+                namespace: ["vc"],               // namespace tuple (array of segments)
+                name: "audio0",
+                maxInFlightRequests: 20,          // caps the per-track send queue
+                maxOpenStreams: 60,               // caps concurrent open subgroup streams
                 isHipri: true,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP, // or MOQ_MAPPING_OBJECT_PER_DATAGRAM
             },
             "video": {
-                id: 1,
-                namespace: "vc",
-                name: "aaa/video",
-                maxInFlightRequests: 50,
+                namespace: ["vc"],
+                name: "video0",
+                maxInFlightRequests: 10,
+                maxOpenStreams: 39,
                 isHipri: false,
-                authInfo: "secret"
+                authInfo: "secret",
+                moqMapping: MOQ_MAPPING_SUBGROUP_PER_GROUP,
             }
         },
     }
 ```
+
+`moqMapping` selects how objects hit the QUIC wire (see [`src/moq/README.md`](./src/moq/README.md)):
+`MOQ_MAPPING_SUBGROUP_PER_GROUP` (one unidirectional stream per group) or
+`MOQ_MAPPING_OBJECT_PER_DATAGRAM` (one datagram per object). Both are selectable
+per track from the encoder UI.
 
 ### demo/encoder/index.html
 
@@ -233,16 +251,19 @@ Note: `opus.frameDuration` setting helps keeping encoding latency low
 
 - Implements [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
 
-### src/sender/moq_sender.ts
+### src/sender/moq_sender.ts (+ src/sender/moq/moq_sender_internals.ts)
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Implements MOQT and sends video and audio packets (see `mi_packager.ts`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that implements the MOQT publisher role and sends video and audio packets (see `mi_packager.ts`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/).
 
-- Opens a WebTransport session against the relay
-- Implements MOQT publisher handshake for 2 tracks (opening control stream and announcing track namespace)
-- **Creates a Unidirectional (encoder -> server) QUIC stream per every frame** (video and audio)
-- Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts`
-- It uses sendOrder to establish send priority. We use incremental counter (so new is higher priority than old), and we also increase audio priority over video (by adding an offset)
-- It keeps the per-track send queue below the configured `maxInFlightRequests` (objects waiting to be written are dropped once the queue is full). Two stats are reported per track: `numQueued` (objects waiting in the send queue) and `numOpenStreams` (open QUIC subgroup streams)
+`moq_sender.ts` is a thin worker shell; the publisher logic lives in `MoqSender` (`src/sender/moq/moq_sender_internals.ts`), which drives the shared, media-free `Moq` client in [`src/moq/moq.ts`](./src/moq/moq.ts) (fully documented in [`src/moq/README.md`](./src/moq/README.md)).
+
+- Opens a WebTransport session against the relay (MOQT version negotiated via ALPN)
+- Announces its track(s): either one `PUBLISH` per track, or a single `PUBLISH_NAMESPACE` per namespace serving tracks lazily on subscribe (`usePublishNamespace`)
+- Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts` and publishes each as a MoQ object via `track.sendObject(...)`
+- **Object → QUIC wire mapping is configurable per track** (`moqMapping`): `SubgroupPerGroup` opens one unidirectional QUIC stream per group (a video keyframe starts a new group/stream), while `ObjectPerDatagram` sends one datagram per object
+- Send priority uses the MoQ publisher priority carried on each group; audio is published at a higher priority than video (lower numeric value = higher priority)
+- It keeps the per-track send queue below `maxInFlightRequests` and the concurrent open subgroup streams below `maxOpenStreams` (objects / whole groups are dropped once the respective cap is reached). Two stats are reported per track: `numQueued` (objects waiting in the send queue) and `numOpenStreams` (open QUIC subgroup streams)
+- Optional send-path impairments (`src/moq/network_simulator.ts`) can drop or hold bursts of wire units to test A/V sync and loss recovery; both are exposed from the encoder UI
 
 ## Player
 
@@ -287,9 +308,9 @@ It implements MOQT and extracts video and audio packets from the server / relay 
 Since we do not have any guarantee that QUIC streams are delivered in order we need to order them before sending them to the decoder. This is the function of the deJitter. We create one instance per track, in this case one for Audio, one for video
 
 - Receives the chunks from `moq_demuxer_downloader.ts`
-- Adds them into a sorted list, we sort by ascending `seqID`
+- Adds them into a sorted list ordered by the MoQ transport-native key `(groupId, objId)` (lexicographic), which reproduces the publisher's send order
 - When list length (in ms is > `bufferSizeMs`) we deliver (remove) the 1st element in the list
-- It also keeps track of delivered `seqID` detecting:
+- It also keeps track of the last delivered `(groupId, objId)` detecting:
   - Gaps / discontinuities
   - Total QUIC Stream lost (not arrived in time)
 
@@ -314,6 +335,10 @@ To recover the true position it mirrors the decoder's input queue (`pendingTs`) 
 
 No `SharedArrayBuffer`, `Atomics`, or AudioWorklet are used, so the player no longer needs cross-origin isolation.
 - Reports last PTS rendered (this is used to sync video to the audio track, so to keep A/V in sync)
+
+### src/render/playback_rate_controller.ts
+
+`PlaybackRateController` keeps the audio render buffer (a proxy for latency) near a configurable target by nudging the playback speed. It is a hysteresis controller (decision-only): when the buffer leaves an on-target band it commands `GapTolerantPlayer.setPlaybackSpeed` to speed up (drain an over-full buffer) or slow down (refill an under-full one), holding the correction until the buffer crosses back to the target. The player UI exposes the target latency, on-target band, and speed-up / slow-down rates, and lets you toggle speed compensation on/off. (Note: changing `playbackRate` also shifts pitch.)
 
 ### src/decode/video_decoder.ts
 
@@ -429,7 +454,6 @@ You should see same UI that is shown in testing section above
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
-- Accelerate playback if we are over latency budget
 - All:
   - Accept B frames (DTS)
 

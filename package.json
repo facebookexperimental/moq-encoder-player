@@ -1,7 +1,7 @@
 {
   "name": "moq-encoder-player",
   "version": "1.0.0",
-  "description": "Media over QUIC (MoQ) encoder and player reference implementation, written in TypeScript and running in the browser using WebCodecs, WebTransport, Web Workers and AudioWorklet.",
+  "description": "Media over QUIC (MoQ) encoder and player reference implementation, written in TypeScript and running in the browser using WebCodecs, WebTransport, Web Workers and the Web Audio API (AudioContext).",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
