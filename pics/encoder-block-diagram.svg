@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" font-family="'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c566a"/>
+    </marker>
+  </defs>
+  <style>
+    text { fill: #2e3440; }
+    .box { fill: #ffffff; stroke: #4c566a; stroke-width: 2; }
+    .span { fill: #f4f6f8; stroke: #4c566a; stroke-width: 2; }
+    .side { fill: #eceff4; stroke: #4c566a; stroke-width: 2; }
+    .title { font-size: 17px; font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; text-anchor: middle; fill: #4c566a; }
+    .edge { font-size: 13px; font-weight: 600; fill: #bf616a; text-anchor: middle; }
+    .chip { font-size: 11px; font-weight: 700; fill: #5e81ac; text-anchor: end; }
+    .flow { stroke: #4c566a; stroke-width: 2; fill: none; }
+    .aux { stroke: #4c566a; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+    .legend { font-size: 13px; }
+  </style>
+
+  <!-- side: clock / latency -->
+  <rect class="side" x="30" y="250" width="185" height="210" rx="10"/>
+  <text class="title" x="122" y="300" font-size="15">A/V clock tracking</text>
+  <text class="sub" x="122" y="322">(latency measurement)</text>
+  <text class="sub" x="122" y="360">wallclock stamping +</text>
+  <text class="sub" x="122" y="378">A/V timestamp</text>
+  <text class="sub" x="122" y="396">compensation</text>
+  <text class="sub" x="122" y="414">(main thread)</text>
+  <path class="aux" d="M215,390 L370,405" marker-end="url(#arrow)"/>
+
+  <!-- row 1: capture -->
+  <rect class="box" x="370" y="40" width="220" height="80" rx="10"/>
+  <text class="title" x="480" y="75">Video capture</text>
+  <text class="sub" x="480" y="97">(getUserMedia)</text>
+  <text class="chip" x="580" y="58">WW</text>
+
+  <rect class="box" x="650" y="40" width="220" height="80" rx="10"/>
+  <text class="title" x="760" y="75">Audio capture</text>
+  <text class="sub" x="760" y="97">(getUserMedia)</text>
+  <text class="chip" x="860" y="58">WW</text>
+
+  <path class="flow" d="M480,120 L480,200" marker-end="url(#arrow)"/>
+  <text class="edge" x="500" y="165" text-anchor="start">RAW</text>
+  <path class="flow" d="M760,120 L760,200" marker-end="url(#arrow)"/>
+  <text class="edge" x="780" y="165" text-anchor="start">PCM</text>
+
+  <!-- row 2: encode -->
+  <rect class="box" x="370" y="200" width="220" height="90" rx="10"/>
+  <text class="title" x="480" y="240">VideoEncoder</text>
+  <text class="sub" x="480" y="262">H.264</text>
+  <text class="chip" x="580" y="218">WC · WW</text>
+
+  <rect class="box" x="650" y="200" width="220" height="90" rx="10"/>
+  <text class="title" x="760" y="240">AudioEncoder</text>
+  <text class="sub" x="760" y="262">Opus</text>
+  <text class="chip" x="860" y="218">WC · WW</text>
+
+  <path class="flow" d="M480,290 L480,370" marker-end="url(#arrow)"/>
+  <text class="edge" x="500" y="335" text-anchor="start">H.264 + Metadata</text>
+  <path class="flow" d="M760,290 L760,370" marker-end="url(#arrow)"/>
+  <text class="edge" x="780" y="335" text-anchor="start">Opus + Metadata</text>
+
+  <!-- row 3: packager -->
+  <rect class="span" x="370" y="370" width="500" height="70" rx="10"/>
+  <text class="title" x="620" y="402">MoQ Media Interop packager</text>
+  <text class="sub" x="620" y="424">mi_packager.ts</text>
+
+  <path class="flow" d="M620,440 L620,510" marker-end="url(#arrow)"/>
+  <text class="edge" x="640" y="480" text-anchor="start">MoQ objects (+ ext headers)</text>
+
+  <!-- row 4: sender -->
+  <rect class="span" x="370" y="510" width="500" height="85" rx="10"/>
+  <text class="title" x="620" y="548">MoQ sender — MOQT publisher (TX)</text>
+  <text class="sub" x="620" y="572">subgroup stream per group / datagram per object</text>
+  <text class="chip" x="860" y="528">WW · WT</text>
+
+  <path class="flow" d="M620,595 L620,650" marker-end="url(#arrow)"/>
+  <text class="edge" x="640" y="628" text-anchor="start">WebTransport (QUIC)</text>
+  <text class="sub" x="620" y="672">to moxygen relay</text>
+
+  <!-- legend -->
+  <text class="legend" x="30" y="510" font-weight="700">Legend</text>
+  <text class="legend" x="30" y="535"><tspan fill="#5e81ac" font-weight="700">WW</tspan> Web Worker</text>
+  <text class="legend" x="30" y="558"><tspan fill="#5e81ac" font-weight="700">WC</tspan> WebCodecs</text>
+  <text class="legend" x="30" y="581"><tspan fill="#5e81ac" font-weight="700">WT</tspan> WebTransport</text>
+</svg>

@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1130 960" font-family="'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c566a"/>
+    </marker>
+  </defs>
+  <style>
+    text { fill: #2e3440; }
+    .box { fill: #ffffff; stroke: #4c566a; stroke-width: 2; }
+    .span { fill: #f4f6f8; stroke: #4c566a; stroke-width: 2; }
+    .side { fill: #eceff4; stroke: #4c566a; stroke-width: 2; }
+    .title { font-size: 17px; font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; text-anchor: middle; fill: #4c566a; }
+    .edge { font-size: 13px; font-weight: 600; fill: #bf616a; text-anchor: middle; }
+    .chip { font-size: 11px; font-weight: 700; fill: #5e81ac; text-anchor: end; }
+    .flow { stroke: #4c566a; stroke-width: 2; fill: none; }
+    .aux { stroke: #4c566a; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+    .legend { font-size: 13px; }
+  </style>
+
+  <!-- row 1: receiver -->
+  <rect class="span" x="360" y="40" width="510" height="70" rx="10"/>
+  <text class="title" x="615" y="72">MoQ receiver — MOQT subscriber (RX)</text>
+  <text class="sub" x="615" y="94">moq_demuxer_downloader.ts</text>
+  <text class="chip" x="860" y="60">WW · WT</text>
+  <path class="flow" d="M615,110 L615,170" marker-end="url(#arrow)"/>
+  <text class="edge" x="635" y="145" text-anchor="start">received objects</text>
+
+  <!-- row 2: depacketizer -->
+  <rect class="span" x="360" y="170" width="510" height="65" rx="10"/>
+  <text class="title" x="615" y="200">MoQ Media Interop depacketizer</text>
+  <text class="sub" x="615" y="222">mi_packager.ts</text>
+
+  <path class="flow" d="M470,235 L470,300" marker-end="url(#arrow)"/>
+  <text class="edge" x="470" y="272">H.264 + Metadata</text>
+  <path class="flow" d="M760,235 L760,300" marker-end="url(#arrow)"/>
+  <text class="edge" x="760" y="272">Opus + Metadata</text>
+
+  <!-- row 3: dejitter -->
+  <rect class="box" x="360" y="300" width="220" height="75" rx="10"/>
+  <text class="title" x="470" y="335">Video deJitter</text>
+  <text class="sub" x="470" y="357">jitter buffer</text>
+  <rect class="box" x="650" y="300" width="220" height="75" rx="10"/>
+  <text class="title" x="760" y="335">Audio deJitter</text>
+  <text class="sub" x="760" y="357">jitter buffer</text>
+
+  <path class="flow" d="M470,375 L470,455" marker-end="url(#arrow)"/>
+  <text class="edge" x="470" y="420">ordered chunks</text>
+  <path class="flow" d="M760,375 L760,455" marker-end="url(#arrow)"/>
+  <text class="edge" x="760" y="420">ordered chunks</text>
+
+  <!-- row 4: decoders -->
+  <rect class="box" x="360" y="455" width="220" height="95" rx="10"/>
+  <text class="title" x="470" y="500">VideoDecoder</text>
+  <text class="sub" x="470" y="522">H.264 → RAW</text>
+  <text class="chip" x="570" y="473">WC · WW</text>
+
+  <rect class="box" x="650" y="455" width="220" height="95" rx="10"/>
+  <text class="title" x="760" y="493">AudioDecoder</text>
+  <text class="sub" x="760" y="514">Opus → PCM</text>
+  <text class="sub" x="760" y="532">true-source-ts reconciliation</text>
+  <text class="chip" x="860" y="473">WC · WW</text>
+
+  <path class="flow" d="M470,550 L470,630" marker-end="url(#arrow)"/>
+  <text class="edge" x="470" y="595">RAW frame + ts</text>
+  <path class="flow" d="M760,550 L760,630" marker-end="url(#arrow)"/>
+  <text class="edge" x="760" y="588">AudioData + ts</text>
+  <text class="sub" x="760" y="612">(to main thread)</text>
+
+  <!-- row 5: render -->
+  <rect class="box" x="360" y="630" width="220" height="95" rx="10"/>
+  <text class="title" x="470" y="672">video_render_buffer</text>
+  <text class="sub" x="470" y="694">(videoAligner)</text>
+
+  <rect class="box" x="650" y="630" width="220" height="95" rx="10"/>
+  <text class="title" x="760" y="672">GapTolerantPlayer</text>
+  <text class="sub" x="760" y="694">Web Audio (AudioContext)</text>
+  <text class="chip" x="860" y="648">Web Audio</text>
+
+  <!-- A/V sync: video aligns to the audio master clock -->
+  <path class="aux" d="M650,700 L585,700" marker-end="url(#arrow)"/>
+  <text class="sub" x="615" y="690">playingTimestamp</text>
+  <text class="sub" x="615" y="718">A/V master clock</text>
+
+  <path class="flow" d="M470,725 L470,805" marker-end="url(#arrow)"/>
+  <path class="flow" d="M760,725 L760,805" marker-end="url(#arrow)"/>
+
+  <!-- row 6: sinks -->
+  <rect class="side" x="360" y="805" width="220" height="60" rx="10"/>
+  <text class="title" x="470" y="842">Canvas</text>
+  <rect class="side" x="650" y="805" width="220" height="60" rx="10"/>
+  <text class="title" x="760" y="833">Audio output</text>
+  <text class="sub" x="760" y="853">(speakers)</text>
+
+  <!-- playback rate controller (right) -->
+  <rect class="box" x="915" y="632" width="185" height="90" rx="10"/>
+  <text class="title" x="1007" y="666" font-size="15">PlaybackRate</text>
+  <text class="title" x="1007" y="686" font-size="15">Controller</text>
+  <text class="sub" x="1007" y="708">steer to target latency</text>
+  <path class="flow" d="M915,662 L870,662" marker-end="url(#arrow)"/>
+  <text class="sub" x="892" y="650" font-size="11">setSpeed</text>
+  <path class="aux" d="M870,700 L915,700" marker-end="url(#arrow)"/>
+  <text class="sub" x="892" y="716" font-size="11">buffer ms</text>
+
+  <!-- latency measurement (left) -->
+  <rect class="side" x="40" y="455" width="210" height="95" rx="10"/>
+  <text class="title" x="145" y="495" font-size="15">Latency measurement</text>
+  <text class="sub" x="145" y="518">now − wallclock(sample)</text>
+  <text class="sub" x="145" y="536">(clkms side-channel)</text>
+  <path class="aux" d="M250,502 L360,502" marker-end="url(#arrow)"/>
+
+  <!-- legend -->
+  <text class="legend" x="40" y="620" font-weight="700">Legend</text>
+  <text class="legend" x="40" y="645"><tspan fill="#5e81ac" font-weight="700">WW</tspan> Web Worker</text>
+  <text class="legend" x="40" y="668"><tspan fill="#5e81ac" font-weight="700">WC</tspan> WebCodecs</text>
+  <text class="legend" x="40" y="691"><tspan fill="#5e81ac" font-weight="700">WT</tspan> WebTransport</text>
+  <text class="legend" x="40" y="714"><tspan fill="#5e81ac" font-weight="700">Web Audio</tspan> AudioContext</text>
+  <text class="legend" x="40" y="745" font-size="12" fill="#bf616a">No SharedArrayBuffer / Atomics / AudioWorklet</text>
+</svg>

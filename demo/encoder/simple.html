@@ -226,6 +226,9 @@ LICENSE file in the root directory of this source tree.
             muxerSenderConfig.moqTracks["data"].authInfo = document.getElementById('authInfo').value;
         }
         muxerSenderConfig.moqTracks["data"].newSubgroupEvery = parseInt(document.getElementById('moqNewSubgroup').value);
+        // MoQ-QUIC mapping is chosen at track creation time (read by the sender from
+        // the track config), so it must be set here rather than per-chunk.
+        muxerSenderConfig.moqTracks["data"].moqMapping = document.getElementById('moqQuicMapping').value;
 
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
@@ -233,8 +236,7 @@ LICENSE file in the root directory of this source tree.
 
     function send() {
         const data = new TextEncoder("utf-8").encode(document.getElementById('objPayload').value);
-        const moqMapping = document.getElementById('moqQuicMapping').value;
-        muxerSenderWorker.postMessage({ type: "chunk", mediaType: "data", chunk: data, seqId: msgSeqId++, moqMapping: moqMapping});
+        muxerSenderWorker.postMessage({ type: "chunk", mediaType: "data", chunk: data, seqId: msgSeqId++ });
     }
 
     // Add listeners from HTML

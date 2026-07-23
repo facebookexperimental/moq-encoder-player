@@ -8,6 +8,7 @@ LICENSE file in the root directory of this source tree.
 import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../../moq/moqt.js';
 import { MIPackager, MIPayloadTypeEnum } from '../../packager/mi_packager.js';
+import type { WireDropConfig, WireHoldConfig } from '../../moq/network_simulator.js';
 
 const WORKER_PREFIX = '[MOQ-SENDER]';
 
@@ -24,6 +25,10 @@ export interface TrackData {
   isHipri?: boolean;
   moqMapping?: string;
   newSubgroupEvery?: number;
+  // Optional simulated packet loss on the send path (testing only).
+  dropConfig?: WireDropConfig;
+  // Optional simulated slowness (hold) on the send path (testing only).
+  holdConfig?: WireHoldConfig;
 }
 
 // Configuration passed in the `init` message (formerly `muxerSenderConfig`).
@@ -82,6 +87,12 @@ export class MoqSender {
           break;
         case 'chunk':
           this.handleChunk(e.data);
+          break;
+        case 'forceDropBurst':
+          this.handleForceDropBurst(e.data);
+          break;
+        case 'forceHoldBurst':
+          this.handleForceHoldBurst(e.data);
           break;
         case 'stop':
           this.handleStop();
@@ -183,8 +194,8 @@ export class MoqSender {
     console.log(`${WORKER_PREFIX} MOQ Initialized, waiting for subscriptions`);
   }
 
-  private async publishTrack(_mediaType: string, trackData: TrackData): Promise<Track> {
-    return this.moq!.addTrack(
+  private async publishTrack(mediaType: string, trackData: TrackData): Promise<Track> {
+    const track = await this.moq!.addTrack(
       trackData.namespace,
       trackData.name,
       trackData.maxInFlightRequests ?? Number.MAX_SAFE_INTEGER,
@@ -192,6 +203,25 @@ export class MoqSender {
       trackData.authInfo,
       trackData.moqMapping as MoqMapping,
     );
+    this.applyWireImpairments(mediaType, track, trackData);
+    return track;
+  }
+
+  // Attach the optional simulated-impairment policies (testing) to a freshly
+  // created track: simulated loss (drop) routed to the dropped-stats UI, and
+  // simulated slowness (hold).
+  private applyWireImpairments(mediaType: string, track: Track, trackData: TrackData): void {
+    track.setWireDropConfig(trackData.dropConfig ?? null);
+    track.setWireHoldConfig(trackData.holdConfig ?? null);
+    track.onWireDrop = (obj) => {
+      const info = obj.getInfo();
+      this.emitDropped(
+        info.objId,
+        undefined,
+        `simulated wire drop (${info.groupId}/${info.objId})`,
+        mediaType,
+      );
+    };
   }
 
   // Announce each unique namespace once with PUBLISH_NAMESPACE, then register a
@@ -210,6 +240,7 @@ export class MoqSender {
         authInfo: trackData.authInfo,
         onSubscribed: (track) => {
           this.tracks[mediaType] = track;
+          this.applyWireImpairments(mediaType, track, trackData);
           console.log(`${WORKER_PREFIX} Serving ${mediaType} track (subscriber joined)`);
         },
         onUnsubscribed: () => {
@@ -392,6 +423,30 @@ export class MoqSender {
       throw new Error(`Not supported media type ${chunkData.mediaType}`);
     }
     return packet;
+  }
+
+  // -------------------------------------------------------------------------
+  // forceDropBurst (manual simulated loss)
+  // -------------------------------------------------------------------------
+
+  /** Force-drop the next burst of wire units for one media type, on demand. */
+  private handleForceDropBurst(data: any): void {
+    const track = this.tracks[data?.mediaType];
+    if (track === undefined) {
+      // Not publishing / no subscriber yet: nothing to drop.
+      return;
+    }
+    track.forceDropBurst(data?.burst ?? 1);
+  }
+
+  /** Force-hold (stall then clump) the next burst for one media type, on demand. */
+  private handleForceHoldBurst(data: any): void {
+    const track = this.tracks[data?.mediaType];
+    if (track === undefined) {
+      // Not publishing / no subscriber yet: nothing to hold.
+      return;
+    }
+    track.forceHoldBurst(data?.burst ?? 1);
   }
 
   // -------------------------------------------------------------------------

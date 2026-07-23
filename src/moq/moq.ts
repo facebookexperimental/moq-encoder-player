@@ -81,6 +81,14 @@ import {
   type ParsedSubscribe,
   MOQ_ALPN_DRAFT18_VERSION,
 } from './moqt.js';
+import {
+  WireDropSimulator,
+  wireDropConfigIsActive,
+  type WireDropConfig,
+  WireHoldSimulator,
+  wireHoldConfigIsActive,
+  type WireHoldConfig,
+} from './network_simulator.js';
 
 const LOG_PREFIX = '[MOQ]';
 
@@ -151,6 +159,11 @@ export interface MoqInitOptions {
  * `groupId`/`objectId` are the MoQ ordering keys. For subgroup streams `objectId`
  * is the receiver-counted arrival index within the group (the wire object-id
  * delta is always 0 in this mapping); for datagrams it is the wire object id.
+ *
+ * `isLastInGroup` is true when the object carries the end-of-group signal inline,
+ * i.e. datagrams (one object per group, end-of-group bit on the object). Subgroup
+ * streams signal end-of-group retroactively instead (see `EndOfGroupCallback`),
+ * so this is false for them.
  */
 export type ObjectCallback = (
   reader: ReadableStream<Uint8Array>,
@@ -158,7 +171,18 @@ export type ObjectCallback = (
   length?: number,
   groupId?: number,
   objectId?: number,
+  isLastInGroup?: boolean,
 ) => Promise<boolean> | boolean;
+
+/**
+ * Called when the transport learns retroactively that a group is complete,
+ * carrying the group id and the object id of its final object. Used for subgroup
+ * streams, where end-of-group is a MOQ_OBJ_STATUS_END_OF_GROUP status object that
+ * trails the group's last payload object -- so it cannot ride on that object and
+ * is delivered out of band. Datagrams carry end-of-group inline on the object
+ * instead (see `ObjectCallback`'s `isLastInGroup`).
+ */
+export type EndOfGroupCallback = (groupId: number, lastObjId: number) => void;
 
 export interface SubscriptionInfo {
   namespace: string[];
@@ -308,6 +332,30 @@ export class Track {
   // group's objects (deltas) are dropped too until the next group is accepted.
   private skipDeltasUntilNewGroup = false;
 
+  // Optional simulated packet loss on the send path (A/V-sync / loss-recovery
+  // testing). null = disabled. The drop unit follows the mapping: one datagram
+  // per object, or one subgroup stream per group. See writeObject/shouldDropOnWire.
+  private dropSim: WireDropSimulator | null = null;
+  // Group currently being dropped as a whole (subgroup mapping): once the first
+  // object of a group is chosen for drop, every object of that group is dropped
+  // so the entire QUIC stream is skipped. undefined = current group is kept.
+  private droppedGroupId: number | undefined = undefined;
+  // Optional simulated slowness on the send path (A/V-sync testing). null =
+  // disabled. Holds bursts of objects and releases them together, so the receiver
+  // sees a stall followed by a clump. Operates per object regardless of mapping.
+  private holdSim: WireHoldSimulator<ObjData> | null = null;
+  // Number of upcoming wire units to force-drop on demand (manual burst),
+  // independent of the periodic drop simulator. Consumed one unit at a time.
+  private forcedDropRemaining = 0;
+  // Manual "hold" burst: while > 0, upcoming objects are buffered instead of
+  // written (a stall), then released together once the count reaches 0 (a clump).
+  // Independent of the periodic hold simulator. See forceHoldBurst / drain.
+  private forcedHoldRemaining = 0;
+  private forcedHoldBuffer: ObjData[] = [];
+  // Fired for every object skipped by the drop simulator (not for real drops
+  // like queue/stream-cap). Lets the sender surface simulated loss in the UI.
+  onWireDrop?: (obj: ObjData) => void;
+
   constructor(
     moq: Moq,
     namespace: string[],
@@ -427,6 +475,53 @@ export class Track {
     return obj;
   }
 
+  /**
+   * Enable or disable simulated packet loss on this track's send path. Pass
+   * `null` (or an inactive config) to disable. Used only for testing; genuine
+   * publication never sets this.
+   */
+  setWireDropConfig(cfg: WireDropConfig | null): void {
+    this.dropSim = wireDropConfigIsActive(cfg) ? new WireDropSimulator(cfg!) : null;
+    this.droppedGroupId = undefined;
+  }
+
+  /**
+   * Enable or disable simulated slowness (a stall-then-clump hold) on this
+   * track's send path. Pass `null` (or an inactive config) to disable, flushing
+   * anything still held. Used only for testing; genuine publication never sets this.
+   */
+  setWireHoldConfig(cfg: WireHoldConfig | null): void {
+    if (this.holdSim !== null) {
+      // Release whatever is still buffered (in order, at the front) so no object
+      // is stranded, then let the drain send it.
+      const held = this.holdSim.flush();
+      if (held.length > 0) {
+        this.queue.unshift(...held);
+        void this.drain();
+      }
+    }
+    this.holdSim = wireHoldConfigIsActive(cfg) ? new WireHoldSimulator<ObjData>(cfg!) : null;
+  }
+
+  /**
+   * Force-drop the next `count` wire units on demand (a manual loss burst), on
+   * top of (and independent of) any periodic drop policy. The unit follows the
+   * mapping: `count` datagrams, or `count` subgroup streams (groups). Testing only.
+   */
+  forceDropBurst(count: number): void {
+    this.forcedDropRemaining += Math.max(1, Math.floor(count) || 1);
+  }
+
+  /**
+   * Force-hold the next `count` objects on demand (a manual slowness burst): they
+   * are buffered as they arrive (a stall) and released together once the burst is
+   * full (a clump), on top of (and independent of) any periodic hold policy.
+   * Testing only.
+   */
+  forceHoldBurst(count: number): void {
+    this.forcedHoldRemaining += Math.max(1, Math.floor(count) || 1);
+  }
+
   /** Snapshot of the track's identity and live counters. */
   getInfo(): TrackInfo {
     return {
@@ -449,10 +544,13 @@ export class Track {
     }
     this.closed = true;
 
-    // Drop anything still queued.
-    for (const obj of this.queue) {
+    // Drop anything still queued, including a manual hold burst that never
+    // reached its release count.
+    for (const obj of [...this.forcedHoldBuffer, ...this.queue]) {
       obj.status = 'aborted';
     }
+    this.forcedHoldBuffer = [];
+    this.forcedHoldRemaining = 0;
     this.queue = [];
 
     // Close every open subgroup stream with an end-of-group object.
@@ -617,19 +715,50 @@ export class Track {
           this.queue.shift();
           continue;
         }
-        try {
-          await this.writeObject(obj);
-          obj.status = 'sent';
-        } catch (err) {
-          obj.status = 'dropped';
-          console.error(`${LOG_PREFIX} Failed to write object ${obj.groupId}/${obj.objId}: ${err}`);
-        }
-        this.queue.shift();
-        if (obj.status === 'sent') {
-          this.moq._markObjectSent();
-          if (obj.callback) {
-            obj.callback(obj);
+        // Manual forced hold: buffer arriving objects (a stall) and release the
+        // whole burst together once it is full (a clump). Objects normally arrive
+        // one at a time between drains, so this stalls the wire until the count is
+        // reached, then re-queues the burst at the front to be written in one go.
+        if (this.forcedHoldRemaining > 0) {
+          this.queue.shift();
+          this.forcedHoldBuffer.push(obj);
+          this.forcedHoldRemaining--;
+          if (this.forcedHoldRemaining === 0) {
+            this.queue.unshift(...this.forcedHoldBuffer);
+            this.forcedHoldBuffer = [];
           }
+          continue;
+        }
+        // Simulated slowness: the hold sim buffers bursts of objects and returns
+        // them together on flush; between bursts (and when disabled) the object
+        // passes straight through. The object leaves the queue as soon as the sim
+        // takes ownership; queue backlog therefore only reflects not-yet-offered
+        // objects, keeping the no-hold path (below) unchanged.
+        const toWrite = this.holdSim !== null ? this.holdSim.offer(obj) : [obj];
+        if (this.holdSim !== null) {
+          this.queue.shift();
+        }
+        for (const o of toWrite) {
+          try {
+            const written = await this.writeObject(o);
+            // A simulated wire drop returns false: the id was consumed (so the
+            // receiver sees a gap) but nothing hit the wire, so it is not 'sent'.
+            o.status = written ? 'sent' : 'dropped';
+          } catch (err) {
+            o.status = 'dropped';
+            console.error(`${LOG_PREFIX} Failed to write object ${o.groupId}/${o.objId}: ${err}`);
+          }
+          if (o.status === 'sent') {
+            this.moq._markObjectSent();
+            if (o.callback) {
+              o.callback(o);
+            }
+          }
+        }
+        // No hold sim: the object stayed in the queue during its write (so the
+        // backlog counters and the full-queue policy see it); shift it now.
+        if (this.holdSim === null) {
+          this.queue.shift();
         }
       }
     } finally {
@@ -637,7 +766,48 @@ export class Track {
     }
   }
 
-  private async writeObject(obj: ObjData): Promise<void> {
+  // Decide whether this object should be dropped by the simulated-loss policy.
+  // Datagram mapping: the unit is one datagram (one object). Subgroup mapping:
+  // the unit is one QUIC stream (one group), so the decision is taken once on the
+  // group's first object and applied to every object in that group.
+  private shouldDropOnWire(obj: ObjData): boolean {
+    if (this.moqMapping === MoqMapping.ObjectPerDatagram) {
+      // Datagram: the unit is one object (one datagram).
+      return this.decideDropUnit();
+    }
+    // Subgroup mapping: the unit is one QUIC stream (one group); decide once on
+    // the group's first object and apply it to every object in that group.
+    if (obj.newGroup) {
+      this.droppedGroupId = this.decideDropUnit() ? obj.groupId : undefined;
+    }
+    return this.droppedGroupId === obj.groupId;
+  }
+
+  // Decide whether the current wire unit should be dropped. A forced manual burst
+  // takes precedence over (and does not advance) the periodic drop simulator.
+  private decideDropUnit(): boolean {
+    if (this.forcedDropRemaining > 0) {
+      this.forcedDropRemaining--;
+      return true;
+    }
+    if (this.dropSim !== null) {
+      return this.dropSim.shouldDrop();
+    }
+    return false;
+  }
+
+  // Writes one object to the wire. Returns true when the bytes were written,
+  // false when the object was intentionally skipped by the drop simulator (its
+  // id was still consumed, so the receiver sees a real gap).
+  private async writeObject(obj: ObjData): Promise<boolean> {
+    if (this.shouldDropOnWire(obj)) {
+      // Simulated wire loss: skip the datagram / subgroup stream entirely.
+      if (this.onWireDrop !== undefined) {
+        this.onWireDrop(obj);
+      }
+      return false;
+    }
+
     if (this.moqMapping === MoqMapping.ObjectPerDatagram) {
       const writer = this.moq._wt().datagrams.writable.getWriter();
       try {
@@ -654,7 +824,7 @@ export class Track {
       } finally {
         writer.releaseLock();
       }
-      return;
+      return true;
     }
 
     if (this.moqMapping !== MoqMapping.SubgroupPerGroup) {
@@ -700,6 +870,7 @@ export class Track {
       throw err;
     }
     this.groupLastObj.set(obj.groupId, obj.objId);
+    return true;
   }
 
   // Close a rolled-off subgroup stream in the background: send end-of-group +
@@ -730,6 +901,7 @@ export class Subscription {
 
   private moq: Moq;
   private onObject: ObjectCallback;
+  private onEndOfGroup: EndOfGroupCallback | undefined;
   // draft-18: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
   // any REQUEST_UPDATE flow back on it. Objects still arrive on separate uni
   // subgroup streams / datagrams, routed by track alias.
@@ -745,6 +917,7 @@ export class Subscription {
     authInfo: string | undefined,
     onObject: ObjectCallback,
     subscribeStream: WebTransportBidirectionalStream,
+    onEndOfGroup?: EndOfGroupCallback,
   ) {
     this.moq = moq;
     this.namespace = namespace;
@@ -754,6 +927,7 @@ export class Subscription {
     this.authInfo = authInfo;
     this.onObject = onObject;
     this.subscribeStream = subscribeStream;
+    this.onEndOfGroup = onEndOfGroup;
   }
 
   /** Snapshot of the subscription's identity. */
@@ -818,8 +992,19 @@ export class Subscription {
     length?: number,
     groupId?: number,
     objectId?: number,
+    isLastInGroup?: boolean,
   ): Promise<boolean> {
-    return this.onObject(reader, extensionHeaders, length, groupId, objectId);
+    // Datagrams pass isLastInGroup=true inline (end-of-group bit on the object),
+    // so it rides with the object to the callback. Subgroup streams leave it
+    // false and signal end-of-group retroactively via _signalEndOfGroup.
+    return this.onObject(reader, extensionHeaders, length, groupId, objectId, isLastInGroup);
+  }
+
+  // Signal that a group finished at `lastObjId` (MoQ end-of-group), retroactively.
+  // Called by the subgroup receive loop on the trailing end-of-group marker;
+  // no-op when the subscriber did not register a callback.
+  _signalEndOfGroup(groupId: number, lastObjId: number): void {
+    this.onEndOfGroup?.(groupId, lastObjId);
   }
 }
 
@@ -1059,13 +1244,15 @@ export class Moq {
    * SUBSCRIBE on it, and await SUBSCRIBE_OK read back on the same stream. Objects
    * arrive on separate unidirectional subgroup streams / datagrams, routed to
    * `onObject` by the negotiated track alias. A rejection is retried after
-   * `SLEEP_SUBSCRIBE_ERROR_MS` with a fresh request stream.
+   * `SLEEP_SUBSCRIBE_ERROR_MS` with a fresh request stream. `onEndOfGroup`, if
+   * given, fires when each group completes (MoQ end-of-group).
    */
   async subscribe(
     namespace: string[],
     name: string,
     authInfo: string | undefined,
     onObject: ObjectCallback,
+    onEndOfGroup?: EndOfGroupCallback,
   ): Promise<Subscription> {
     if (this._state !== MoqState.Running) {
       if (this._state === MoqState.Idle) {
@@ -1097,6 +1284,7 @@ export class Moq {
           authInfo,
           onObject,
           subStream,
+          onEndOfGroup,
         );
         this.subscriptions.push(sub);
         this.subscriptionsByAlias.set(trackAlias, sub);
@@ -1474,6 +1662,7 @@ export class Moq {
     }
     let isEOF = false;
     let numObjRead = 0;
+    let endOfGroupSignaled = false;
     // Reconstruct the per-object id from arrival order: the subgroup wire format
     // carries an object-id delta of 0 for every object (see writeObject), so the
     // parsed objSeq is unusable. QUIC delivers a subgroup stream in order and the
@@ -1484,7 +1673,15 @@ export class Moq {
       try {
         const objHeader = await moqParseObjectFromSubgroupHeader(readerStream, header.type);
         isEOF = isEndOfGroupStatus(objHeader.status);
-        if (!isEOF && objHeader.payloadLength > 0) {
+        if (isEOF) {
+          // Explicit MoQ end-of-group marker (zero-payload status object). It
+          // trails the group's last payload object, so objIndex-1 is that
+          // object's id.
+          if (objIndex > 0) {
+            sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
+            endOfGroupSignaled = true;
+          }
+        } else if (objHeader.payloadLength > 0) {
           isEOF = await sub._deliver(
             readerStream,
             objHeader.extensionHeaders,
@@ -1508,6 +1705,16 @@ export class Moq {
           throw err;
         }
       }
+    }
+    // A subgroup stream carries exactly one group. If it ended without an
+    // explicit end-of-group status object -- the common case for one object per
+    // group, where the stream just FINs (often the relay closes it as soon as the
+    // single object is delivered, before the publisher's trailing marker rolls
+    // out on the next group) -- the finished stream still means the group is
+    // complete at the last object read. Signal it so the receiver does not treat
+    // the next group's first object as a discontinuity.
+    if (!endOfGroupSignaled && objIndex > 0) {
+      sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
     }
   }
 
@@ -1537,14 +1744,18 @@ export class Moq {
         continue;
       }
       // Status datagrams carry no payload (length 0 still decodes headers).
-      const length = moqDecodeDatagramType(header.type).isStatus ? 0 : undefined;
-      // Datagram headers carry a real object id (unlike subgroup streams).
+      const datagramType = moqDecodeDatagramType(header.type);
+      const length = datagramType.isStatus ? 0 : undefined;
+      // Datagram headers carry a real object id (unlike subgroup streams) and the
+      // end-of-group bit inline, so it rides with the object to the callback as
+      // isLastInGroup (no separate retroactive signal needed for datagrams).
       await sub._deliver(
         readable,
         header.extensionHeaders ?? [],
         length,
         header.groupSeq,
         header.objSeq,
+        datagramType.isEndOfGroup,
       );
     }
   }

@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Moq, type ObjectCallback } from '../../moq/moq.js';
+import { Moq, type ObjectCallback, type EndOfGroupCallback } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, type KvPair } from '../../moq/moqt.js';
 import { MIPackager, MIPayloadTypeEnum } from '../../packager/mi_packager.js';
 import { sendMessageToMain, convertTimestamp } from '../../utils/utils.js';
@@ -155,6 +155,7 @@ export class MoqReceiver {
         trackData.name,
         trackData.authInfo,
         this.objectHandler(),
+        this.endOfGroupHandler(mediaType),
       );
       sendMessageToMain(
         WORKER_PREFIX,
@@ -172,8 +173,19 @@ export class MoqReceiver {
 
   // Build the per-object callback handed to Moq.subscribe.
   private objectHandler(): ObjectCallback {
-    return (reader, extensionHeaders, length, groupId, objectId) =>
-      this.handleObject(reader, extensionHeaders, length, groupId, objectId);
+    return (reader, extensionHeaders, length, groupId, objectId, isLastInGroup) =>
+      this.handleObject(reader, extensionHeaders, length, groupId, objectId, isLastInGroup);
+  }
+
+  // Build the end-of-group callback handed to Moq.subscribe. Forwards the MoQ
+  // end-of-group signal (group complete, and its last object id) to the main
+  // thread, tagged with the track's media type so the player can attribute it to
+  // the right jitter buffer. This is out of band from the media chunks because
+  // for subgroup streams the signal is retroactive (it trails the last object).
+  private endOfGroupHandler(mediaType: string): EndOfGroupCallback {
+    return (groupId, lastObjId) => {
+      self.postMessage({ type: 'endofgroup', mediaType, groupId, lastObjId });
+    };
   }
 
   // Demux one received object into an encoded media chunk and post it upstream.
@@ -183,6 +195,7 @@ export class MoqReceiver {
     length?: number,
     groupId?: number,
     objectId?: number,
+    isLastInGroup?: boolean,
   ): Promise<boolean> {
     this.reportStats();
 
@@ -238,9 +251,11 @@ export class MoqReceiver {
       packagerType: chunkData.type,
       captureClkms: chunkData.wallclock,
       // MoQ transport-native ordering keys. The player dejitters/orders on
-      // (groupId, objectId).
+      // (groupId, objectId). isLastInGroup carries the end-of-group signal inline
+      // for datagrams; subgroup streams signal it out of band (endofgroup msg).
       groupId,
       objectId,
+      isLastInGroup,
       chunk,
       metadata: chunkData.metadata,
       sampleFreq: chunkData.sampleFreq,

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 280" font-family="'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c566a"/>
+    </marker>
+  </defs>
+  <style>
+    text { fill: #2e3440; }
+    .box { fill: #ffffff; stroke: #4c566a; stroke-width: 2; }
+    .relay { fill: #f4f6f8; stroke: #4c566a; stroke-width: 2; }
+    .io { fill: #eceff4; stroke: #4c566a; stroke-width: 2; }
+    .title { font-size: 18px; font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; text-anchor: middle; fill: #4c566a; }
+    .edge { font-size: 12px; font-weight: 600; fill: #bf616a; text-anchor: middle; }
+    .flow { stroke: #4c566a; stroke-width: 2; fill: none; }
+  </style>
+
+  <!-- sources -->
+  <rect class="io" x="30" y="55" width="90" height="45" rx="8"/>
+  <text class="title" x="75" y="83" font-size="15">Camera</text>
+  <rect class="io" x="30" y="150" width="90" height="45" rx="8"/>
+  <text class="title" x="75" y="178" font-size="15">Mic</text>
+  <path class="flow" d="M120,77 L200,105" marker-end="url(#arrow)"/>
+  <path class="flow" d="M120,172 L200,145" marker-end="url(#arrow)"/>
+
+  <!-- encoder -->
+  <rect class="box" x="200" y="80" width="150" height="90" rx="10"/>
+  <text class="title" x="275" y="120">Encoder</text>
+  <text class="sub" x="275" y="142">(browser)</text>
+
+  <!-- encoder -> relay -->
+  <path class="flow" d="M350,125 L515,125" marker-end="url(#arrow)"/>
+  <text class="edge" x="432" y="105">WebTransport (QUIC)</text>
+  <text class="sub" x="432" y="148">subgroup stream / datagram</text>
+
+  <!-- relay -->
+  <rect class="relay" x="520" y="80" width="170" height="90" rx="10"/>
+  <text class="title" x="605" y="120">moxygen</text>
+  <text class="sub" x="605" y="142">(relay)</text>
+
+  <!-- relay -> player -->
+  <path class="flow" d="M690,125 L855,125" marker-end="url(#arrow)"/>
+  <text class="edge" x="772" y="105">WebTransport (QUIC)</text>
+
+  <!-- player -->
+  <rect class="box" x="860" y="80" width="170" height="90" rx="10"/>
+  <text class="title" x="945" y="118">Decoder /</text>
+  <text class="title" x="945" y="140">Player</text>
+
+  <!-- sinks -->
+  <path class="flow" d="M1030,105 L1080,80" marker-end="url(#arrow)"/>
+  <path class="flow" d="M1030,145 L1080,172" marker-end="url(#arrow)"/>
+  <rect class="io" x="1080" y="55" width="100" height="45" rx="8"/>
+  <text class="title" x="1130" y="83" font-size="15">Display</text>
+  <rect class="io" x="1080" y="150" width="100" height="45" rx="8"/>
+  <text class="title" x="1130" y="178" font-size="15">Speaker</text>
+
+  <text class="sub" x="610" y="250" font-size="13">Both endpoints run in the browser over WebTransport (QUIC); moxygen fans the track out to subscribers.</text>
+</svg>
