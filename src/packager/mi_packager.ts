@@ -147,9 +147,11 @@ export class MIPackager {
       }
       if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA) {
         let bytesRead = 0;
+        // seqId is present on the wire (1st varint) but unused on playback: the
+        // player dejitters/orders on (groupId, objId). Read it only to advance
+        // the offset for the fields that follow; don't store it.
         let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.seqId = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
@@ -185,9 +187,11 @@ export class MIPackager {
         extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA
       ) {
         let bytesRead = 0;
+        // seqId is present on the wire (1st varint) but unused on playback: the
+        // player dejitters/orders on (groupId, objId). Read it only to advance
+        // the offset for the fields that follow; don't store it.
         let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.seqId = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
@@ -216,10 +220,9 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.wallclock = r.num;
       }
-      if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA) {
-        const r = varIntToNumbeFromBuffer(extHeader.val, 0);
-        this.seqId = r.num;
-      }
+      // MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA carries only seqId, which is
+      // unused on playback (the player orders on (groupId, objId)); nothing to
+      // parse. Its presence is still validated below for RAWData.
     }
 
     if (this.type === MIPayloadTypeEnum.RAWData) {
@@ -252,7 +255,6 @@ export class MIPackager {
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
       return {
         type: this.type,
-        seqId: this.seqId,
         pts: this.pts,
         timebase: this.timebase,
         duration: this.duration,
@@ -266,7 +268,6 @@ export class MIPackager {
     ) {
       return {
         type: this.type,
-        seqId: this.seqId,
         pts: this.pts,
         timebase: this.timebase,
         sampleFreq: this.sampleFreq,
@@ -278,7 +279,6 @@ export class MIPackager {
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
       return {
         type: this.type,
-        seqId: this.seqId,
         data: this.data,
       };
     } else {
@@ -290,7 +290,7 @@ export class MIPackager {
     const metadataSize =
       this.metadata === undefined || this.metadata == null ? 0 : this.metadata.byteLength;
     const dataSize = this.data === undefined || this.data == null ? 0 : this.data.byteLength;
-    return `type: ${this.type} - seqId: ${this.seqId} - pts: ${this.pts} - duration: ${this.duration} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
+    return `type: ${this.type} - pts: ${this.pts} - duration: ${this.duration} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
   }
 
   PayloadToBytes() {
