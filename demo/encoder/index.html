@@ -115,6 +115,8 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
                 <div class="clear"></div>
+                <label>Add latency information in video: <input type="checkbox" id="addLatencyInfoInVideo"></label>
+                <div class="clear"></div>
                 <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
                 <div class="clear"></div>
                 <div id="advancedSettings" hidden>
@@ -1280,7 +1282,7 @@ LICENSE file in the root directory of this source tree.
     // interactive. Controls with conditional enablement (auth token, drop
     // interval/burst) are restored by the caller after unlocking.
     function setAllOptionsDisabled(disabled) {
-        const keepEnabled = new Set(['btnStart', 'btnStop', 'btnToggleAdvanced', 'btnToggleEncodingSettings']);
+        const keepEnabled = new Set(['btnStart', 'btnStop', 'btnToggleAdvanced', 'btnToggleEncodingSettings', 'addLatencyInfoInVideo']);
         const regions = [
             document.querySelector('.boxed .styleform form'),
             document.getElementById('encodingSettings'),
@@ -1387,7 +1389,7 @@ LICENSE file in the root directory of this source tree.
             }
 
             // Encode video frame
-            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame }, [ vFrame ]);
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms }, [ vFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the shared capture clock on the first frame of either stream.
@@ -1543,6 +1545,7 @@ LICENSE file in the root directory of this source tree.
         videoEncoderConfig.encoderConfig.codec = GetVideoCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
         videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
         videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
+        videoEncoderConfig.addLatencyInfoInVideo = document.getElementById('addLatencyInfoInVideo').checked;
 
         // Load audio encoding settings
         const audioOptionsSelectedElementData = document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data;
@@ -1604,7 +1607,7 @@ LICENSE file in the root directory of this source tree.
         const aFrameStream = aProcessor.readable;
 
         // Initialize encoders
-        vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery });
+        vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery, addLatencyInfoInVideo: videoEncoderConfig.addLatencyInfoInVideo });
         aEncoderWorker.postMessage({ type: "aencoderini", encoderConfig: audioEncoderConfig.encoderConfig, encoderMaxQueueSize: audioEncoderConfig.encoderMaxQueueSize });
 
         // Transport
@@ -1675,4 +1678,12 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnForceDropAudio').addEventListener("click", () => { forceDropBurst("audio"); });
     document.getElementById('btnForceHoldVideo').addEventListener("click", () => { forceHoldBurst("video"); });
     document.getElementById('btnForceHoldAudio').addEventListener("click", () => { forceHoldBurst("audio"); });
+
+    // The latency-overlay checkbox stays enabled during live; toggling it mid-session
+    // updates the encoder's injection dynamically (start() also reads it at launch).
+    document.getElementById('addLatencyInfoInVideo').addEventListener("change", (e) => {
+        if (vEncoderWorker != null) {
+            vEncoderWorker.postMessage({ type: "setlatencyoverlay", addLatencyInfoInVideo: e.target.checked });
+        }
+    });
 </script>
