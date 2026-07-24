@@ -5,6 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+import { AvgLastNItems } from './avg_last_n_items.js';
+
 const DEFAULT_BUFFER_SIZE_MS = 200;
 
 // Ordering key: MoQ transport-native (groupId, objId). groupId increments per
@@ -25,28 +27,46 @@ function keyCmp(aGroup: number, aObj: number, bGroup: number, bObj: number): num
 // releases across the gap (flagged as a discontinuity), and resumes.
 export class JitterBuffer {
   bufferSizeMs: number;
+  timebase: number;
   elementsList: any[];
   droppedCallback: ((info: any) => void) | undefined;
-  totalLengthMs: number;
   numTotalGaps: number;
   numTotalLostStreams: number;
+  // Rolling average of recent single-object durations (timestamp deltas in
+  // timebase ticks), used to estimate one object's duration when fewer than two
+  // are buffered. Fed from released (in-order) objects, not on arrival, since
+  // arrivals can be out of order. lastReleasedTs is the last released timestamp.
+  avgItemDur: AvgLastNItems;
+  lastReleasedTs: number | undefined;
   // Playback cursor: the last released object, and whether it was the last of its
   // group (which decides what the next contiguous object must be).
   lastCorrectGroupId: number | undefined;
   lastCorrectObjId: number | undefined;
   lastWasLastInGroup: boolean;
 
-  constructor(maxSizeMs?: number, droppedCallback?: (info: any) => void) {
+  // `timebase` is the per-track MoQ-MI timebase (ticks per second) that this
+  // track's timestamps are expressed in. It is mandatory -- there is no safe
+  // default because audio and video can use different timebases.
+  constructor(
+    maxSizeMs: number | undefined,
+    droppedCallback: ((info: any) => void) | undefined,
+    timebase: number,
+  ) {
+    if (!(timebase > 0)) {
+      throw new Error('JitterBuffer requires a per-track timebase (ticks/sec) from the MoQ track');
+    }
     this.bufferSizeMs = DEFAULT_BUFFER_SIZE_MS;
     if (maxSizeMs !== undefined && maxSizeMs > 0) {
       this.bufferSizeMs = maxSizeMs;
     }
+    this.timebase = timebase;
     this.elementsList = [];
 
     this.droppedCallback = droppedCallback;
-    this.totalLengthMs = 0;
     this.numTotalGaps = 0;
     this.numTotalLostStreams = 0;
+    this.avgItemDur = new AvgLastNItems();
+    this.lastReleasedTs = undefined;
     this.lastCorrectGroupId = undefined;
     this.lastCorrectObjId = undefined;
     this.lastWasLastInGroup = false;
@@ -100,7 +120,6 @@ export class JitterBuffer {
     if (!inserted) {
       this.elementsList.push({ chunk, groupId, objId, extraData, isLastInGroup });
     }
-    this.totalLengthMs += chunk.duration / 1000;
 
     return this.drain();
   }
@@ -136,7 +155,7 @@ export class JitterBuffer {
       const head = this.elementsList[0];
       if (this.isContiguous(head)) {
         this.releaseHead(false, released);
-      } else if (this.totalLengthMs >= this.bufferSizeMs) {
+      } else if (this.bufferedSpanMs() >= this.bufferSizeMs) {
         this.numTotalGaps++;
         this.numTotalLostStreams += this.estimateLoss(head);
         this.releaseHead(true, released);
@@ -161,6 +180,27 @@ export class JitterBuffer {
     return head.groupId === this.lastCorrectGroupId && head.objId === this.lastCorrectObjId + 1;
   }
 
+  // Buffered media span in ms, derived from the held objects' timestamps instead
+  // of a per-chunk duration. Timestamps are in `timebase` ticks per second, so
+  // tsMs = ts * 1000 / timebase. elementsList is ordered by (groupId, objId),
+  // which for this pipeline (no B-frames, PTS === DTS) is also timestamp order,
+  // so the span is last - first.
+  //  - empty  -> 0
+  //  - 1 held -> one average item duration (a lone object still counts as ~one frame)
+  //  - >=2    -> the span
+  private bufferedSpanMs(): number {
+    const n = this.elementsList.length;
+    if (n === 0) {
+      return 0;
+    }
+    if (n < 2) {
+      return (this.avgItemDur.avg * 1000) / this.timebase;
+    }
+    const firstTs = this.elementsList[0].chunk.timestamp;
+    const lastTs = this.elementsList[n - 1].chunk.timestamp;
+    return ((lastTs - firstTs) * 1000) / this.timebase;
+  }
+
   // Rough loss estimate for the stats UI: object delta within a group, group
   // delta across groups.
   private estimateLoss(head: any): number {
@@ -179,10 +219,19 @@ export class JitterBuffer {
     // Backwards/duplicate keys are dropped on insert, so a released object is
     // never one; keep the field for consumers that check it.
     r.repeatedOrBackwards = false;
+    // Feed the rolling average from the released (in-order) sequence: the delta to
+    // the previously released object is a real single-object duration only when
+    // this object is contiguous (not bridging a gap), so skip disco releases.
+    if (!isDisco && this.lastReleasedTs !== undefined) {
+      const delta = r.chunk.timestamp - this.lastReleasedTs;
+      if (delta > 0) {
+        this.avgItemDur.Add(delta);
+      }
+    }
+    this.lastReleasedTs = r.chunk.timestamp;
     this.lastCorrectGroupId = r.groupId;
     this.lastCorrectObjId = r.objId;
     this.lastWasLastInGroup = r.isLastInGroup === true;
-    this.totalLengthMs -= r.chunk.duration / 1000;
     released.push(r);
   }
 
@@ -190,7 +239,7 @@ export class JitterBuffer {
     return {
       numTotalGaps: this.numTotalGaps,
       numTotalLostStreams: this.numTotalLostStreams,
-      totalLengthMs: this.totalLengthMs,
+      totalLengthMs: this.bufferedSpanMs(),
       size: this.elementsList.length,
       currentMaSizeMs: this.bufferSizeMs,
     };
@@ -198,7 +247,8 @@ export class JitterBuffer {
 
   Clear() {
     this.elementsList = [];
-    this.totalLengthMs = 0;
+    this.avgItemDur.Clear();
+    this.lastReleasedTs = undefined;
     this.numTotalGaps = 0;
     this.numTotalLostStreams = 0;
     this.lastCorrectGroupId = undefined;

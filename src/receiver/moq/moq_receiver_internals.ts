@@ -16,13 +16,13 @@ const WORKER_PREFIX = '[MOQ-DOWNLOADER]';
 // When true, unexpected errors are re-thrown (surfaced in the console).
 const DEV_MODE = true;
 
-// WebCodecs default timebase = 1us.
-const DEFAULT_TIMEBASE = 1000000;
-
 // A single track to subscribe to (from the `init` message config).
 export interface TrackData {
   namespace: string[];
   name: string;
+  // Per-track MoQ-MI timebase (ticks per second) the track's timestamps are in.
+  // Mandatory: audio and video may differ, so there is no safe default.
+  timebase: number;
   authInfo?: string;
   maxInFlightRequests?: number;
   isHipri?: boolean;
@@ -35,8 +35,6 @@ export interface ReceiverConfig {
   isSendingStats: boolean;
   moqTracks: Record<string, TrackData>;
   certificateHash: any;
-  systemVideoTimebase: number;
-  systemAudioTimebase: number;
   verbose: boolean;
 }
 
@@ -96,8 +94,6 @@ export class MoqReceiver {
       isSendingStats: cfg.isSendingStats ?? false,
       moqTracks: cfg.moqTracks ?? {},
       certificateHash: cfg.certificateHash ?? null,
-      systemVideoTimebase: cfg.systemVideoTimebase ?? DEFAULT_TIMEBASE,
-      systemAudioTimebase: cfg.systemAudioTimebase ?? DEFAULT_TIMEBASE,
       verbose: cfg.verbose ?? false,
     };
     if (config.urlHostPort === '') {
@@ -123,6 +119,9 @@ export class MoqReceiver {
         !('authInfo' in track)
       ) {
         return 'Track malformed, needs to contain namespace, name, and authInfo';
+      }
+      if (!('timebase' in track) || !(track.timebase > 0)) {
+        return 'Track malformed, needs a timebase (ticks/sec) > 0';
       }
     }
     return undefined;
@@ -220,12 +219,11 @@ export class MoqReceiver {
       chunkData.type === MIPayloadTypeEnum.AudioAACMP4LCWCP
     ) {
       appMediaType = 'audiochunk';
-      const timebase = this.config?.systemAudioTimebase ?? DEFAULT_TIMEBASE;
+      const timebase = this.config!.moqTracks['audio'].timebase;
       chunk = new EncodedAudioChunk({
         timestamp: convertTimestamp(chunkData.pts, chunkData.timebase, timebase),
         type: 'key',
         data: chunkData.data,
-        duration: convertTimestamp(chunkData.duration, chunkData.timebase, timebase),
       });
     } else if (chunkData.type === MIPayloadTypeEnum.VideoH264AVCCWCP) {
       appMediaType = 'videochunk';
@@ -233,12 +231,11 @@ export class MoqReceiver {
       // could infer IDR from the MOQT start-of-group, but this is less error
       // prone.
       const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH);
-      const timebase = this.config?.systemVideoTimebase ?? DEFAULT_TIMEBASE;
+      const timebase = this.config!.moqTracks['video'].timebase;
       chunk = new EncodedVideoChunk({
         timestamp: convertTimestamp(chunkData.pts, chunkData.timebase, timebase),
         type: isIdr ? 'key' : 'delta',
         data: chunkData.data,
-        duration: convertTimestamp(chunkData.duration, chunkData.timebase, timebase),
       });
     } else if (chunkData.type === MIPayloadTypeEnum.RAWData) {
       appMediaType = 'data';
@@ -249,7 +246,6 @@ export class MoqReceiver {
       type: appMediaType,
       clkms: Date.now(),
       packagerType: chunkData.type,
-      captureClkms: chunkData.wallclock,
       // MoQ transport-native ordering keys. The player dejitters/orders on
       // (groupId, objectId). isLastInGroup carries the end-of-group signal inline
       // for datagrams; subgroup streams signal it out of band (endofgroup msg).

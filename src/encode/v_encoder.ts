@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum } from '../utils/utils.js';
 import { ParseAVCDecoderConfigurationRecord } from '../utils/media/avc_decoder_configuration_record_parser.js';
+import { OverlayEncoder } from '../overlay_processor/overlay_encoder.js';
 
 const WORKER_PREFIX = '[VIDEO-ENC]';
 
@@ -21,6 +22,16 @@ let workerState = StateEnum.Created;
 let encoderMaxQueueSize = 5;
 let keyframeEvery = 60;
 let insertNextKeyframe = false;
+
+// Latency overlay: when enabled, stamp the capture wall-clock epoch (ms) into the
+// top rows of each frame before encoding so the player can later recover it and
+// measure glass-to-glass latency (see src/overlay_processor). The epoch is
+// generated in v_capture (as close to pixel capture as possible) and piped here;
+// it is NOT generated at encode time. Requires NV12 raw frames; skipped (warned
+// once) for other source formats.
+let addLatencyInfoInVideo = false;
+const overlayEncoder = new OverlayEncoder();
+let overlayWarned = false;
 
 // Make sure we send the metadata in all keyframes (send last if encoder not provides one)
 let last_keyframe_metadata: any = undefined;
@@ -103,6 +114,7 @@ self.addEventListener('message', async function (e) {
     if ('keyframeEvery' in e.data) {
       keyframeEvery = e.data.keyframeEvery;
     }
+    addLatencyInfoInVideo = e.data.addLatencyInfoInVideo === true;
     sendMessageToMain(
       WORKER_PREFIX,
       'info',
@@ -112,12 +124,21 @@ self.addEventListener('message', async function (e) {
     workerState = StateEnum.Running;
     return;
   }
+  if (type === 'setlatencyoverlay') {
+    // Live toggle of the latency overlay (checkbox flipped during a session).
+    addLatencyInfoInVideo = e.data.addLatencyInfoInVideo === true;
+    return;
+  }
   if (type !== 'vframe') {
     sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received');
     return;
   }
 
   const vFrame = e.data.vframe;
+  // Capture wall-clock epoch (ms), stamped in v_capture when the frame was read
+  // and piped through the main thread. Used for the latency overlay so the value
+  // reflects capture time rather than encode time.
+  const captureClkms = e.data.captureClkms;
 
   if (vEncoder.encodeQueueSize > encoderMaxQueueSize) {
     // Too many frames in the encoder queue, encoder is overwhelmed let's not add this frame
@@ -130,11 +151,30 @@ self.addEventListener('message', async function (e) {
     // Insert a keyframe after dropping
     insertNextKeyframe = true;
   } else {
+    let frameToEncode = vFrame;
+    if (addLatencyInfoInVideo) {
+      // Stamp epoch-ms into the frame pixels. The overlay requires NV12; if the
+      // source uses another format it throws before consuming the frame, so we
+      // fall back to the original frame (warning once) rather than fail encoding.
+      try {
+        frameToEncode = overlayEncoder.Encode(vFrame, captureClkms);
+      } catch (err: any) {
+        if (!overlayWarned) {
+          overlayWarned = true;
+          sendMessageToMain(
+            WORKER_PREFIX,
+            'warning',
+            `Latency overlay disabled for this stream: ${err?.message}`,
+          );
+        }
+        frameToEncode = vFrame;
+      }
+    }
     const frameNum = frameDeliveredCounter++;
     const insertKeyframe = frameNum % keyframeEvery === 0 || insertNextKeyframe === true;
-    vEncoder.encode(vFrame, { keyFrame: insertKeyframe });
+    vEncoder.encode(frameToEncode, { keyFrame: insertKeyframe });
     sendMessageToMain(WORKER_PREFIX, 'debug', `Encoded frame: ${frameNum}, key: ${insertKeyframe}`);
-    vFrame.close();
+    frameToEncode.close();
     insertNextKeyframe = false;
     frameDeliveredCounter++;
   }

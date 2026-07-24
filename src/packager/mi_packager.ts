@@ -147,9 +147,11 @@ export class MIPackager {
       }
       if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA) {
         let bytesRead = 0;
+        // seqId is present on the wire (1st varint) but unused on playback: the
+        // player dejitters/orders on (groupId, objId). Read it only to advance
+        // the offset for the fields that follow; don't store it.
         let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.seqId = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
@@ -166,16 +168,19 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.timebase = r.num;
 
+        // duration is present on the wire but unused on playback: the player
+        // derives buffer occupancy from PTS spans, not a per-chunk duration.
+        // Read it only to advance the offset for the field that follows.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.duration = r.num;
 
+        // wallclock is present on the wire (last varint) but unused on playback:
+        // the latency tracking that consumed it was removed. Read it only to
+        // advance the offset so appending a field later can't silently read from
+        // the wrong position; don't store it.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
-        // Advance the offset even on the last field so appending a field later
-        // can't silently read from the wrong position.
         // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
-        this.wallclock = r.num;
       }
       if (extHeader.name == MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA) {
         this.metadata = extHeader.val;
@@ -185,9 +190,11 @@ export class MIPackager {
         extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA
       ) {
         let bytesRead = 0;
+        // seqId is present on the wire (1st varint) but unused on playback: the
+        // player dejitters/orders on (groupId, objId). Read it only to advance
+        // the offset for the fields that follow; don't store it.
         let r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.seqId = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
@@ -205,21 +212,23 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.numChannels = r.num;
 
+        // duration is present on the wire but unused on playback: the player
+        // derives buffer occupancy from PTS spans, not a per-chunk duration.
+        // Read it only to advance the offset for the field that follows.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.duration = r.num;
 
+        // wallclock is present on the wire (last varint) but unused on playback:
+        // the latency tracking that consumed it was removed. Read it only to
+        // advance the offset so appending a field later can't silently read from
+        // the wrong position; don't store it.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
-        // Advance the offset even on the last field so appending a field later
-        // can't silently read from the wrong position.
         // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
-        this.wallclock = r.num;
       }
-      if (extHeader.name === MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA) {
-        const r = varIntToNumbeFromBuffer(extHeader.val, 0);
-        this.seqId = r.num;
-      }
+      // MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA carries only seqId, which is
+      // unused on playback (the player orders on (groupId, objId)); nothing to
+      // parse. Its presence is still validated below for RAWData.
     }
 
     if (this.type === MIPayloadTypeEnum.RAWData) {
@@ -252,11 +261,8 @@ export class MIPackager {
     if (this.type == MIPayloadTypeEnum.VideoH264AVCCWCP) {
       return {
         type: this.type,
-        seqId: this.seqId,
         pts: this.pts,
         timebase: this.timebase,
-        duration: this.duration,
-        wallclock: this.wallclock,
         metadata: this.metadata,
         data: this.data,
       };
@@ -266,19 +272,15 @@ export class MIPackager {
     ) {
       return {
         type: this.type,
-        seqId: this.seqId,
         pts: this.pts,
         timebase: this.timebase,
         sampleFreq: this.sampleFreq,
         numChannels: this.numChannels,
-        duration: this.duration,
-        wallclock: this.wallclock,
         data: this.data,
       };
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
       return {
         type: this.type,
-        seqId: this.seqId,
         data: this.data,
       };
     } else {
@@ -290,7 +292,7 @@ export class MIPackager {
     const metadataSize =
       this.metadata === undefined || this.metadata == null ? 0 : this.metadata.byteLength;
     const dataSize = this.data === undefined || this.data == null ? 0 : this.data.byteLength;
-    return `type: ${this.type} - seqId: ${this.seqId} - pts: ${this.pts} - duration: ${this.duration} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
+    return `type: ${this.type} - pts: ${this.pts} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
   }
 
   PayloadToBytes() {
