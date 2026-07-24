@@ -174,12 +174,13 @@ export class MIPackager {
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
 
+        // wallclock is present on the wire (last varint) but unused on playback:
+        // the latency tracking that consumed it was removed. Read it only to
+        // advance the offset so appending a field later can't silently read from
+        // the wrong position; don't store it.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
-        // Advance the offset even on the last field so appending a field later
-        // can't silently read from the wrong position.
         // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
-        this.wallclock = r.num;
       }
       if (extHeader.name == MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA) {
         this.metadata = extHeader.val;
@@ -217,12 +218,13 @@ export class MIPackager {
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
 
+        // wallclock is present on the wire (last varint) but unused on playback:
+        // the latency tracking that consumed it was removed. Read it only to
+        // advance the offset so appending a field later can't silently read from
+        // the wrong position; don't store it.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
-        // Advance the offset even on the last field so appending a field later
-        // can't silently read from the wrong position.
         // eslint-disable-next-line no-useless-assignment
         bytesRead += r.byteLength;
-        this.wallclock = r.num;
       }
       // MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA carries only seqId, which is
       // unused on playback (the player orders on (groupId, objId)); nothing to
@@ -261,7 +263,6 @@ export class MIPackager {
         type: this.type,
         pts: this.pts,
         timebase: this.timebase,
-        wallclock: this.wallclock,
         metadata: this.metadata,
         data: this.data,
       };
@@ -275,7 +276,6 @@ export class MIPackager {
         timebase: this.timebase,
         sampleFreq: this.sampleFreq,
         numChannels: this.numChannels,
-        wallclock: this.wallclock,
         data: this.data,
       };
     } else if (this.type == MIPayloadTypeEnum.RAWData) {
@@ -292,7 +292,7 @@ export class MIPackager {
     const metadataSize =
       this.metadata === undefined || this.metadata == null ? 0 : this.metadata.byteLength;
     const dataSize = this.data === undefined || this.data == null ? 0 : this.data.byteLength;
-    return `type: ${this.type} - pts: ${this.pts} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
+    return `type: ${this.type} - pts: ${this.pts} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
   }
 
   PayloadToBytes() {

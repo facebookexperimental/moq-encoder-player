@@ -451,14 +451,16 @@ ENJOY YOUR POCing!!! :-)
 You should see same UI that is shown in testing section above
 
 ## TODO
-- Adopt LOCvX instead of MOQ-MI
+- Adopt LOCv4 instead of MOQ-MI
+  - Need to add LOC property (codecstring at least for audio)
   - OK Check video extradata
     - Init at 1st keyframe, carries AVCDecoderConfigurationRecord as metadata
-    - Codec string extracted from AVCDecoderConfigurationRecord
+    - Codec string can be extracted from AVCDecoderConfigurationRecord
   - Check audio extradata
     - LOC says description field of webcodecs (CHECK)
     - Webcodecs audio decoder needs sampleRate, channels, and codecstring
-    - AAC use extradata, no need
+    - AAC use extradata
+    - Opus can extract channels from packet, and default to 48KHz
   - Get rid of wallclock (latency)
   - IsDisco is in LOC, how to add it
 - Add latency in band (video)

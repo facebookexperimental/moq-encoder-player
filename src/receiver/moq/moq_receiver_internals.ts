@@ -246,7 +246,6 @@ export class MoqReceiver {
       type: appMediaType,
       clkms: Date.now(),
       packagerType: chunkData.type,
-      captureClkms: chunkData.wallclock,
       // MoQ transport-native ordering keys. The player dejitters/orders on
       // (groupId, objectId). isLastInGroup carries the end-of-group signal inline
       // for datagrams; subgroup streams signal it out of band (endofgroup msg).

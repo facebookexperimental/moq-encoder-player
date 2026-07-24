@@ -331,7 +331,6 @@ LICENSE file in the root directory of this source tree.
 <script type="module">
     import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
-    import { TimeBufferChecker } from "../../dist/utils/time_buffer_checker.js"
     import { GapTolerantPlayer } from "../../dist/render/audio_player.js"
     import { PlaybackRateController } from "../../dist/render/playback_rate_controller.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
@@ -448,10 +447,6 @@ LICENSE file in the root directory of this source tree.
     // Jitter buffers
     let wtVideoJitterBuffer = null;
     let wtAudioJitterBuffer = null;
-
-    // Used to check latency
-    let latencyAudioChecker = null;
-    let latencyVideoChecker = null;
 
     // Renderer buffer / gaps timeline
     const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
@@ -976,8 +971,6 @@ LICENSE file in the root directory of this source tree.
 
         createJitterBuffers();
 
-        createLatencyChecker();
-
         createWorkers();
 
         startTimeline();
@@ -1056,7 +1049,6 @@ LICENSE file in the root directory of this source tree.
         animFrame = null;
 
         clearJitterBuffers();
-        clearLatencyChecker();
         clearVideoRendererBuffer();
     }
 
@@ -1088,15 +1080,6 @@ LICENSE file in the root directory of this source tree.
         wtAudioJitterBuffer = null;
     }
 
-    function createLatencyChecker() {
-        latencyAudioChecker = new TimeBufferChecker("audio");
-        latencyVideoChecker = new TimeBufferChecker("video");
-
-    }
-    function clearLatencyChecker() {
-        latencyAudioChecker = null;
-        latencyVideoChecker = null;
-    }
 
     function createWorkers() {
         // Create a worker to download chunk
@@ -1173,9 +1156,6 @@ LICENSE file in the root directory of this source tree.
             if (orderedVideoData.repeatedOrBackwards) {
                 console.warn(`VIDEO Repeated or backwards chunk, discarding, (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
             } else {
-                // Adds pts (in ms, timebase-neutral) to wallClk info
-                latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp * 1000 / downloaderConfig.moqTracks.video.timebase, clkms: orderedVideoData.extraData.captureClkms});
-
                 timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                 updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
                 videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, timebase: downloaderConfig.moqTracks.video.timebase, verbose: VERBOSE});
@@ -1199,9 +1179,6 @@ LICENSE file in the root directory of this source tree.
             if (orderedAudioData.repeatedOrBackwards) {
                 console.warn(`AUDIO Repeated or backwards chunk, discarding, (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
             } else {
-                // Adds pts (in ms, timebase-neutral) to wallClk info
-                latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp * 1000 / downloaderConfig.moqTracks.audio.timebase, clkms: orderedAudioData.extraData.captureClkms});
-
                 timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
                 updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
                 audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, timebase: downloaderConfig.moqTracks.audio.timebase, packagerType: orderedAudioData.extraData.packagerType});
@@ -1291,7 +1268,7 @@ LICENSE file in the root directory of this source tree.
             // Order/dejitter on the MoQ transport-native (groupId, objectId).
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
-            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata}
+            const extraData = {metadata: e.data.metadata}
 
             if (wtVideoJitterBuffer != null) {
                 // Pull-through jitter buffer: releases the contiguous run now, or
@@ -1303,7 +1280,7 @@ LICENSE file in the root directory of this source tree.
             // Order/dejitter on the MoQ transport-native (groupId, objectId).
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
-            const extraData = {captureClkms: e.data.captureClkms, metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
+            const extraData = {metadata: e.data.metadata, sampleFreq: e.data.sampleFreq, numChannels: e.data.numChannels, packagerType: e.data.packagerType }
 
             if (wtAudioJitterBuffer != null) {
                 // Pull-through jitter buffer: releases the contiguous run now, or
@@ -1500,14 +1477,6 @@ LICENSE file in the root directory of this source tree.
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
-                    if (latencyVideoChecker != null) {
-                        const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTsMs, true);
-                        if (frameClosestData.valid) {
-                            const currentLatencyMs = (Date.now() - Number(frameClosestData.clkms));
-                            updateVideoLatencyUI(currentLatencyMs);
-                        }
-                    }
-
                     retData.vFrame.close();
                 } else {
                     if (VERBOSE) {
@@ -1516,14 +1485,6 @@ LICENSE file in the root directory of this source tree.
                 }
 
                 updateRendererVideoUI(timingInfo.renderer.currentVideoTsMs, buffersInfo.renderer.video, retData.totalDiscarded);
-            }
-        }
-
-        if (latencyAudioChecker != null) {
-            const frameClosestData = latencyAudioChecker.GetItemByTs(Math.floor(timingInfo.renderer.currentAudioTsMs), false);
-            if (frameClosestData.valid) {
-                const currentLatencyMs = systemAudioLatencyMs + (Date.now() - Number(frameClosestData.clkms));
-                updateAudioLatencyUI(currentLatencyMs, systemAudioLatencyMs);
             }
         }
 
