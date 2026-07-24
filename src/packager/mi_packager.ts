@@ -168,9 +168,11 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.timebase = r.num;
 
+        // duration is present on the wire but unused on playback: the player
+        // derives buffer occupancy from PTS spans, not a per-chunk duration.
+        // Read it only to advance the offset for the field that follows.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.duration = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         // Advance the offset even on the last field so appending a field later
@@ -209,9 +211,11 @@ export class MIPackager {
         bytesRead += r.byteLength;
         this.numChannels = r.num;
 
+        // duration is present on the wire but unused on playback: the player
+        // derives buffer occupancy from PTS spans, not a per-chunk duration.
+        // Read it only to advance the offset for the field that follows.
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         bytesRead += r.byteLength;
-        this.duration = r.num;
 
         r = varIntToNumbeFromBuffer(extHeader.val, bytesRead);
         // Advance the offset even on the last field so appending a field later
@@ -257,7 +261,6 @@ export class MIPackager {
         type: this.type,
         pts: this.pts,
         timebase: this.timebase,
-        duration: this.duration,
         wallclock: this.wallclock,
         metadata: this.metadata,
         data: this.data,
@@ -272,7 +275,6 @@ export class MIPackager {
         timebase: this.timebase,
         sampleFreq: this.sampleFreq,
         numChannels: this.numChannels,
-        duration: this.duration,
         wallclock: this.wallclock,
         data: this.data,
       };
@@ -290,7 +292,7 @@ export class MIPackager {
     const metadataSize =
       this.metadata === undefined || this.metadata == null ? 0 : this.metadata.byteLength;
     const dataSize = this.data === undefined || this.data == null ? 0 : this.data.byteLength;
-    return `type: ${this.type} - pts: ${this.pts} - duration: ${this.duration} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
+    return `type: ${this.type} - pts: ${this.pts} - sampleFreq: ${this.sampleFreq} - numChannels: ${this.numChannels} - wallclock: ${this.wallclock} - metadataSize: ${metadataSize} - dataSize: ${dataSize}`;
   }
 
   PayloadToBytes() {

@@ -29,6 +29,10 @@ const WORKER_PREFIX = '[AUDIO-DECO]';
 
 const MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS = 200;
 
+// Per-track MoQ-MI timebase (ticks/sec) that chunk timestamps are in. Set from
+// each incoming chunk message (0 until the first chunk arrives).
+let trackTimebase = 0;
+
 let workerState = StateEnum.Created;
 
 let audioDecoder: any = null;
@@ -42,13 +46,14 @@ let currentTs = -1;
 const ptsQueue = new TsQueue();
 
 function processAudioFrame(aFrame: any) {
+  const queueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
   (self as any).postMessage(
     {
       type: 'aframe',
       frame: aFrame,
       ts: currentTs,
-      queueSize: ptsQueue.getPtsQueueLengthInfo().size,
-      queueLengthMs: ptsQueue.getPtsQueueLengthInfo().lengthMs,
+      queueSize: queueInfo.size,
+      queueLengthMs: queueInfo.lengthSec * 1000,
     },
     [aFrame],
   );
@@ -161,7 +166,8 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(WORKER_PREFIX, 'warning', 'Received audio chunk, but NOT running state');
       return;
     }
-    ptsQueue.addToPtsQueue(e.data.chunk.timestamp, e.data.chunk.duration);
+    trackTimebase = e.data.timebase;
+    ptsQueue.addToPtsQueue(e.data.chunk.timestamp);
 
     // Seed before the first dequeue fires so the very first frame has a timestamp.
     if (currentTs < 0) {
@@ -171,13 +177,14 @@ self.addEventListener('message', async function (e) {
 
     audioDecoder.decode(e.data.chunk);
 
-    const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfo();
-    if (decodeQueueInfo.lengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {
+    const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
+    const decodeQueueLengthMs = decodeQueueInfo.lengthSec * 1000;
+    if (decodeQueueLengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {
       sendMessageToMain(
         WORKER_PREFIX,
         'warning',
         'Decode queue size is ' +
-          decodeQueueInfo.lengthMs +
+          decodeQueueLengthMs +
           'ms (' +
           decodeQueueInfo.size +
           ' frames), audioDecoder: ' +
@@ -188,7 +195,7 @@ self.addEventListener('message', async function (e) {
         WORKER_PREFIX,
         'debug',
         'Decode queue size is ' +
-          decodeQueueInfo.lengthMs +
+          decodeQueueLengthMs +
           'ms (' +
           decodeQueueInfo.size +
           ' frames), audioDecoder: ' +

@@ -18,6 +18,10 @@ const WORKER_PREFIX = '[VIDEO-DECO]';
 const MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS = 500;
 const MAX_QUEUED_CHUNKS_DEFAULT = 60;
 
+// Per-track MoQ-MI timebase (ticks/sec) that chunk timestamps are in. Set from
+// each incoming chunk message (0 until the first chunk arrives).
+let trackTimebase = 0;
+
 let workerState = StateEnum.Created;
 
 let videoDecoder: any = null;
@@ -34,12 +38,13 @@ const maxQueuedChunks = MAX_QUEUED_CHUNKS_DEFAULT;
 const ptsQueue = new TsQueue();
 
 function processVideoFrame(vFrame: any) {
+  const queueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
   (self as any).postMessage(
     {
       type: 'vframe',
       frame: vFrame,
-      queueSize: ptsQueue.getPtsQueueLengthInfo().size,
-      queueLengthMs: ptsQueue.getPtsQueueLengthInfo().lengthMs,
+      queueSize: queueInfo.size,
+      queueLengthMs: queueInfo.lengthSec * 1000,
     },
     [vFrame],
   );
@@ -196,8 +201,9 @@ self.addEventListener('message', async function (e) {
       discardedDelta = 0;
       setWaitForKeyframe(false);
 
+      trackTimebase = e.data.timebase;
       ptsQueue.removeUntil(videoDecoder.decodeQueueSize);
-      ptsQueue.addToPtsQueue(e.data.chunk.timestamp, e.data.chunk.duration);
+      ptsQueue.addToPtsQueue(e.data.chunk.timestamp);
 
       // This is verbose and slow
       if ('verbose' in e.data && e.data.verbose === true) {
@@ -213,13 +219,14 @@ self.addEventListener('message', async function (e) {
       }
       videoDecoder.decode(e.data.chunk);
 
-      const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfo();
-      if (decodeQueueInfo.lengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {
+      const decodeQueueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
+      const decodeQueueLengthMs = decodeQueueInfo.lengthSec * 1000;
+      if (decodeQueueLengthMs > MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS) {
         sendMessageToMain(
           WORKER_PREFIX,
           'warning',
           'Decode queue size is ' +
-            decodeQueueInfo.lengthMs +
+            decodeQueueLengthMs +
             'ms (' +
             decodeQueueInfo.size +
             ' frames), videoDecoder: ' +
@@ -230,7 +237,7 @@ self.addEventListener('message', async function (e) {
           WORKER_PREFIX,
           'debug',
           'Decode queue size is ' +
-            decodeQueueInfo.lengthMs +
+            decodeQueueLengthMs +
             'ms (' +
             decodeQueueInfo.size +
             ' frames), videoDecoder: ' +

@@ -357,13 +357,17 @@ LICENSE file in the root directory of this source tree.
                 alias: 0,
                 namespace: ["vc"],
                 name: "audio0",
-                authInfo: "secret"
+                authInfo: "secret",
+                // Per-track MoQ-MI timebase (ticks/sec). WebCodecs uses microseconds.
+                timebase: 1_000_000
             },
             "video": {
                 alias: 1,
                 namespace: ["vc"],
                 name: "video0",
-                authInfo: "secret"
+                authInfo: "secret",
+                // Per-track MoQ-MI timebase (ticks/sec). WebCodecs uses microseconds.
+                timebase: 1_000_000
             }
         },
     }
@@ -1055,7 +1059,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     function createVideoRendererBuffer() {
-        videoRendererBuffer = new VideoRenderBuffer();
+        videoRendererBuffer = new VideoRenderBuffer(downloaderConfig.moqTracks.video.timebase);
     }
 
     function clearVideoRendererBuffer() {
@@ -1074,8 +1078,8 @@ LICENSE file in the root directory of this source tree.
 
     function createJitterBuffers() {
         // Jitter buffers
-        wtVideoJitterBuffer = new JitterBuffer(Number(document.getElementById('videoJitterBufferMs').value), jitterVideoDroppedCallback);
-        wtAudioJitterBuffer = new JitterBuffer(Number(document.getElementById('audioJitterBufferMs').value), jitterAudioDroppedCallback);
+        wtVideoJitterBuffer = new JitterBuffer(Number(document.getElementById('videoJitterBufferMs').value), jitterVideoDroppedCallback, downloaderConfig.moqTracks.video.timebase);
+        wtAudioJitterBuffer = new JitterBuffer(Number(document.getElementById('audioJitterBufferMs').value), jitterAudioDroppedCallback, downloaderConfig.moqTracks.audio.timebase);
     }
     function clearJitterBuffers() {
         wtVideoJitterBuffer = null;
@@ -1172,7 +1176,7 @@ LICENSE file in the root directory of this source tree.
 
                 timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                 updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
-                videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, verbose: VERBOSE});
+                videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, isDisco: orderedVideoData.isDisco, timebase: downloaderConfig.moqTracks.video.timebase, verbose: VERBOSE});
             }
         }
         updateJitterStatsUI("video", wtVideoJitterBuffer.GetStats());
@@ -1198,7 +1202,7 @@ LICENSE file in the root directory of this source tree.
 
                 timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
                 updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
-                audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, packagerType: orderedAudioData.extraData.packagerType});
+                audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, sampleFreq: orderedAudioData.extraData.sampleFreq, numChannels: orderedAudioData.extraData.numChannels, isDisco: orderedAudioData.isDisco, timebase: downloaderConfig.moqTracks.audio.timebase, packagerType: orderedAudioData.extraData.packagerType});
             }
         }
         updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
@@ -1333,7 +1337,7 @@ LICENSE file in the root directory of this source tree.
                 audioPlayer = new GapTolerantPlayer({
                     sampleRate: aFrame.sampleRate,
                     numberOfChannels: aFrame.numberOfChannels,
-                    timebase: 1_000_000,
+                    timebase: downloaderConfig.moqTracks.audio.timebase,
                     jitterDelay: playerBufferMs / 1000,
                     fadeIn: true,
                     onStats: updateAudioStats,
@@ -1448,6 +1452,9 @@ LICENSE file in the root directory of this source tree.
     function updateAudioStats(data) {
         // playingTimestamp is in seconds (already latency-adjusted). Convert to µs to
         // match the rest of the timing info; null means silence (nothing sounding yet).
+        // NOTE: currentAudioTS drives both video-frame selection and the audio-latency
+        // lookup, so this render-sync glue assumes audio and video share the 1e6 (µs)
+        // timebase. Per-track timebases in the buffers/decoders are handled separately.
         if (data.playingTimestamp != null) {
             timingInfo.renderer.currentAudioTS = Math.floor(data.playingTimestamp * 1_000_000);
         }

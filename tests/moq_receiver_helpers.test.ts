@@ -24,21 +24,19 @@ describe('parseReceiverConfig', () => {
     );
   });
 
-  it('returns a fully-populated config and fills defaults for valid input', () => {
+  it('returns a fully-populated config for valid input', () => {
     const cfg = parseReceiverConfig({
       urlHostPort: 'https://relay:4433',
       isSendingStats: true,
-      moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } },
+      moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret', timebase: 1000000 } },
       certificateHash: new Uint8Array([1, 2]),
       verbose: true,
     });
     expect(cfg.urlHostPort).toBe('https://relay:4433');
     expect(cfg.isSendingStats).toBe(true);
     expect(cfg.verbose).toBe(true);
-    // Timebases default to the WebCodecs 1us timescale when not supplied.
-    expect(cfg.systemVideoTimebase).toBe(1000000);
-    expect(cfg.systemAudioTimebase).toBe(1000000);
     expect(Object.keys(cfg.moqTracks)).toEqual(['video']);
+    expect(cfg.moqTracks.video.timebase).toBe(1000000);
   });
 });
 
@@ -48,15 +46,24 @@ describe('checkTrackData', () => {
   });
 
   it('rejects a track missing required fields', () => {
-    expect(checkTrackData({ a: { namespace: [], name: 'x', authInfo: 's' } as TrackData })).toMatch(
-      /malformed/,
-    );
+    expect(
+      checkTrackData({ a: { namespace: [], name: 'x', authInfo: 's', timebase: 1000000 } as TrackData }),
+    ).toMatch(/malformed/);
     expect(checkTrackData({ a: { namespace: ['vc'] } as TrackData })).toMatch(/malformed/);
+  });
+
+  it('rejects a track without a valid timebase', () => {
+    expect(
+      checkTrackData({ a: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } as TrackData }),
+    ).toMatch(/timebase/);
+    expect(
+      checkTrackData({ a: { namespace: ['vc'], name: 'v0', authInfo: 'secret', timebase: 0 } as TrackData }),
+    ).toMatch(/timebase/);
   });
 
   it('accepts a valid track map', () => {
     expect(
-      checkTrackData({ a: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } }),
+      checkTrackData({ a: { namespace: ['vc'], name: 'v0', authInfo: 'secret', timebase: 1000000 } }),
     ).toBeUndefined();
   });
 });
