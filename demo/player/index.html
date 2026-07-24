@@ -149,26 +149,27 @@ LICENSE file in the root directory of this source tree.
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
     </div>
 
-    <!-- Latency timeline (last 60s) -->
+    <!-- Latency and gaps timeline (last 60s) -->
     <div class="boxed">
-        <h2>Latency (last 60s)</h2>
+        <h2>Latency and gaps (last 60s)</h2>
+        <div id="latencyExtractorStatus" style="margin: 4px 0; font-weight: bold;"></div>
         <canvas id="latencyTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
-            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio latency (ms)</label>
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video latency (ms)</label>
-            <label><span style="display:inline-block;width:18px;height:3px;background:#ffd700;vertical-align:middle"></span> Playback speed (right axis, 0.5-2x)</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#17becf;vertical-align:middle"></span> Audio render buffer (ms)</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio gaps (right axis)</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video gaps (right axis)</label>
         </div>
     </div>
 
-    <!-- Renderer buffer / gaps timeline (last 60s) -->
+    <!-- Renderer buffer & speed timeline (last 60s) -->
     <div class="boxed">
-        <h2>Renderer buffer &amp; gaps timeline (last 60s)</h2>
+        <h2>Renderer buffer &amp; speed (last 60s)</h2>
         <canvas id="bufferTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio renderer buffer (ms)</label>
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video renderer buffer (ms)</label>
-            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio gaps</label>
-            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video gaps</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#ffd700;vertical-align:middle"></span> Playback speed (right axis, 0.5-2x)</label>
         </div>
     </div>
 
@@ -187,9 +188,6 @@ LICENSE file in the root directory of this source tree.
             <div class="styleform">
                 <label>(only valid if encoder and player clocks are synchronized, or they are the same machine)</label>
                 <div class="clear"></div>
-                <div>
-                    <label>Audio latency capture to renderer - approx (ms):</label><input id="latencyAudioMs" type="text" size="32" value="" readonly>
-                </div>
                 <div>
                     <label>Video latency capture to renderer - approx (ms):</label><input id="latencyVideoMs" type="text" value="" readonly>
                 </div>
@@ -330,6 +328,7 @@ LICENSE file in the root directory of this source tree.
 </script>
 <script type="module">
     import { VideoRenderBuffer } from "../../dist/render/video_render_buffer.js"
+    import { OverlayDecoder } from "../../dist/overlay_processor/overlay_decoder.js"
     import { JitterBuffer } from "../../dist/utils/jitter_buffer.js"
     import { GapTolerantPlayer } from "../../dist/render/audio_player.js"
     import { PlaybackRateController } from "../../dist/render/playback_rate_controller.js"
@@ -444,6 +443,11 @@ LICENSE file in the root directory of this source tree.
 
     let videoRendererBuffer = null;
 
+    // Extracts the capture epoch (ms) that the encoder overlaid into the video (see
+    // src/overlay_processor). Used to measure video capture-to-display latency.
+    const overlayDecoder = new OverlayDecoder();
+    let overlayExtractorStopped = false;   // set on extractor error; stops further Decode calls
+
     // Jitter buffers
     let wtVideoJitterBuffer = null;
     let wtAudioJitterBuffer = null;
@@ -452,7 +456,8 @@ LICENSE file in the root directory of this source tree.
     const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
     const TIMELINE_AUDIO_COLOR = '#d62728';
     const TIMELINE_VIDEO_COLOR = '#1f77b4';
-    let timelineSamples = []; // { tMs, audio, video } renderer buffer length (ms) relative to session start
+    const TIMELINE_AUDIO_BUFFER_COLOR = '#17becf'; // cyan, audio render buffer on the latency graph
+    let timelineSamples = []; // { tMs, audio, video, speed } renderer buffer length (ms) + playback speed
     let timelineGaps = [];    // { tMs, mediaType, cum } one entry per detected gap
     let gapCum = { audio: 0, video: 0 }; // running session totals of detected gaps
     let timelineStartMs = -1; // Date.now() when start was pressed
@@ -463,13 +468,13 @@ LICENSE file in the root directory of this source tree.
     let timelineTimer = null;
     const TIMELINE_UPDATE_EVERY_MS = 20;
 
-    // Latency timeline (audio & video capture-to-render latency). Shares the same
-    // 60s window, colors and update timer as the renderer buffer timeline above.
-    let latencySamples = []; // { tMs, audio, video, speed } latency (ms) + playback speed; null/-1 when unknown
-    let lastAudioLatencyMs = -1; // latest reported audio latency, -1 until known
+    // Latency-and-gaps timeline (video capture-to-render latency + audio render
+    // buffer on the left axis, jitter gaps on the right). Shares the same 60s
+    // window and update timer as the renderer buffer timeline above.
+    let latencySamples = []; // { tMs, video, audioBuf } video latency + audio render buffer (ms); null when unknown
     let lastVideoLatencyMs = -1; // latest reported video latency, -1 until known
     let lastPlaybackSpeed = -1;  // latest playback speed (1 = normal), -1 until known
-    const PLAYBACK_SPEED_COLOR = '#ffd700'; // yellow, plotted on the latency graph right axis
+    const PLAYBACK_SPEED_COLOR = '#ffd700'; // yellow, plotted on the renderer buffer graph right axis
     const PLAYBACK_SPEED_MIN = 0.5;         // right axis range: 0.5 .. 2
     const PLAYBACK_SPEED_MAX = 2;
 
@@ -479,9 +484,13 @@ LICENSE file in the root directory of this source tree.
         timelineGaps = [];
         gapCum = { audio: 0, video: 0 };
         latencySamples = [];
-        lastAudioLatencyMs = -1;
         lastVideoLatencyMs = -1;
         lastPlaybackSpeed = -1;
+        // Reset the epoch-overlay extractor state and its status readout.
+        overlayExtractorStopped = false;
+        const extractorStatusEl = document.getElementById('latencyExtractorStatus');
+        extractorStatusEl.textContent = '';
+        extractorStatusEl.style.color = '';
         timelineStartMs = Date.now();
         if (timelineTimer === null) {
             timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); }, TIMELINE_UPDATE_EVERY_MS);
@@ -525,16 +534,22 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function drawTimelineSeries(ctx, w, h, nowMs, key, color, leftYMax) {
+    // One time-series line for either timeline. `samples` is the backing array;
+    // values map onto [yMin, yMax]; null/negative values break the line.
+    function drawSeries(ctx, w, h, nowMs, samples, key, color, yMax, yMin = 0) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.beginPath();
         let started = false;
-        for (let i = 0; i < timelineSamples.length; i++) {
-            const s = timelineSamples[i];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            if (s[key] == null || s[key] < 0) {
+                started = false;
+                continue;
+            }
             // Right edge = now, anything older moves toward the left edge
             const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
-            const y = h - (s[key] / leftYMax) * h;
+            const y = h - ((s[key] - yMin) / (yMax - yMin)) * h;
             if (!started) {
                 ctx.moveTo(x, y);
                 started = true;
@@ -567,16 +582,14 @@ LICENSE file in the root directory of this source tree.
         if (timelineStartMs >= 0) {
             const aMs = buffersInfo.renderer.audio.lengthMs >= 0 ? buffersInfo.renderer.audio.lengthMs : 0;
             const vMs = buffersInfo.renderer.video.lengthMs >= 0 ? buffersInfo.renderer.video.lengthMs : 0;
-            timelineSamples.push({ tMs: nowMs, audio: aMs, video: vMs });
+            const s = lastPlaybackSpeed >= 0 ? lastPlaybackSpeed : null;
+            timelineSamples.push({ tMs: nowMs, audio: aMs, video: vMs, speed: s });
         }
 
         // Drop samples that scrolled off the left edge
         const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
         while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
             timelineSamples.shift();
-        }
-        while (timelineGaps.length > 0 && timelineGaps[0].tMs < oldestVisible) {
-            timelineGaps.shift();
         }
 
         // Left axis scale baseline: twice the audio latency budget (render buffer +
@@ -586,9 +599,6 @@ LICENSE file in the root directory of this source tree.
             leftYMax = Math.max(leftYMax, timelineSamples[i].audio, timelineSamples[i].video);
         }
         leftYMax = Math.max(leftYMax, 1);
-
-        // Right axis scale: 0 .. max(audio gaps, video gaps)
-        const rightYMax = Math.max(gapCum.audio, gapCum.video, 1);
 
         // Grid: horizontal lines every 25% and vertical lines every 5s
         ctx.strokeStyle = 'rgba(128,128,128,0.25)';
@@ -619,41 +629,18 @@ LICENSE file in the root directory of this source tree.
         ctx.textAlign = 'left';
         ctx.fillText('-60s', 2, h - 12);
 
-        // Right axis labels (gaps). Drawn slightly inset from the right edge.
+        // Right axis labels (playback speed, PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
+        ctx.fillStyle = PLAYBACK_SPEED_COLOR;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
-        ctx.fillText('gaps ' + rightYMax, w - 2, 2);
+        ctx.fillText('speed ' + PLAYBACK_SPEED_MAX + 'x', w - 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(PLAYBACK_SPEED_MIN + 'x', w - 2, h - 12);
 
-        // Gap bars (one per detected gap, height = cumulative gaps for its media type)
-        drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
-
-        drawTimelineSeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
-        drawTimelineSeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
-    }
-
-    function drawLatencySeries(ctx, w, h, nowMs, key, color, yMax, yMin = 0) {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        let started = false;
-        for (let i = 0; i < latencySamples.length; i++) {
-            const s = latencySamples[i];
-            // Break the line across stretches where this media type has no value
-            if (s[key] == null || s[key] < 0) {
-                started = false;
-                continue;
-            }
-            // Right edge = now, anything older moves toward the left edge
-            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
-            const y = h - ((s[key] - yMin) / (yMax - yMin)) * h;
-            if (!started) {
-                ctx.moveTo(x, y);
-                started = true;
-            } else {
-                ctx.lineTo(x, y);
-            }
-        }
-        ctx.stroke();
+        drawSeries(ctx, w, h, nowMs, timelineSamples, 'audio', TIMELINE_AUDIO_COLOR, leftYMax);
+        drawSeries(ctx, w, h, nowMs, timelineSamples, 'video', TIMELINE_VIDEO_COLOR, leftYMax);
+        // Playback speed on its own right-axis scale (PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
+        drawSeries(ctx, w, h, nowMs, timelineSamples, 'speed', PLAYBACK_SPEED_COLOR, PLAYBACK_SPEED_MAX, PLAYBACK_SPEED_MIN);
     }
 
     function drawLatencyTimeline() {
@@ -674,24 +661,34 @@ LICENSE file in the root directory of this source tree.
 
         const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
 
-        // Sample the latest reported latency values (same as the Latency tab)
+        // Sample the latest video latency and audio render buffer (both ms)
         if (timelineStartMs >= 0) {
-            const a = lastAudioLatencyMs >= 0 ? lastAudioLatencyMs : null;
             const v = lastVideoLatencyMs >= 0 ? lastVideoLatencyMs : null;
-            const s = lastPlaybackSpeed >= 0 ? lastPlaybackSpeed : null;
-            latencySamples.push({ tMs: nowMs, audio: a, video: v, speed: s });
+            const audioBuf = buffersInfo.renderer.audio.lengthMs >= 0 ? buffersInfo.renderer.audio.lengthMs : null;
+            latencySamples.push({ tMs: nowMs, video: v, audioBuf: audioBuf });
         }
 
-        // Drop samples that scrolled off the left edge
+        // Drop samples / gap bars that scrolled off the left edge
         const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
         while (latencySamples.length > 0 && latencySamples[0].tMs < oldestVisible) {
             latencySamples.shift();
         }
+        while (timelineGaps.length > 0 && timelineGaps[0].tMs < oldestVisible) {
+            timelineGaps.shift();
+        }
 
-        // Y axis scale: 0 .. 5 * playback target latency. Read live from the input
-        // on every draw so the range follows whenever the target latency changes.
+        // Left axis (ms): 5 * playback target latency, expanded to fit the largest
+        // observed latency / audio-buffer sample. Read the target live each draw.
         const targetLatencyMs = Number(document.getElementById('playbackTargetLatencyMs').value);
-        const yMax = Math.max((targetLatencyMs > 0 ? targetLatencyMs : 0) * 5, 1);
+        let yMax = Math.max((targetLatencyMs > 0 ? targetLatencyMs : 0) * 5, 1);
+        for (let i = 0; i < latencySamples.length; i++) {
+            const ls = latencySamples[i];
+            if (ls.video != null) { yMax = Math.max(yMax, ls.video); }
+            if (ls.audioBuf != null) { yMax = Math.max(yMax, ls.audioBuf); }
+        }
+
+        // Right axis (gap counts): 0 .. max(audio gaps, video gaps)
+        const rightYMax = Math.max(gapCum.audio, gapCum.video, 1);
 
         // Grid: horizontal lines every 25% and vertical lines every 5s
         ctx.strokeStyle = 'rgba(128,128,128,0.25)';
@@ -722,18 +719,16 @@ LICENSE file in the root directory of this source tree.
         ctx.textAlign = 'left';
         ctx.fillText('-60s', 2, h - 12);
 
-        // Right axis labels (playback speed, PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
-        ctx.fillStyle = PLAYBACK_SPEED_COLOR;
+        // Right axis label (gaps)
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
-        ctx.fillText('speed ' + PLAYBACK_SPEED_MAX + 'x', w - 2, 2);
-        ctx.textBaseline = 'bottom';
-        ctx.fillText(PLAYBACK_SPEED_MIN + 'x', w - 2, h - 12);
+        ctx.fillText('gaps ' + rightYMax, w - 2, 2);
 
-        drawLatencySeries(ctx, w, h, nowMs, 'audio', TIMELINE_AUDIO_COLOR, yMax);
-        drawLatencySeries(ctx, w, h, nowMs, 'video', TIMELINE_VIDEO_COLOR, yMax);
-        // Playback speed on its own right-axis scale (PLAYBACK_SPEED_MIN .. PLAYBACK_SPEED_MAX)
-        drawLatencySeries(ctx, w, h, nowMs, 'speed', PLAYBACK_SPEED_COLOR, PLAYBACK_SPEED_MAX, PLAYBACK_SPEED_MIN);
+        // Gap bars (one per detected gap, height = cumulative gaps for its media type)
+        drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
+
+        drawSeries(ctx, w, h, nowMs, latencySamples, 'video', TIMELINE_VIDEO_COLOR, yMax);
+        drawSeries(ctx, w, h, nowMs, latencySamples, 'audioBuf', TIMELINE_AUDIO_BUFFER_COLOR, yMax);
     }
 
     // Read & parse QS data
@@ -1240,9 +1235,19 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('latencyVideoMs').value = `${latencyMs.toFixed(0)} ms`;
     }
 
-    function updateAudioLatencyUI(totalLatencyMs, systemAudioLatencyMs) {
-        lastAudioLatencyMs = totalLatencyMs;
-        document.getElementById('latencyAudioMs').value = `${totalLatencyMs.toFixed(0)} ms (System: ${systemAudioLatencyMs.toFixed(0)} ms)`;
+    // Recovery-confidence readout for the epoch overlay extractor: green >= 80%,
+    // yellow below. (goldenrod is used as a legible "yellow" on the light UI.)
+    function updateExtractorStatusUI(confidencePct) {
+        const el = document.getElementById('latencyExtractorStatus');
+        el.style.color = confidencePct >= 80 ? 'green' : 'goldenrod';
+        el.textContent = `Recovery epoch from video confidence: ${confidencePct.toFixed(0)}%`;
+    }
+
+    // The extractor threw (e.g. wrong frame format): show the error in red and stop.
+    function setExtractorErrorUI(errMsg) {
+        const el = document.getElementById('latencyExtractorStatus');
+        el.style.color = 'red';
+        el.textContent = `${errMsg}. epoch latency info extractor stopped`;
     }
 
     async function processWorkerMessage(e) {
@@ -1476,6 +1481,24 @@ LICENSE file in the root directory of this source tree.
                     timingInfo.renderer.currentVideoTsMs = retData.vFrame.timestamp * 1000 / downloaderConfig.moqTracks.video.timebase;
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
+
+                    // Latency overlay: recover the capture epoch (ms) baked into the
+                    // displayed frame's top rows. videoLatencyMs = now - that epoch,
+                    // but only when the START_SEQ marker is present (encoder overlay on).
+                    // Track a rolling recovery-confidence %; on any extractor error,
+                    // report it and stop feeding frames to the decoder.
+                    if (!overlayExtractorStopped) {
+                        try {
+                            const overlay = overlayDecoder.Decode(retData.vFrame);
+                            updateExtractorStatusUI(overlay.confidence * 100);
+                            if (overlay.confidence === 1) {
+                                updateVideoLatencyUI(Date.now() - Number(overlay.val));
+                            }
+                        } catch (err) {
+                            overlayExtractorStopped = true;
+                            setExtractorErrorUI(err.message);
+                        }
+                    }
 
                     retData.vFrame.close();
                 } else {
