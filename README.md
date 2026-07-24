@@ -38,9 +38,10 @@ moq-encoder-player/
 │   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
 │   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
 │   ├── packager/           #   mi_packager.ts                    (media-interop packager)
+│   ├── overlay_processor/  #   overlay_encoder.ts / overlay_decoder.ts (pixel latency overlay)
 │   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
 │   │                       #   video_render_buffer.ts
-│   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, time_buffer_checker.ts, utils.ts,
+│   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, avg_last_n_items.ts, utils.ts,
 │   │   └── media/          #   avcc_parser.ts, avc_decoder_configuration_record_parser.ts
 │   └── types/              #   globals.d.ts (ambient types for WebTransport / WebCodecs)
 ├── tests/                  # Jest unit tests for the pure utilities
@@ -207,16 +208,16 @@ per track from the encoder UI.
 Main encoder webpage and also glues all encoder pieces together
 
 - When it receives an audio OR video raw frame from `a_capture` or `v_capture`:
-  - Adds it into `TimeBufferChecker` (for latency tracking)
-  - Sends it to encoder
+  - Records a single **capture anchor** the first time (the frame's WebCodecs timestamp paired with `Date.now()`), so the capture wall clock can later be reconstructed as a linear function of the media timestamp. This replaced the old per-frame `clkms` side-channel and the `TimeBufferChecker` lookup tables.
+  - Sends it to the encoder (the video frame also carries its capture wall clock so the latency overlay can stamp capture time — see `overlay_processor`)
 
 - When it receives an audio OR video encoded chunk from `a_encoder` or `v_encoder`:
-  - Gets the wall clock generation time of 1st frame/sample in the chunk
-  - Sends the chunk (augmented with wall clock, seqId, and metadata) to the muxer
+  - Reconstructs the capture wall clock of the chunk from the capture anchor
+  - Sends the chunk (augmented with seqId and metadata) to the muxer
 
-### src/utils/time_buffer_checker.ts (TimeBufferChecker)
+### src/overlay_processor/overlay_encoder.ts (OverlayEncoder)
 
-Stores the frames timestamps and the wall clock generation time from the raw generated frames. That allows us keep track of each frame / chunk creation time (wall clock)
+Stamps an integer value (the capture epoch in ms) into the top rows of a raw video frame by writing one bright/dark pixel run per bit, prefixed with a marker sequence. The value survives H.264 encode/decode as image content, so the player can recover it and measure glass-to-glass latency **without any side-channel metadata** (see `OverlayDecoder` on the player side). It requires an NV12 raw frame; the encoder toggles it live from the "Add latency information in video" checkbox and falls back to the un-overlaid frame if the source format differs.
 
 ### src/capture/v_capture.ts
 
@@ -357,13 +358,19 @@ Buffer that stores video decoded frames
 - Allows the retrieval of video decoded frames via timestamps
   - Automatically drops all video frames that older than the currently requested
 
+### src/overlay_processor/overlay_decoder.ts (OverlayDecoder)
+
+Recovers the integer value (capture epoch in ms) that `OverlayEncoder` wrote into the top rows of a frame, reading one bright/dark pixel run per bit. It only trusts the value when the marker sequence is present (so ordinary, non-overlaid frames are ignored) and returns a `confidence` flag alongside the value. It requires a decoded I420 frame and does not close it (the caller still owns it).
+
 ### Latency measurement
 
-- Every audio and video received chunk `timestamp` and `clkms` (wall clock) is added into `latencyAudioChecker` and `latencyVideoChecker` queue (instances of `TimeBufferChecker`)
-- The `renderer.currentAudioTS` (current audio sample rendered) is used to get the closest wall clock time from `audioTimeChecker`. From there we sync video.
-- The UI displays: `Latency = Now - whenSampleWasGenerated`
+Video (glass-to-glass) latency is measured with the **pixel overlay**, not a side-channel:
 
-Note: Encoder and Player clock have to be in sync for this metric to be accurate. If you use same computer as encoder & player then metric should be pretty accurate
+- The encoder stamps the capture epoch (ms) into each frame's top rows (`OverlayEncoder`), enabled from the encoder's "Add latency information in video" checkbox.
+- The player recovers it from the displayed frame (`OverlayDecoder`) and computes `videoLatencyMs = Date.now() - recoveredEpoch`.
+- Because the overlay carries a marker sequence, the player only trusts a value when the marker is present; it shows a rolling **recovery-confidence %** and stops the extractor on error.
+
+Note: Encoder and Player clocks have to be in sync for this metric to be accurate. If you use the same computer as encoder & player then the metric should be pretty accurate
 
 ## testing (encoder player served from localhost)
 
@@ -462,7 +469,7 @@ You should see same UI that is shown in testing section above
     - AAC use extradata
     - Opus can extract channels from packet, and default to 48KHz
   - IsDisco is in LOC, how to add it
-- Add new A/V sync strategy to docs
+X - Add new A/V sync strategy to docs
 X - Fix latency measurement, it is broken (at least after update target)
 X - Revamp latency / buffer graphs
 X - Add latency in band (video)
