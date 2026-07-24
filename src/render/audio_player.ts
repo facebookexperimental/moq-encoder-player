@@ -40,15 +40,15 @@ export interface PlayerStats {
   bufferAhead: number;
   rendered: number;
   gapsRecovered: number;
-  /** Media timestamp (seconds) of the sample currently at the speakers, or null during silence. */
-  playingTimestamp: number | null;
+  /** Media time in ms of the sample currently at the speakers, or null during silence. */
+  playingTimestampTsMs: number | null;
 }
 
 const UPDATE_INTERVAL_MS = 20;
 
 const FADE_SECONDS = 0.005; // 5 ms
 // Shortfalls smaller than this are ordinary timing jitter, not a real gap.
-const GAP_THRESHOLD = 0.05; // 50 ms
+const GAP_THRESHOLD_SEC = 0.05; // 50 ms
 
 export class GapTolerantPlayer {
   private ctx: AudioContext;
@@ -213,7 +213,7 @@ export class GapTolerantPlayer {
       this.nextPlayTime = currentTime + this.opts.jitterDelay;
       isResume = true;
       newSegment = true;
-    } else if (this.nextPlayTime < currentTime - GAP_THRESHOLD) {
+    } else if (this.nextPlayTime < currentTime - GAP_THRESHOLD_SEC) {
       // Genuine gap: the cursor fell meaningfully behind (network stalled).
       // Re-pad with the jitter cushion and count it.
       this.gapsRecovered++;
@@ -274,14 +274,18 @@ export class GapTolerantPlayer {
     this.nextPlayTime += effectiveDuration;
   }
 
-  private currentPlayingTimestamp(): number | null {
+  // Media time in ms of the sample currently at the speakers (null during
+  // silence). Note this returns ms, not a raw PTS/timebase-tick timestamp.
+  private currentPlayingTimeMs(): number | null {
     if (this.anchorCtxStart < 0) return null; // nothing started yet
     const latency = this.ctx.outputLatency || this.ctx.baseLatency || 0;
     const audible = this.ctx.currentTime - latency;
     if (audible < this.anchorCtxStart) return null; // pre-roll silence before this segment
-    // anchorTs/timebase + media seconds elapsed since the anchor. At playback
-    // speed s, media advances s× clock time, so scale the elapsed clock term.
-    return this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart) * this.anchorSpeed;
+    // anchorTs/timebase (seconds) + media seconds elapsed since the anchor. At
+    // playback speed s, media advances s× clock time, so scale the elapsed term.
+    const seconds =
+      this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart) * this.anchorSpeed;
+    return seconds * 1000;
   }
 
   /**
@@ -310,7 +314,7 @@ export class GapTolerantPlayer {
         bufferAhead: Math.max(0, this.nextPlayTime - this.ctx.currentTime + this.lastBufferDuration),
         rendered: this.rendered,
         gapsRecovered: this.gapsRecovered,
-        playingTimestamp: this.currentPlayingTimestamp(),
+        playingTimestampTsMs: this.currentPlayingTimeMs(),
       });
     }, UPDATE_INTERVAL_MS);
   }

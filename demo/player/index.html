@@ -398,9 +398,11 @@ LICENSE file in the root directory of this source tree.
             currentVideoTs: -1,
         },
         renderer: {
-            // Estimated audio PTS (assumed PTS is microseconds, and audio and video uses same timescale)
-            currentAudioTS: -1,
-            currentVideoTS: -1,
+            // Media time in ms (timebase-neutral) of what is currently at the
+            // speakers / on screen. Kept in ms so it can index both the video and
+            // audio series regardless of their per-track timebases.
+            currentAudioTsMs: -1,
+            currentVideoTsMs: -1,
         }
     };
 
@@ -1111,8 +1113,8 @@ LICENSE file in the root directory of this source tree.
         timingInfo.decoder.currentAudioTs = -1;
         timingInfo.decoder.currentVideoTs = -1;
 
-        timingInfo.renderer.currentAudioTS = -1;
-        timingInfo.renderer.currentVideoTS = -1;
+        timingInfo.renderer.currentAudioTsMs = -1;
+        timingInfo.renderer.currentVideoTsMs = -1;
     }
 
     function clearBufferInfo() {
@@ -1171,8 +1173,8 @@ LICENSE file in the root directory of this source tree.
             if (orderedVideoData.repeatedOrBackwards) {
                 console.warn(`VIDEO Repeated or backwards chunk, discarding, (${orderedVideoData.groupId}/${orderedVideoData.objId})`);
             } else {
-                // Adds pts to wallClk info
-                latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp, clkms: orderedVideoData.extraData.captureClkms});
+                // Adds pts (in ms, timebase-neutral) to wallClk info
+                latencyVideoChecker.AddItem({ ts: orderedVideoData.chunk.timestamp * 1000 / downloaderConfig.moqTracks.video.timebase, clkms: orderedVideoData.extraData.captureClkms});
 
                 timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                 updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
@@ -1197,8 +1199,8 @@ LICENSE file in the root directory of this source tree.
             if (orderedAudioData.repeatedOrBackwards) {
                 console.warn(`AUDIO Repeated or backwards chunk, discarding, (${orderedAudioData.groupId}/${orderedAudioData.objId})`);
             } else {
-                // Adds pts to wallClk info
-                latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp, clkms: orderedAudioData.extraData.captureClkms});
+                // Adds pts (in ms, timebase-neutral) to wallClk info
+                latencyAudioChecker.AddItem({ ts: orderedAudioData.chunk.timestamp * 1000 / downloaderConfig.moqTracks.audio.timebase, clkms: orderedAudioData.extraData.captureClkms});
 
                 timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
                 updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
@@ -1240,16 +1242,16 @@ LICENSE file in the root directory of this source tree.
         document.getElementById(elementBufferName).value = `${bufferInfo.size} (${bufferInfo.lengthMs.toFixed(0)} ms)`;
     }
 
-    function updateRendererAudioUI(ts, bufferInfo, gapsRecovered) {
-        document.getElementById('currentRendererATS').value = (ts / 1000).toFixed(0);
+    function updateRendererAudioUI(tsMs, bufferInfo, gapsRecovered) {
+        document.getElementById('currentRendererATS').value = tsMs.toFixed(0);
         document.getElementById('currentRendererAVTSDiff').value = `${document.getElementById('currentRendererVTS').value - document.getElementById('currentRendererATS').value} ms`;
 
         document.getElementById('currentRendererABuffer').value = `${bufferInfo.lengthMs} ms`;
         document.getElementById('currentRendererASilenceInserted').value = gapsRecovered.toFixed(0);
     }
 
-    function updateRendererVideoUI(ts, bufferInfo, totalDiscarded) {
-        document.getElementById('currentRendererVTS').value = (ts / 1000).toFixed(0);
+    function updateRendererVideoUI(tsMs, bufferInfo, totalDiscarded) {
+        document.getElementById('currentRendererVTS').value = tsMs.toFixed(0);
         document.getElementById('currentRendererAVTSDiff').value = `${document.getElementById('currentRendererVTS').value - document.getElementById('currentRendererATS').value} ms`;
 
         document.getElementById('currentRendererVBuffer').value = `${bufferInfo.size} (${bufferInfo.lengthMs.toFixed(0)} ms)`;
@@ -1450,13 +1452,12 @@ LICENSE file in the root directory of this source tree.
     // when the tab is hidden), so the audio UI and the video master clock stay fresh
     // regardless of requestAnimationFrame throttling.
     function updateAudioStats(data) {
-        // playingTimestamp is in seconds (already latency-adjusted). Convert to µs to
-        // match the rest of the timing info; null means silence (nothing sounding yet).
-        // NOTE: currentAudioTS drives both video-frame selection and the audio-latency
-        // lookup, so this render-sync glue assumes audio and video share the 1e6 (µs)
-        // timebase. Per-track timebases in the buffers/decoders are handled separately.
-        if (data.playingTimestamp != null) {
-            timingInfo.renderer.currentAudioTS = Math.floor(data.playingTimestamp * 1_000_000);
+        // playingTimestampTsMs is in ms (already latency-adjusted). The render clock
+        // is kept in ms (real time, timebase-neutral); each consumer converts it to
+        // its own track timebase, so audio and video need not share a timebase.
+        // null means silence (nothing sounding yet).
+        if (data.playingTimestampTsMs != null) {
+            timingInfo.renderer.currentAudioTsMs = data.playingTimestampTsMs;
         }
         buffersInfo.renderer.audio.state = data.ctxState === 'running' ? AUDIO_PLAYING : AUDIO_STOPPED;
         // buffersInfo.renderer.audio.size = data.AAqueueSize;
@@ -1476,7 +1477,7 @@ LICENSE file in the root directory of this source tree.
             lastPlaybackSpeed = audioPlayer.getRequestedPlaybackSpeed();
         }
         document.getElementById('currentRendererASystemLatency').value = `${systemAudioLatencyMs.toFixed(0)} ms`;
-        updateRendererAudioUI(timingInfo.renderer.currentAudioTS, buffersInfo.renderer.audio, data.gapsRecovered);
+        updateRendererAudioUI(timingInfo.renderer.currentAudioTsMs, buffersInfo.renderer.audio, data.gapsRecovered);
     }
 
     function audioTimestamps(wcTimestamp) {
@@ -1486,20 +1487,21 @@ LICENSE file in the root directory of this source tree.
         if ((audioPlayer != null) && (wcInterval > RENDER_VIDEO_EVERY_MS)) {
             wcLastRender = wcTimestamp;
 
-            if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTS >= 0) {
-                // currentAudioTS is the media timestamp already sounding at the speakers
-                // (latency-adjusted by the player), so use it directly to pick the frame.
-                const retData = videoRendererBuffer.GetItemByTs(timingInfo.renderer.currentAudioTS);
+            if (videoRendererBuffer != null && timingInfo.renderer.currentAudioTsMs >= 0) {
+                // currentAudioTsMs is the media time (ms) already sounding at the
+                // speakers (latency-adjusted by the player). GetItemByTsinMs works in ms,
+                // so this comparison is independent of the video track timebase.
+                const retData = videoRendererBuffer.GetItemByTsinMs(timingInfo.renderer.currentAudioTsMs);
                 if (retData.vFrame != null) {
                     setVideoSize(retData.vFrame);
                     videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
 
-                    timingInfo.renderer.currentVideoTS = retData.vFrame.timestamp;
+                    timingInfo.renderer.currentVideoTsMs = retData.vFrame.timestamp * 1000 / downloaderConfig.moqTracks.video.timebase;
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
                     if (latencyVideoChecker != null) {
-                        const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTS, true);
+                        const frameClosestData = latencyVideoChecker.GetItemByTs(timingInfo.renderer.currentVideoTsMs, true);
                         if (frameClosestData.valid) {
                             const currentLatencyMs = (Date.now() - Number(frameClosestData.clkms));
                             updateVideoLatencyUI(currentLatencyMs);
@@ -1513,12 +1515,12 @@ LICENSE file in the root directory of this source tree.
                     }
                 }
 
-                updateRendererVideoUI(timingInfo.renderer.currentVideoTS, buffersInfo.renderer.video, retData.totalDiscarded);
+                updateRendererVideoUI(timingInfo.renderer.currentVideoTsMs, buffersInfo.renderer.video, retData.totalDiscarded);
             }
         }
 
         if (latencyAudioChecker != null) {
-            const frameClosestData = latencyAudioChecker.GetItemByTs(Math.floor(timingInfo.renderer.currentAudioTS), false);
+            const frameClosestData = latencyAudioChecker.GetItemByTs(Math.floor(timingInfo.renderer.currentAudioTsMs), false);
             if (frameClosestData.valid) {
                 const currentLatencyMs = systemAudioLatencyMs + (Date.now() - Number(frameClosestData.clkms));
                 updateAudioLatencyUI(currentLatencyMs, systemAudioLatencyMs);

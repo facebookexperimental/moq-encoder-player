@@ -31,6 +31,11 @@ export class VideoRenderBuffer {
     this.lastItemTs = undefined;
   }
 
+  // Convert a frame timestamp (in `timebase` ticks per second) to milliseconds.
+  private tsToMs(ts: number): number {
+    return (ts * 1000) / this.timebase;
+  }
+
   // Buffered span in ms, derived from the held frames' timestamps instead of a
   // per-frame duration. Timestamps are in `timebase` ticks per second, so
   // tsMs = ts * 1000 / timebase. elementsList is ordered by timestamp, so the span
@@ -93,7 +98,10 @@ export class VideoRenderBuffer {
     return ret;
   }
 
-  GetItemByTs(ts: number) {
+  // `targetMs` is a media time in milliseconds (timebase-neutral). Frame
+  // timestamps are converted to ms via the track timebase before comparing, so
+  // callers work in ms and never need to know this track's timebase.
+  GetItemByTsinMs(targetMs: number) {
     const ret: any = {
       vFrame: null,
       discarded: 0,
@@ -102,14 +110,14 @@ export class VideoRenderBuffer {
       queueLengthMs: this.bufferedSpanMs(),
     };
 
-    if (this.elementsList.length <= 0 || ts < this.elementsList[0].timestamp) {
+    if (this.elementsList.length <= 0 || targetMs < this.tsToMs(this.elementsList[0].timestamp)) {
       return ret;
     }
 
     let exit = false;
     let lastFrameInThePastIndex = 0;
     while (lastFrameInThePastIndex < this.elementsList.length && exit === false) {
-      if (this.elementsList[lastFrameInThePastIndex].timestamp >= ts) {
+      if (this.tsToMs(this.elementsList[lastFrameInThePastIndex].timestamp) >= targetMs) {
         exit = true;
       } else {
         lastFrameInThePastIndex++;
