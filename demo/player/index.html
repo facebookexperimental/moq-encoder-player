@@ -107,7 +107,7 @@ LICENSE file in the root directory of this source tree.
                     <div class="clear"></div>
                     <fieldset class="settings-box">
                         <legend>Latency related settings</legend>
-                        <label>Playback target latency (ms):<input id="playbackTargetLatencyMs" type="number" step="1" min="10" max="30000" value="200"><span class="applied-value" id="appliedPlaybackTargetLatencyMs">(-)</span><button id="btnPlaybackTargetLatencyUpdate" type="button" disabled>Update</button></label>
+                        <label>Player target buffer size (ms):<input id="playbackTargetLatencyMs" type="number" step="1" min="10" max="30000" value="200"><span class="applied-value" id="appliedPlaybackTargetLatencyMs">(-)</span><button id="btnPlaybackTargetLatencyUpdate" type="button" disabled>Update</button></label>
                         <div class="clear"></div>
                         <fieldset class="settings-box">
                             <legend>Detailed buffer size (better do not touch)</legend>
@@ -130,9 +130,9 @@ LICENSE file in the root directory of this source tree.
                         <label>On target range (%):<input id="onTargetRangePerct" type="number" step="1" min="1" max="99" value="20"></label>
                         <label>This latency range is considered on target, e.g. 20 means between target * 0.8 and target * 1.2 is OK, so NO speed compensation.</label>
                         <div class="clear"></div>
-                        <label>Speed up:<input id="playbackSpeedUp" type="number" step="0.1" min="1.1" max="2" value="1.1"></label>
+                        <label>Speed up:<input id="playbackSpeedUp" type="number" step="0.05" min="1.01" max="2" value="1.05"></label>
                         <div class="clear"></div>
-                        <label>Slow down:<input id="playbackSlowDown" type="number" step="0.1" min="0.5" max="0.9" value="0.9"></label>
+                        <label>Slow down:<input id="playbackSlowDown" type="number" step="0.05" min="0.5" max="0.99" value="0.95"></label>
                         <div class="clear"></div>
                         <button id="btnPlaybackCompensationUpdate" type="button" disabled>Update config</button>
                         <div class="clear"></div>
@@ -874,6 +874,10 @@ LICENSE file in the root directory of this source tree.
         setAppliedLabel('appliedPlaybackTargetLatencyMs', Number(document.getElementById('playbackTargetLatencyMs').value));
 
         // Keep the speed-compensation controller steering toward the same target.
+        // Create it here if it does not exist yet — e.g. playback started with an
+        // out-of-range target (like 0) that made the initial construction fail; now
+        // that the target is valid, the controller can be created and take over.
+        ensurePlaybackRateController();
         if (playbackRateController != null) {
             playbackRateController.setTargetLatency(Number(document.getElementById('playbackTargetLatencyMs').value));
         }
@@ -895,8 +899,28 @@ LICENSE file in the root directory of this source tree.
         return document.getElementById('enableSpeedCompensation').checked;
     }
 
+    // Create the speed-compensation controller from the current UI fields if it does
+    // not exist yet. Safe to call repeatedly. If the current config is invalid (e.g.
+    // the playback target latency is out of range, like 0), it logs and leaves the
+    // controller null so a later valid Update can create it — instead of throwing and
+    // leaving compensation permanently disabled.
+    function ensurePlaybackRateController() {
+        if (playbackRateController != null) {
+            return;
+        }
+        try {
+            playbackRateController = new PlaybackRateController({
+                ...playbackCompensationConfig(),
+                onLog: (msg) => { if (VERBOSE) console.debug('[PLAYBACK-COMP] ' + msg); },
+            });
+        } catch (err) {
+            console.error('[PLAYBACK-COMP] controller not created (invalid config): ' + err.message);
+        }
+    }
+
     // "Update config" button: push the current fields into the controller live.
     function updatePlaybackCompensation() {
+        ensurePlaybackRateController();
         if (playbackRateController == null) {
             return;
         }
@@ -1329,10 +1353,10 @@ LICENSE file in the root directory of this source tree.
                 });
                 // Speed-compensation controller: decision-only, fed from the audio
                 // stats loop (see updateAudioStats). Seeded from the current UI fields.
-                playbackRateController = new PlaybackRateController({
-                    ...playbackCompensationConfig(),
-                    onLog: (msg) => { if (VERBOSE) console.debug('[PLAYBACK-COMP] ' + msg); },
-                });
+                // Resilient to an out-of-range initial config (e.g. target latency 0):
+                // it logs and leaves the controller null instead of throwing, so audio
+                // still starts and a later valid Update can create the controller.
+                ensurePlaybackRateController();
 
                 // The Start click was the user gesture; resume unblocks audio output.
                 await audioPlayer.resume();

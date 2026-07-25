@@ -246,7 +246,7 @@ Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a c
 - Adds the audio frame to a queue. And it keeps the queue smaller than `encodeQueueSize` (that helps when encoder is overwhelmed)
 - It delivers the encoded chunks to the next stage (muxer)
 
-Note: `opus.frameDuration` setting helps keeping encoding latency low
+Note: `opus.frameDuration` and `opus.application: 'lowdelay'` setting helps keeping encoding latency low
 
 ### src/packager/mi_packager.ts
 

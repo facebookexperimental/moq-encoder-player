@@ -32,16 +32,16 @@ export interface PlaybackRateControllerOptions {
   targetLatencyMs: number;
   /** Half-width of the do-nothing band as a fraction of target, 0 < v < 1. Default 0.2. */
   onTargetPerct?: number;
-  /** Rate applied while draining an over-full buffer, 1 < v <= 2. Default 1.1. */
+  /** Rate applied while draining an over-full buffer, 1 < v <= 2. Default 1.05. */
   speedUp?: number;
-  /** Rate applied while refilling an under-full buffer, 0.5 <= v < 1. Default 0.9. */
+  /** Rate applied while refilling an under-full buffer, 0.5 <= v < 1. Default 0.95. */
   slowDown?: number;
   onLog?: (msg: string) => void;
 }
 
 const DEFAULT_ON_TARGET_PERCT = 0.2;
-const DEFAULT_SPEED_UP = 1.1;
-const DEFAULT_SLOW_DOWN = 0.9;
+const DEFAULT_SPEED_UP = 1.05;
+const DEFAULT_SLOW_DOWN = 0.95;
 
 /** normal = playing at 1×; speedup/slowdown = actively correcting toward target. */
 type Mode = 'normal' | 'speedup' | 'slowdown';

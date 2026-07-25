@@ -1554,7 +1554,8 @@ LICENSE file in the root directory of this source tree.
             audioEncoderConfig.encoderConfig.aac = { format: "aac" }
         } else {
             audioEncoderConfig.encoderConfig.opus = { // See https://www.w3.org/TR/webcodecs-opus-codec-registration/
-                frameDuration: 10000 // In ns. Lower latency than default = 20000
+                frameDuration: 10000, // In ns. Lower latency than default = 20000
+                application: 'lowdelay'
             }
         }
         const sourceAudioSetting = getAudioTrackSettings();
