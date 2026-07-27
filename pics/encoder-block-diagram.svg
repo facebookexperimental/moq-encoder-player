@@ -18,15 +18,16 @@
     .legend { font-size: 13px; }
   </style>
 
-  <!-- side: clock / latency -->
+  <!-- side: capture clock anchor (feeds the latency overlay) -->
   <rect class="side" x="30" y="250" width="185" height="210" rx="10"/>
-  <text class="title" x="122" y="300" font-size="15">A/V clock tracking</text>
-  <text class="sub" x="122" y="322">(latency measurement)</text>
-  <text class="sub" x="122" y="360">wallclock stamping +</text>
-  <text class="sub" x="122" y="378">A/V timestamp</text>
-  <text class="sub" x="122" y="396">compensation</text>
-  <text class="sub" x="122" y="414">(main thread)</text>
-  <path class="aux" d="M215,390 L370,405" marker-end="url(#arrow)"/>
+  <text class="title" x="122" y="298" font-size="15">Capture clock anchor</text>
+  <text class="sub" x="122" y="320">(main thread)</text>
+  <text class="sub" x="122" y="350">one anchor: media ts</text>
+  <text class="sub" x="122" y="368">&#8596; Date.now()</text>
+  <text class="sub" x="122" y="392">reconstruct capture</text>
+  <text class="sub" x="122" y="410">epoch per chunk</text>
+  <text class="sub" x="122" y="434">&#8594; feeds latency overlay</text>
+  <path class="aux" d="M215,330 L283,292" marker-end="url(#arrow)"/>
 
   <!-- row 1: capture -->
   <rect class="box" x="370" y="40" width="220" height="80" rx="10"/>
@@ -54,6 +55,16 @@
   <text class="title" x="760" y="240">AudioEncoder</text>
   <text class="sub" x="760" y="262">Opus</text>
   <text class="chip" x="860" y="218">WC · WW</text>
+
+  <!-- latency overlay injector: runs inside v_encoder on the raw NV12 frame,
+       before H.264 encode; toggled by the "Add latency information in video" UI -->
+  <rect class="box" x="222" y="200" width="133" height="90" rx="10"/>
+  <text class="title" x="288" y="232" font-size="15">Overlay</text>
+  <text class="title" x="288" y="251" font-size="15">injector</text>
+  <text class="sub" x="288" y="271">OverlayEncoder</text>
+  <path class="flow" d="M355,245 L370,245" marker-end="url(#arrow)"/>
+  <text class="sub" x="288" y="312" font-size="11">stamps capture epoch</text>
+  <text class="sub" x="288" y="328" font-size="11">into NV12 top rows (UI toggle)</text>
 
   <path class="flow" d="M480,290 L480,370" marker-end="url(#arrow)"/>
   <text class="edge" x="500" y="335" text-anchor="start">H.264 + Metadata</text>

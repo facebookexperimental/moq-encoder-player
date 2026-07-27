@@ -102,12 +102,16 @@
   <path class="aux" d="M870,700 L915,700" marker-end="url(#arrow)"/>
   <text class="sub" x="892" y="716" font-size="11">buffer ms</text>
 
-  <!-- latency measurement (left) -->
-  <rect class="side" x="40" y="455" width="210" height="95" rx="10"/>
-  <text class="title" x="145" y="495" font-size="15">Latency measurement</text>
-  <text class="sub" x="145" y="518">now − wallclock(sample)</text>
-  <text class="sub" x="145" y="536">(clkms side-channel)</text>
-  <path class="aux" d="M250,502 L360,502" marker-end="url(#arrow)"/>
+  <!-- latency overlay detector: the main-thread render loop reads the displayed
+       decoded frame and recovers the capture epoch stamped by OverlayEncoder,
+       measuring glass-to-glass video latency in-band (no side-channel) -->
+  <rect class="side" x="40" y="795" width="290" height="115" rx="10"/>
+  <text class="title" x="185" y="828" font-size="15">Latency overlay detector</text>
+  <text class="sub" x="185" y="850">OverlayDecoder (main thread)</text>
+  <text class="sub" x="185" y="870">recover capture epoch from displayed frame</text>
+  <text class="sub" x="185" y="888">videoLatencyMs = now &#8722; epoch</text>
+  <text class="sub" x="185" y="906">+ recovery-confidence %</text>
+  <path class="aux" d="M360,835 L330,835" marker-end="url(#arrow)"/>
 
   <!-- legend -->
   <text class="legend" x="40" y="620" font-weight="700">Legend</text>
