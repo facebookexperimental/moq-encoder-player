@@ -470,13 +470,22 @@ You should see same UI that is shown in testing section above
     - Opus can extract channels from packet, and default to 48KHz
   - IsDisco is in LOC, how to add it
 
-- When it drops 100+ audio streams it breaks not recovering (I’m guessing it is trying to send 100 streams at same time hitting browser limit)
+
 - Check token in all messages, not just when encoder receives SUBSCRIBE
+
+
 - Encoder: Cancel QUIC stream after some reasonable time (?) in mode live
+
+
 - Player: Do not use main thread for anything except reporting
 - Player/server: Cancel QUIC stream if arrives after jitter buffer
-- All:
-  - Accept B frames (DTS)
+
+
+- Accept B frames (DTS)
+
+
+- DONE When it drops 100+ audio streams it breaks not recovering (I’m guessing it is trying to send 100 streams at same time hitting browser limit):
+  - Moxygen issue: Moxygen relay doesn't queue when it's out of stream credit, instead it fails
 
 
 ## License
