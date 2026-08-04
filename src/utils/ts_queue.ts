@@ -56,7 +56,7 @@ export class TsQueue {
     }
   }
 
-  // Queue length in seconds. `timebase` is the per-track MoQ-MI timebase (ticks
+  // Queue length in seconds. `timebase` is the per-track timebase (ticks
   // per second) the queued timestamps are in; it is mandatory (no default).
   //  - empty  -> 0 (nothing queued)
   //  - 1 item -> the average item duration (a single item has no span)

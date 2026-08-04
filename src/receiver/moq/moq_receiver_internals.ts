@@ -7,9 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 import { Moq, type ObjectCallback, type EndOfGroupCallback } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, type KvPair } from '../../moq/moqt.js';
-import { MIPackager, MIPayloadTypeEnum } from '../../packager/mi_packager.js';
+import { LOCPackager, type LOCData, type LOCMediaType } from '../../packager/loc_packager.js';
 import { sendMessageToMain, convertTimestamp } from '../../utils/utils.js';
-import { ContainsNALUSliceIDR, DEFAULT_AVCC_HEADER_LENGTH } from '../../utils/media/avcc_parser.js';
 
 const WORKER_PREFIX = '[MOQ-DOWNLOADER]';
 
@@ -20,8 +19,8 @@ const DEV_MODE = true;
 export interface TrackData {
   namespace: string[];
   name: string;
-  // Per-track MoQ-MI timebase (ticks per second) the track's timestamps are in.
-  // Mandatory: audio and video may differ, so there is no safe default.
+  // Timebase (ticks per second) this player wants the track's timestamps in.
+  // Mandatory for audio and video: they may differ, so there is no safe default.
   timebase: number;
   authInfo?: string;
   maxInFlightRequests?: number;
@@ -41,7 +40,7 @@ export interface ReceiverConfig {
 /**
  * MoQ subscriber Web Worker. Translates main-thread messages into calls on the
  * high-level MoQ API (src/moq/moq.ts) and demuxes received objects with
- * MIPackager into EncodedAudioChunk / EncodedVideoChunk for the player
+ * LOCPackager into EncodedAudioChunk / EncodedVideoChunk for the player
  * pipeline. All MoQ protocol work (session, control loop, subscriptions,
  * object reception) lives in the `Moq`/`Subscription` classes.
  */
@@ -111,7 +110,7 @@ export class MoqReceiver {
     if (Object.keys(tracks).length <= 0) {
       return 'Number of Track Ids to subscribe needs to be > 0';
     }
-    for (const track of Object.values(tracks)) {
+    for (const [mediaType, track] of Object.entries(tracks)) {
       if (
         !('namespace' in track) ||
         track.namespace.length <= 0 ||
@@ -120,7 +119,8 @@ export class MoqReceiver {
       ) {
         return 'Track malformed, needs to contain namespace, name, and authInfo';
       }
-      if (!('timebase' in track) || !(track.timebase > 0)) {
+      // Only media tracks are timed; a data track carries no LOC timestamps.
+      if (mediaType !== 'data' && !(track.timebase > 0)) {
         return 'Track malformed, needs a timebase (ticks/sec) > 0';
       }
     }
@@ -153,7 +153,7 @@ export class MoqReceiver {
         trackData.namespace,
         trackData.name,
         trackData.authInfo,
-        this.objectHandler(),
+        this.objectHandler(mediaType as LOCMediaType),
         this.endOfGroupHandler(mediaType),
       );
       sendMessageToMain(
@@ -170,10 +170,20 @@ export class MoqReceiver {
   // object reception (media)
   // -------------------------------------------------------------------------
 
-  // Build the per-object callback handed to Moq.subscribe.
-  private objectHandler(): ObjectCallback {
+  // Build the per-object callback handed to Moq.subscribe. LOC does not put the
+  // media type on the wire (that is the catalog's job), so it is bound here from
+  // the track config.
+  private objectHandler(mediaType: LOCMediaType): ObjectCallback {
     return (reader, extensionHeaders, length, groupId, objectId, isLastInGroup) =>
-      this.handleObject(reader, extensionHeaders, length, groupId, objectId, isLastInGroup);
+      this.handleObject(
+        mediaType,
+        reader,
+        extensionHeaders,
+        length,
+        groupId,
+        objectId,
+        isLastInGroup,
+      );
   }
 
   // Build the end-of-group callback handed to Moq.subscribe. Forwards the MoQ
@@ -189,8 +199,9 @@ export class MoqReceiver {
 
   // Demux one received object into an encoded media chunk and post it upstream.
   private async handleObject(
+    mediaType: LOCMediaType,
     reader: ReadableStream<Uint8Array>,
-    extensionHeaders: KvPair[],
+    properties: KvPair[],
     length?: number,
     groupId?: number,
     objectId?: number,
@@ -198,54 +209,41 @@ export class MoqReceiver {
   ): Promise<boolean> {
     this.reportStats();
 
-    const packet = new MIPackager();
-    await packet.ParseData(reader, extensionHeaders, length);
+    const packet = new LOCPackager(mediaType);
+    await packet.ParseData(reader, properties, length);
     const isEOF = packet.IsEof();
 
-    const chunkData: any = packet.GetData();
-    if (chunkData == null || chunkData.type === undefined) {
-      throw new Error(
-        `Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`,
-      );
-    }
+    const locData = packet.GetData();
     if (this.verbose) {
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded MOQT-MI: ${packet.GetDataStr()}`);
+      sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded LOC: ${packet.GetDataStr()}`);
     }
 
     let chunk;
     let appMediaType;
-    if (
-      chunkData.type === MIPayloadTypeEnum.AudioOpusWCP ||
-      chunkData.type === MIPayloadTypeEnum.AudioAACMP4LCWCP
-    ) {
+    if (mediaType === 'audio') {
       appMediaType = 'audiochunk';
-      const timebase = this.config!.moqTracks['audio'].timebase;
       chunk = new EncodedAudioChunk({
-        timestamp: convertTimestamp(chunkData.pts, chunkData.timebase, timebase),
+        timestamp: this.toTrackTimebase(locData, mediaType),
         type: 'key',
-        data: chunkData.data,
+        data: locData.data,
       });
-    } else if (chunkData.type === MIPayloadTypeEnum.VideoH264AVCCWCP) {
+    } else if (mediaType === 'video') {
       appMediaType = 'videochunk';
-      // Find a NALU SliceIDR to tell whether this is a key or delta frame. We
-      // could infer IDR from the MOQT start-of-group, but this is less error
-      // prone.
-      const isIdr = ContainsNALUSliceIDR(chunkData.data, DEFAULT_AVCC_HEADER_LENGTH);
-      const timebase = this.config!.moqTracks['video'].timebase;
       chunk = new EncodedVideoChunk({
-        timestamp: convertTimestamp(chunkData.pts, chunkData.timebase, timebase),
-        type: isIdr ? 'key' : 'delta',
-        data: chunkData.data,
+        timestamp: this.toTrackTimebase(locData, mediaType),
+        // LOC Video Frame Marking: the publisher marks independent frames, so we
+        // do not need to inspect the payload for an IDR slice.
+        type: packet.IsDelta() ? 'delta' : 'key',
+        data: locData.data,
       });
-    } else if (chunkData.type === MIPayloadTypeEnum.RAWData) {
+    } else {
       appMediaType = 'data';
-      chunk = chunkData.data;
+      chunk = locData.data;
     }
 
     self.postMessage({
       type: appMediaType,
       clkms: Date.now(),
-      packagerType: chunkData.type,
       // MoQ transport-native ordering keys. The player dejitters/orders on
       // (groupId, objectId). isLastInGroup carries the end-of-group signal inline
       // for datagrams; subgroup streams signal it out of band (endofgroup msg).
@@ -253,12 +251,25 @@ export class MoqReceiver {
       objectId,
       isLastInGroup,
       chunk,
-      metadata: chunkData.metadata,
-      sampleFreq: chunkData.sampleFreq,
-      numChannels: chunkData.numChannels,
+      codec: locData.codec,
+      // LOC Video Config / Audio Config: the WebCodecs decoder description.
+      metadata: locData.config,
     });
 
     return isEOF;
+  }
+
+  // Convert a LOC timestamp from the publisher's timescale into the timebase
+  // this player's pipeline runs the track at.
+  private toTrackTimebase(locData: LOCData, mediaType: LOCMediaType): number {
+    if (locData.timestamp === undefined || locData.timescale === undefined) {
+      throw new Error(`Received a ${mediaType} object with no LOC timestamp or timescale`);
+    }
+    return convertTimestamp(
+      locData.timestamp,
+      locData.timescale,
+      this.config!.moqTracks[mediaType].timebase,
+    );
   }
 
   private reportStats(): void {

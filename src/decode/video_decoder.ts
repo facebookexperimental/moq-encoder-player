@@ -7,10 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum, compareArrayBuffer } from '../utils/utils.js';
 import { TsQueue } from '../utils/ts_queue.js';
-import {
-  ParseAVCDecoderConfigurationRecord,
-  GetVideoCodecStringFromAVCDecoderConfigurationRecord,
-} from '../utils/media/avc_decoder_configuration_record_parser.js';
+import { ParseAVCDecoderConfigurationRecord } from '../utils/media/avc_decoder_configuration_record_parser.js';
 import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from '../utils/media/avcc_parser.js';
 
 const WORKER_PREFIX = '[VIDEO-DECO]';
@@ -18,7 +15,7 @@ const WORKER_PREFIX = '[VIDEO-DECO]';
 const MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS = 500;
 const MAX_QUEUED_CHUNKS_DEFAULT = 60;
 
-// Per-track MoQ-MI timebase (ticks/sec) that chunk timestamps are in. Set from
+// Per-track timebase (ticks/sec) that chunk timestamps are in. Set from
 // each incoming chunk message (0 until the first chunk arrives).
 let trackTimebase = 0;
 
@@ -58,14 +55,15 @@ function isWaitingForKeyframe() {
   return waitForKeyFrame;
 }
 
-function getAndOverrideInitDataValues(metadata: any) {
+function getAndOverrideInitDataValues(metadata: any, codec: string) {
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
   const avcDecoderConfigurationRecordInfo = ParseAVCDecoderConfigurationRecord(metadata);
 
   // Override values
   // We can get the width and height from SPS inside AVCDecoderConfigurationRecord but that is complex and NOT necessary
   const config: any = {
-    codec: GetVideoCodecStringFromAVCDecoderConfigurationRecord(avcDecoderConfigurationRecordInfo),
+    // LOC Codecstring, as reported by the publisher's encoder.
+    codec,
     description: metadata,
   };
   config.optimizeForLatency = true;
@@ -76,7 +74,7 @@ function getAndOverrideInitDataValues(metadata: any) {
   return { config, avcDecoderConfigurationRecordInfo };
 }
 
-function configureDecoder(objLabel: string, metadata: any) {
+function configureDecoder(objLabel: string, metadata: any, codec: string) {
   if (videoDecoder == null) {
     sendMessageToMain(
       WORKER_PREFIX,
@@ -85,7 +83,7 @@ function configureDecoder(objLabel: string, metadata: any) {
     );
     return;
   }
-  const ret = getAndOverrideInitDataValues(metadata);
+  const ret = getAndOverrideInitDataValues(metadata, codec);
 
   sendMessageToMain(
     WORKER_PREFIX,
@@ -130,7 +128,7 @@ self.addEventListener('message', async function (e) {
       );
       if (videoDecoder != null) {
         if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, e.data.metadata)) {
-          configureDecoder(objLabelFor(e.data), e.data.metadata);
+          configureDecoder(objLabelFor(e.data), e.data.metadata, e.data.codec);
         }
         lastMetadataUsed = e.data.metadata;
       } else {
@@ -150,7 +148,7 @@ self.addEventListener('message', async function (e) {
           }
         });
 
-        configureDecoder(objLabelFor(e.data), e.data.metadata);
+        configureDecoder(objLabelFor(e.data), e.data.metadata, e.data.codec);
         lastMetadataUsed = e.data.metadata;
 
         workerState = StateEnum.Running;

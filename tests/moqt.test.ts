@@ -40,7 +40,6 @@ import {
   MOQ_PARAMETER_SUBSCRIPTION_FILTER,
   MOQ_FORWARD_TRUE,
   MOQ_OBJ_STATUS_END_OF_GROUP,
-  MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE,
   MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION,
   MOQ_IMPLEMENTATION_NAME,
 } from '../src/moq/moqt.js';
@@ -362,7 +361,9 @@ describe('object and datagram headers (draft-18)', () => {
 
   it('per-datagram object (with properties) round-trips its header', async () => {
     const cap = createCaptureStream();
-    const ext = [moqCreateKvPair(MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, 5)];
+    // An even property type carries a varint value (see encodeKvpValue).
+    const PROPERTY_TYPE = 0x0a;
+    const ext = [moqCreateKvPair(PROPERTY_TYPE, 5)];
     await moqSendObjectPerDatagramToWriter(
       cap.writer,
       12,
@@ -381,7 +382,7 @@ describe('object and datagram headers (draft-18)', () => {
     expect(parsed.publisherPriority).toBe(0x0a);
     expect(parsed.options.extensionsPresent).toBe(true);
     expect(parsed.extensionHeaders).toEqual([
-      { name: MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE, val: 5 },
+      { name: PROPERTY_TYPE, val: 5 },
     ]);
   });
 

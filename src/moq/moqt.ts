@@ -139,23 +139,9 @@ export const MOQ_OBJ_STATUS_NORMAL = 0x0;
 export const MOQ_OBJ_STATUS_END_OF_GROUP = 0x3;
 export const MOQ_OBJ_STATUS_END_OF_TRACK_AND_GROUP = 0x4;
 
-// Object Properties (draft-18 §15.8). Renamed from "Extension Headers"; the
-// MoQMI media-interop types keep their values and ride the delta-encoded KVPs.
-export const MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE = 0x0a;
-export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA = 0x15;
-export const MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA = 0x0d;
-export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA = 0x0f;
-export const MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA = 0x11;
-export const MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA = 0x13;
-
-export const MOQ_EXT_HEADERS_SUPPORTED = [
-  MOQ_EXT_HEADER_TYPE_MOQMI_MEDIA_TYPE,
-  MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_METADATA,
-  MOQ_EXT_HEADER_TYPE_MOQMI_VIDEO_H264_IN_AVCC_EXTRADATA,
-  MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_OPUS_METADATA,
-  MOQ_EXT_HEADER_TYPE_MOQMI_TEXT_UTF8_METADATA,
-  MOQ_EXT_HEADER_TYPE_MOQMI_AUDIO_AACLC_MPEG4_METADATA,
-];
+// Object Properties (draft-18 §15.8) are delta-encoded KVPs; this layer stays
+// media-free and never interprets them. The container's property IDs live with
+// the packager (see ../packager/loc_packager.ts).
 
 // Authorization Token Alias Type (draft-18 §15.5)
 export const MOQ_TOKEN_DELETE = 0x0;
@@ -929,7 +915,8 @@ function moqCreateSubgroupHeaderBytes(
   groupSeq: number,
   publisherPriority: number,
 ): Uint8Array {
-  // Properties present (MoQMI always carries them), subgroup id present, first
+  // Properties present (media objects always carry them; a track that sends
+  // none just writes a zero-length properties block), subgroup id present, first
   // object of the subgroup (we are the original publisher), explicit priority.
   const type = getSubgroupHeaderType({
     propertiesPresent: true,

@@ -18,7 +18,7 @@ export class VideoRenderBuffer {
   avgItemDur: AvgLastNItems;
   lastItemTs: number | undefined;
 
-  // `timebase` is the per-track MoQ-MI timebase (ticks per second) the video
+  // `timebase` is the per-track timebase (ticks per second) the video
   // timestamps are expressed in. Mandatory -- there is no safe default.
   constructor(timebase: number) {
     if (!(timebase > 0)) {

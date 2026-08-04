@@ -22,6 +22,7 @@ export * from './utils/jitter_buffer.js';
 // Media (H.264 / AVCC) helpers
 export * from './utils/media/avcc_parser.js';
 export * from './utils/media/avc_decoder_configuration_record_parser.js';
+export * from './utils/media/audio_decoder_config_parser.js';
 
 // Media over QUIC transport: low-level protocol + high-level API
 export * from './moq/byte_utils.js';
@@ -30,8 +31,8 @@ export * from './moq/buffer_utils.js';
 export * from './moq/moqt.js';
 export * from './moq/moq.js';
 
-// Media Interop packager
-export * from './packager/mi_packager.js';
+// Low Overhead Media Container packager
+export * from './packager/loc_packager.js';
 
 // Render buffers
 export * from './render/video_render_buffer.js';

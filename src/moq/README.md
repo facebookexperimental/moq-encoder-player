@@ -14,8 +14,8 @@ low-level wire codec in [`moqt.ts`](./moqt.ts) and the varint codec in
 | [`ObjData`](#objdata) | A handle to one published object | `track.sendObject(...)` |
 
 "Media-free" means `Moq` only moves **opaque byte payloads** plus MoQ object
-extension headers. Encoding/packaging (e.g. the MoQMI packager in
-[`../packager/mi_packager.ts`](../packager/mi_packager.ts)) and decoding live in
+extension headers. Encoding/packaging (e.g. the LOC packager in
+[`../packager/loc_packager.ts`](../packager/loc_packager.ts)) and decoding live in
 the caller. The publish and subscribe workers that use this API are in
 [`../sender/moq/`](../sender/moq) and [`../receiver/moq/`](../receiver/moq).
 
@@ -56,7 +56,7 @@ flowchart TD
 ```
 
 Each object carries: `groupId`, `objId`, a **publisher priority**, optional
-**extension headers** (key/value pairs — e.g. MoQMI media metadata), and the
+**extension headers** (key/value pairs — e.g. LOC media metadata), and the
 opaque **payload**.
 
 ### Object → wire mapping ([`MoqMapping`](#moqmapping))
@@ -322,7 +322,7 @@ Queue one object for delivery and return an [`ObjData`](#objdata) handle
 immediately (delivery is async). Pass [`NewGroupOptions`](#newgroupoptions) to
 **start a new group** (e.g. a video keyframe) with a publisher priority; omit it
 to append to the current group. `extensionHeaders` are MoQ object extension
-headers (e.g. MoQMI metadata). `callback` fires once the object is written.
+headers (e.g. LOC metadata). `callback` fires once the object is written.
 
 The returned object's `status` is **`dropped`** (nothing sent) when:
 - the track is `closed`,
@@ -568,7 +568,7 @@ async function readExactly(
   reader: ReadableStream<Uint8Array>,
   length?: number,
 ): Promise<Uint8Array> {
-  // Application-specific; see ../packager/mi_packager.ts (MIPackager.ParseData)
+  // Application-specific; see ../packager/loc_packager.ts (LOCPackager.ParseData)
   // for how the player consumes the reader + extension headers.
   // ...
 }
