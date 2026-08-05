@@ -7,7 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../../moq/moqt.js';
-import { MIPackager, MIPayloadTypeEnum } from '../../packager/mi_packager.js';
+import { LOCPackager, type LOCMediaType } from '../../packager/loc_packager.js';
 import type { WireDropConfig, WireHoldConfig } from '../../moq/network_simulator.js';
 
 const WORKER_PREFIX = '[MOQ-SENDER]';
@@ -47,13 +47,9 @@ interface ChunkMessage {
   mediaType: string;
   chunk: any;
   seqId?: number;
-  firstFrameClkms?: number;
   compensatedTs?: number;
-  estimatedDuration?: number;
   metadata?: any;
   timebase?: number;
-  sampleFreq?: number;
-  numChannels?: number;
   codec?: string;
   moqMapping?: string;
 }
@@ -62,7 +58,7 @@ interface ChunkMessage {
  * MoQ publisher Web Worker.
  * MoQ publisher Web Worker. Translates main-thread messages into calls on the
  * high-level MoQ API (src/moq/moq.ts) and packages encoded media with
- * MIPackager. All MoQ protocol work (session, control loop, subscriptions,
+ * LOCPackager. All MoQ protocol work (session, control loop, subscriptions,
  * object scheduling) lives in the `Moq`/`Track` classes.
  */
 export class MoqSender {
@@ -290,7 +286,12 @@ export class MoqSender {
     if (track === undefined) {
       // In PUBLISH_NAMESPACE mode a track exists only once a subscriber has
       // subscribed; drop until then instead of erroring.
-      this.emitDropped(data.seqId, data.chunk?.timestamp, 'track not subscribed yet', data.mediaType);
+      this.emitDropped(
+        data.seqId,
+        data.chunk?.timestamp,
+        'track not subscribed yet',
+        data.mediaType,
+      );
       return;
     }
     if (track.getInfo().numSubscribers <= 0) {
@@ -310,7 +311,7 @@ export class MoqSender {
     const obj = track.sendObject(
       packet.PayloadToBytes(),
       newGroupOptions,
-      packet.ExtensionHeaders(),
+      packet.Properties(),
       () => {
         if (this.verbose) {
           console.debug(
@@ -336,92 +337,55 @@ export class MoqSender {
 
   // Normalize the raw chunk message into the shape the packager path expects.
   private normalizeChunk(data: ChunkMessage): any {
-    const nonNeg = (v: number | undefined) => (v === undefined || v < 0 ? 0 : v);
     const trackCfg = this.config?.moqTracks[data.mediaType];
     return {
       mediaType: data.mediaType,
-      firstFrameClkms: nonNeg(data.firstFrameClkms),
-      compensatedTs: nonNeg(data.compensatedTs),
-      estimatedDuration:
-        data.estimatedDuration === undefined || data.estimatedDuration < 0
-          ? data.chunk?.duration
-          : data.estimatedDuration,
+      // The LOC Timestamp is a vi64, and numberToVarInt cannot encode negatives.
+      compensatedTs:
+        data.compensatedTs === undefined || data.compensatedTs < 0 ? 0 : data.compensatedTs,
       seqId: data.seqId ?? 0,
       chunk: data.chunk,
       metadata: data.metadata,
       timebase: data.timebase,
-      sampleFreq: data.sampleFreq,
-      numChannels: data.numChannels,
       codec: data.codec,
       newSubgroupEvery: trackCfg?.newSubgroupEvery,
     };
   }
 
-  // Wrap a media chunk into an MIPackager packet.
-  private packetizeChunk(chunkData: any): MIPackager {
-    const packet = new MIPackager();
-    if (chunkData.mediaType === 'video') {
-      const buf = new Uint8Array(chunkData.chunk.byteLength);
-      chunkData.chunk.copyTo(buf);
-      const avcDecoderConfig = chunkData.metadata != null ? chunkData.metadata : undefined;
-      // Assuming NO B-Frames (pts === dts).
-      packet.SetData(
-        MIPayloadTypeEnum.VideoH264AVCCWCP,
-        chunkData.seqId,
-        chunkData.compensatedTs,
-        chunkData.timebase,
-        chunkData.estimatedDuration,
-        chunkData.firstFrameClkms,
-        buf,
-        chunkData.compensatedTs,
-        avcDecoderConfig,
-        undefined,
-        undefined,
-        chunkData.chunk.type === 'delta',
-      );
-    } else if (chunkData.mediaType === 'audio') {
-      const buf = new Uint8Array(chunkData.chunk.byteLength);
-      chunkData.chunk.copyTo(buf);
-      const payloadType =
-        chunkData.codec === 'opus'
-          ? MIPayloadTypeEnum.AudioOpusWCP
-          : MIPayloadTypeEnum.AudioAACMP4LCWCP;
-      packet.SetData(
-        payloadType,
-        chunkData.seqId,
-        chunkData.compensatedTs,
-        chunkData.timebase,
-        chunkData.estimatedDuration,
-        chunkData.firstFrameClkms,
-        buf,
-        undefined,
-        undefined,
-        chunkData.sampleFreq,
-        chunkData.numChannels,
-        chunkData.chunk.type === 'delta',
-      );
-    } else if (chunkData.mediaType === 'data') {
+  // Wrap a media chunk into a LOC packet.
+  private packetizeChunk(chunkData: any): LOCPackager {
+    if (
+      chunkData.mediaType !== 'video' &&
+      chunkData.mediaType !== 'audio' &&
+      chunkData.mediaType !== 'data'
+    ) {
+      throw new Error(`Not supported media type ${chunkData.mediaType}`);
+    }
+    const packet = new LOCPackager(chunkData.mediaType as LOCMediaType);
+
+    if (chunkData.mediaType === 'data') {
+      // No LOC properties: the payload is opaque and its group boundaries are
+      // driven by the track config rather than by frame types.
       let isDelta = false;
       if (chunkData.newSubgroupEvery > 1) {
         isDelta = chunkData.seqId % chunkData.newSubgroupEvery !== 0;
       }
-      packet.SetData(
-        MIPayloadTypeEnum.RAWData,
-        chunkData.seqId,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        chunkData.chunk,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        isDelta,
-      );
-    } else {
-      throw new Error(`Not supported media type ${chunkData.mediaType}`);
+      packet.SetData(undefined, undefined, undefined, undefined, chunkData.chunk, isDelta);
+      return packet;
     }
+
+    const buf = new Uint8Array(chunkData.chunk.byteLength);
+    chunkData.chunk.copyTo(buf);
+    // Video carries its config (the AVCDecoderConfigurationRecord) on key frames
+    // only; audio carries it on every object.
+    packet.SetData(
+      chunkData.compensatedTs,
+      chunkData.timebase,
+      chunkData.codec,
+      chunkData.metadata ?? undefined,
+      buf,
+      chunkData.chunk.type === 'delta',
+    );
     return packet;
   }
 

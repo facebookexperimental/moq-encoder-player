@@ -123,6 +123,7 @@ export function GetVideoCodecStringFromAVCDecoderConfigurationRecord(
     'avc1',
     avcDecoderConfigurationRecord.avcProfileIndication,
     avcDecoderConfigurationRecord.AVCLevelIndication,
+    avcDecoderConfigurationRecord.profileCompatibility,
   );
 }
 
@@ -130,12 +131,8 @@ export function GetVideoCodecStringFromProfileLevel(
   codec: string,
   profile: number,
   level: number,
+  constraintFlags = 0,
 ): string {
-  return (
-    codec +
-    '.' +
-    profile.toString(16).toUpperCase().padStart(2, '0') +
-    '00' +
-    level.toString(16).toUpperCase().padStart(2, '0')
-  );
+  const hex = (v: number) => v.toString(16).toUpperCase().padStart(2, '0');
+  return codec + '.' + hex(profile) + hex(constraintFlags) + hex(level);
 }

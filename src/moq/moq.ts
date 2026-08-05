@@ -384,7 +384,7 @@ export class Track {
    * Queue an object for delivery. Passing `newGroupOptions` starts a new group
    * (e.g. a video keyframe) with the given publisher priority; omit it to append
    * to the current group. `extensionHeaders` are MoQ object extension headers
-   * (e.g. MoQMI media metadata). `callback` fires once the object is written.
+   * (e.g. LOC media metadata). `callback` fires once the object is written.
    *
    * Returns an `ObjData` handle. Objects are dropped (status `dropped`) when the
    * subscription is not being forwarded (Forward State 0 / no subscriber), when

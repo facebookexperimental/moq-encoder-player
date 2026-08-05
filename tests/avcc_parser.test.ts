@@ -11,7 +11,11 @@ import {
   ParseNAL,
   ContainsNALUSliceIDR,
 } from '../src/utils/media/avcc_parser.js';
-import { GetVideoCodecStringFromProfileLevel } from '../src/utils/media/avc_decoder_configuration_record_parser.js';
+import {
+  GetVideoCodecStringFromProfileLevel,
+  GetVideoCodecStringFromAVCDecoderConfigurationRecord,
+  type AVCDecoderConfigurationRecord,
+} from '../src/utils/media/avc_decoder_configuration_record_parser.js';
 
 describe('BitReaderHelper', () => {
   const buf = new Uint8Array([0b10110010]);
@@ -69,5 +73,20 @@ describe('GetVideoCodecStringFromProfileLevel', () => {
   it('builds an avc1 codec string from profile and level', () => {
     expect(GetVideoCodecStringFromProfileLevel('avc1', 66, 30)).toBe('avc1.42001E');
     expect(GetVideoCodecStringFromProfileLevel('avc1', 100, 31)).toBe('avc1.64001F');
+  });
+
+  it('includes the constraint flags when they are given', () => {
+    expect(GetVideoCodecStringFromProfileLevel('avc1', 66, 30, 0xe0)).toBe('avc1.42E01E');
+  });
+});
+
+describe('GetVideoCodecStringFromAVCDecoderConfigurationRecord', () => {
+  it('builds the codec string from profile, constraint flags and level', () => {
+    const record = {
+      avcProfileIndication: 66,
+      profileCompatibility: 0xe0,
+      AVCLevelIndication: 30,
+    } as AVCDecoderConfigurationRecord;
+    expect(GetVideoCodecStringFromAVCDecoderConfigurationRecord(record)).toBe('avc1.42E01E');
   });
 });

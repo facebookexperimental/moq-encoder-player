@@ -44,7 +44,7 @@ export class JitterBuffer {
   lastCorrectObjId: number | undefined;
   lastWasLastInGroup: boolean;
 
-  // `timebase` is the per-track MoQ-MI timebase (ticks per second) that this
+  // `timebase` is the per-track timebase (ticks per second) that this
   // track's timestamps are expressed in. It is mandatory -- there is no safe
   // default because audio and video can use different timebases.
   constructor(

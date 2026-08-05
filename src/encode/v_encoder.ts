@@ -35,6 +35,9 @@ let overlayWarned = false;
 
 // Make sure we send the metadata in all keyframes (send last if encoder not provides one)
 let last_keyframe_metadata: any = undefined;
+// WebCodecs reports the decoder config on the first chunk only; the LOC
+// Codecstring property rides every video object.
+let last_codec: string | undefined = undefined;
 
 // Encoder
 const initVideoEncoder = {
@@ -63,6 +66,9 @@ function handleChunk(chunk: any, metadata: any) {
   } else if (chunk.type == 'key') {
     frame_metadata = last_keyframe_metadata;
   }
+  if (metadata?.decoderConfig?.codec != undefined) {
+    last_codec = metadata.decoderConfig.codec;
+  }
 
   const msg = {
     type: 'vchunk',
@@ -70,6 +76,7 @@ function handleChunk(chunk: any, metadata: any) {
     chunk,
     metadata: frame_metadata,
     timebase: WEBCODECS_TIMESCALE,
+    codec: last_codec,
   };
 
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description

@@ -23,13 +23,13 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum } from '../utils/utils.js';
 import { TsQueue } from '../utils/ts_queue.js';
-import { MIPayloadTypeEnum } from '../packager/mi_packager.js';
+import { GetAudioDecoderConfig } from '../utils/media/audio_decoder_config_parser.js';
 
 const WORKER_PREFIX = '[AUDIO-DECO]';
 
 const MAX_DECODE_QUEUE_SIZE_FOR_WARNING_MS = 200;
 
-// Per-track MoQ-MI timebase (ticks/sec) that chunk timestamps are in. Set from
+// Per-track timebase (ticks/sec) that chunk timestamps are in. Set from
 // each incoming chunk message (0 until the first chunk arrives).
 let trackTimebase = 0;
 
@@ -124,32 +124,18 @@ self.addEventListener('message', async function (e) {
     pendingTs = [];
     currentTs = -1;
   } else if (type === 'audiochunk') {
-    if (audioDecoder != null) {
-      sendMessageToMain(
-        WORKER_PREFIX,
-        'debug',
-        `audio-${e.data.groupId}/${e.data.objId} Received init, but AudioDecoder already initialized`,
-      );
-    } else {
+    if (audioDecoder === null) {
+      // The sample rate and channel count are not carried as LOC properties;
+      // they come out of the LOC Audio Config (the WebCodecs decoder
+      // description) that rides every audio object.
       let config;
-      if (e.data.packagerType == MIPayloadTypeEnum.AudioAACMP4LCWCP) {
-        config = {
-          codec: 'mp4a.40.02',
-          sampleRate: e.data.sampleFreq,
-          numberOfChannels: e.data.numChannels,
-        };
-      } else if (e.data.packagerType == MIPayloadTypeEnum.AudioOpusWCP) {
-        config = {
-          codec: 'opus',
-          sampleRate: e.data.sampleFreq,
-          numberOfChannels: e.data.numChannels,
-        };
-      }
-      if (config === undefined) {
+      try {
+        config = GetAudioDecoderConfig(e.data.codec, e.data.metadata);
+      } catch (err: any) {
         sendMessageToMain(
           WORKER_PREFIX,
           'error',
-          `audio-${e.data.groupId}/${e.data.objId} Unsupported audio packager type: ${e.data.packagerType}, can NOT configure decoder`,
+          `audio-${e.data.groupId}/${e.data.objId} Could NOT read the audio config for codec "${e.data.codec}": ${err?.message}`,
         );
         return;
       }
@@ -159,7 +145,7 @@ self.addEventListener('message', async function (e) {
     sendMessageToMain(
       WORKER_PREFIX,
       'debug',
-      `audio-${e.data.groupId}/${e.data.objId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: -`,
+      `audio-${e.data.groupId}/${e.data.objId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata?.byteLength ?? 0}`,
     );
 
     if (workerState !== StateEnum.Running) {

@@ -1,8 +1,8 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). MoQ Media Interop packager version: 03
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring** (see [Packager](#packager))
 
-This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
+This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
 The goal if ths code is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
@@ -37,7 +37,7 @@ moq-encoder-player/
 │   │                       #   network_simulator.ts (send-path drop/hold impairments), README.md
 │   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
 │   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
-│   ├── packager/           #   mi_packager.ts                    (media-interop packager)
+│   ├── packager/           #   loc_packager.ts                   (LOC media packager)
 │   ├── overlay_processor/  #   overlay_encoder.ts / overlay_decoder.ts (pixel latency overlay)
 │   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
 │   │                       #   video_render_buffer.ts
@@ -111,7 +111,9 @@ CI (GitHub Actions, see [`.github/workflows/main.yml`](./.github/workflows/main.
 
 ## Packager
 
-It uses [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 plus the `Codecstring` property** (ID `0x11`), which draft-04 does not register.
+
+That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
 ## Encoder
 
@@ -248,13 +250,32 @@ Note: We configure `VideoEncoder` in `realtime` latency mode, so it delivers a c
 
 Note: `opus.frameDuration` and `opus.application: 'lowdelay'` setting helps keeping encoding latency low
 
-### src/packager/mi_packager.ts
+### src/packager/loc_packager.ts
 
-- Implements [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/)
+- Implements [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 + `Codecstring`** (the `Codecstring` property is a required addition here, not an optional extra — see [Packager](#packager))
+
+The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVideoChunk` / `EncodedAudioChunk`, with no extra framing. The metadata describing it travels as MoQ Object Properties:
+
+| Property | ID | Video key | Video delta | Audio | Data |
+| --- | --- | --- | --- | --- | --- |
+| `TIMESCALE` | `0x08` | yes | yes | yes | — |
+| `VIDEO_FRAME_MARKING` | `0x09` | yes | yes | — | — |
+| `VIDEO_CONFIG` | `0x0D` | yes | — | — | — |
+| `AUDIO_CONFIG` | `0x0F` | — | — | yes | — |
+| `TIMESTAMP` | `0x10` | yes | yes | yes | — |
+| `CODECSTRING` | `0x11` | yes | yes | yes | — |
+
+`CODECSTRING` is the non-draft-04 addition; every other property is registered in the draft's IANA table.
+
+- `VIDEO_FRAME_MARKING` is the 1-byte [RFC 9626](https://www.rfc-editor.org/rfc/rfc9626) short form; its Independent bit is what tells the player a key frame from a delta frame
+- `VIDEO_CONFIG` / `AUDIO_CONFIG` carry the WebCodecs decoder `description` (an AVCDecoderConfigurationRecord, an OpusHead, or an AAC AudioSpecificConfig). The player recovers the audio sample rate and channel count from it — see `src/utils/media/audio_decoder_config_parser.ts`
+- For video the codec is described twice: by `CODECSTRING` and, implicitly, by the profile / constraint flags / level inside `VIDEO_CONFIG`. The player configures from `CODECSTRING` and logs a warning if the two disagree
+- LOC has no media type on the wire (that is a catalog's job), so the publisher and the player both take it from their own per-track config
+- LOC covers audio and video only. The `data` track used by the `simple.html` demos is an opaque payload with no properties
 
 ### src/sender/moq_sender.ts (+ src/sender/moq/moq_sender_internals.ts)
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that implements the MOQT publisher role and sends video and audio packets (see `mi_packager.ts`) to the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/).
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that implements the MOQT publisher role and sends video and audio packets (see `loc_packager.ts`) to the server / relay following MOQT and [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/).
 
 `moq_sender.ts` is a thin worker shell; the publisher logic lives in `MoqSender` (`src/sender/moq/moq_sender_internals.ts`), which drives the shared, media-free `Moq` client in [`src/moq/moq.ts`](./src/moq/moq.ts) (fully documented in [`src/moq/README.md`](./src/moq/README.md)).
 
@@ -290,15 +311,15 @@ To keep the audio and video in-sync the following strategy is applied:
 The MOQT subscriber logic is split in two layers:
 
 - `src/moq/moq.ts` — the high-level, media-free `Moq` client (shared with the publisher). It owns the WebTransport session, the control loop, the SUBSCRIBE handshake (`Moq.subscribe` → `Subscription`), and the incoming stream / datagram receive loops. Received object payloads are routed to the matching `Subscription` by track alias.
-- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and demuxes the received payloads (see `mi_packager.ts`) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline.
+- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and demuxes the received payloads (see `loc_packager.ts`) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline.
 
-It implements MOQT and extracts video and audio packets from the server / relay following MOQT and [draft-cenzano-moq-media-interop](https://datatracker.ietf.org/doc/draft-cenzano-moq-media-interop/):
+It implements MOQT and extracts video and audio packets from the server / relay following MOQT and [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/):
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
 - Waits for incoming unidirectional (Server -> Player) QUIC streams (and datagrams)
 - For every received chunk (QUIC stream) we:
-  - Demuxed it (see `mi_packager.ts`)
+  - Demuxed it (see `loc_packager.ts`)
   - Video: Create `EncodedVideoChunk`
     - Could be enhanced by init metadata and wallclock
   - Audio: Create `EncodedAudioChunk`
@@ -458,19 +479,6 @@ ENJOY YOUR POCing!!! :-)
 You should see same UI that is shown in testing section above
 
 ## TODO
-- Adopt LOCv4 instead of MOQ-MI
-  - Need to add LOC property (codecstring at least for audio)
-  - OK Check video extradata
-    - Init at 1st keyframe, carries AVCDecoderConfigurationRecord as metadata
-    - Codec string can be extracted from AVCDecoderConfigurationRecord
-  - Check audio extradata
-    - LOC says description field of webcodecs (CHECK)
-    - Webcodecs audio decoder needs sampleRate, channels, and codecstring
-    - AAC use extradata
-    - Opus can extract channels from packet, and default to 48KHz
-  - IsDisco is in LOC, how to add it
-
-
 - Check token in all messages, not just when encoder receives SUBSCRIBE
 
 

@@ -21,6 +21,11 @@ let encoderMaxQueueSize = 5;
 // Last audioData SampleFreq
 let lastEncoderConfig: any;
 
+// WebCodecs reports the decoder config on the first chunk only, so cache it: the
+// LOC Audio Config property rides every audio object.
+let lastDecoderConfig: any = undefined;
+let missingDescriptionWarned = false;
+
 // Encoder
 const initAudioEncoder = {
   output: handleChunk,
@@ -36,14 +41,31 @@ const initAudioEncoder = {
 let aEncoder: any = null;
 
 function handleChunk(chunk: any, metadata: any) {
+  if (metadata?.decoderConfig != undefined) {
+    lastDecoderConfig = metadata.decoderConfig;
+  }
+  if (lastDecoderConfig?.description == undefined) {
+    if (!missingDescriptionWarned) {
+      missingDescriptionWarned = true;
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'error',
+        'Encoder did not report a decoder config description, the player can NOT configure its decoder',
+      );
+    }
+    return;
+  }
+
   const msg = {
     type: 'achunk',
     seqId: chunkDeliveredCounter++,
     chunk,
     timebase: WEBCODECS_TIMESCALE,
-    sampleFreq: lastEncoderConfig.sampleRate,
-    numChannels: lastEncoderConfig.numberOfChannels,
-    codec: lastEncoderConfig.codec,
+    // LOC Audio Config: the WebCodecs decoder description (OpusHead for Opus, an
+    // AudioSpecificConfig for AAC). The player derives the sample rate and
+    // channel count from it.
+    metadata: lastDecoderConfig.description,
+    codec: lastDecoderConfig.codec,
   };
 
   sendMessageToMain(
