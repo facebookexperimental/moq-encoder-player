@@ -7,7 +7,10 @@ LICENSE file in the root directory of this source tree.
 
 import { sendMessageToMain, StateEnum, compareArrayBuffer } from '../utils/utils.js';
 import { TsQueue } from '../utils/ts_queue.js';
-import { ParseAVCDecoderConfigurationRecord } from '../utils/media/avc_decoder_configuration_record_parser.js';
+import {
+  ParseAVCDecoderConfigurationRecord,
+  GetVideoCodecStringFromAVCDecoderConfigurationRecord,
+} from '../utils/media/avc_decoder_configuration_record_parser.js';
 import { ParseH264NALs, DEFAULT_AVCC_HEADER_LENGTH } from '../utils/media/avcc_parser.js';
 
 const WORKER_PREFIX = '[VIDEO-DECO]';
@@ -84,6 +87,23 @@ function configureDecoder(objLabel: string, metadata: any, codec: string) {
     return;
   }
   const ret = getAndOverrideInitDataValues(metadata, codec);
+
+  // The codec string reaches us twice: as the LOC Codecstring property, and
+  // implicitly in the profile / constraint flags / level of the Video Config. We
+  // configure from the LOC property; flag it when the two disagree, since that
+  // means the publisher's properties and its payload describe different streams.
+  if (ret.avcDecoderConfigurationRecordInfo != undefined) {
+    const fromRecord = GetVideoCodecStringFromAVCDecoderConfigurationRecord(
+      ret.avcDecoderConfigurationRecordInfo,
+    );
+    if (fromRecord.toLowerCase() !== codec?.toLowerCase()) {
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'warning',
+        `Obj: ${objLabel} LOC Codecstring "${codec}" does NOT match the AVCDecoderConfigurationRecord ("${fromRecord}"), using the LOC Codecstring`,
+      );
+    }
+  }
 
   sendMessageToMain(
     WORKER_PREFIX,

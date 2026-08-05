@@ -5,8 +5,13 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-// Follows "draft-ietf-moq-loc": https://datatracker.ietf.org/doc/draft-ietf-moq-loc/
-// plus the Codecstring property (LOC_PROP_CODECSTRING).
+// Follows "draft-ietf-moq-loc-04": https://datatracker.ietf.org/doc/draft-ietf-moq-loc/
+//
+// This is draft 04 PLUS the Codecstring property (LOC_PROP_CODECSTRING, 0x11),
+// which draft 04 does not register. That addition is required here, not
+// optional: LOC puts no media type on the wire and this project has no catalog,
+// so Codecstring is the only thing telling the player which codec to configure
+// its decoders with. A plain draft-04 peer will NOT interoperate.
 
 import { buffRead, readUntilEof } from '../moq/buffer_utils.js';
 import { moqCreateKvPair, type KvPair } from '../moq/moqt.js';

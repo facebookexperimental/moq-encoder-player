@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: 04
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring** (see [Packager](#packager))
 
 This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
@@ -111,7 +111,9 @@ CI (GitHub Actions, see [`.github/workflows/main.yml`](./.github/workflows/main.
 
 ## Packager
 
-It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/)
+It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 plus the `Codecstring` property** (ID `0x11`), which draft-04 does not register.
+
+That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
 ## Encoder
 
@@ -250,7 +252,7 @@ Note: `opus.frameDuration` and `opus.application: 'lowdelay'` setting helps keep
 
 ### src/packager/loc_packager.ts
 
-- Implements [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) plus the `Codecstring` property
+- Implements [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 + `Codecstring`** (the `Codecstring` property is a required addition here, not an optional extra — see [Packager](#packager))
 
 The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVideoChunk` / `EncodedAudioChunk`, with no extra framing. The metadata describing it travels as MoQ Object Properties:
 
@@ -263,8 +265,11 @@ The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVid
 | `TIMESTAMP` | `0x10` | yes | yes | yes | — |
 | `CODECSTRING` | `0x11` | yes | yes | yes | — |
 
+`CODECSTRING` is the non-draft-04 addition; every other property is registered in the draft's IANA table.
+
 - `VIDEO_FRAME_MARKING` is the 1-byte [RFC 9626](https://www.rfc-editor.org/rfc/rfc9626) short form; its Independent bit is what tells the player a key frame from a delta frame
 - `VIDEO_CONFIG` / `AUDIO_CONFIG` carry the WebCodecs decoder `description` (an AVCDecoderConfigurationRecord, an OpusHead, or an AAC AudioSpecificConfig). The player recovers the audio sample rate and channel count from it — see `src/utils/media/audio_decoder_config_parser.ts`
+- For video the codec is described twice: by `CODECSTRING` and, implicitly, by the profile / constraint flags / level inside `VIDEO_CONFIG`. The player configures from `CODECSTRING` and logs a warning if the two disagree
 - LOC has no media type on the wire (that is a catalog's job), so the publisher and the player both take it from their own per-track config
 - LOC covers audio and video only. The `data` track used by the `simple.html` demos is an opaque payload with no properties
 
@@ -474,9 +479,6 @@ ENJOY YOUR POCing!!! :-)
 You should see same UI that is shown in testing section above
 
 ## TODO
-- Adopt LOCv4 instead of MOQ-MI
-  - Needs review
-
 - Check token in all messages, not just when encoder receives SUBSCRIBE
 
 
