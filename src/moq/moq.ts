@@ -1075,6 +1075,7 @@ export class Moq {
     // `protocols` to the WT-Available-Protocols header; engines that do not yet
     // support it ignore the option (no version is then offered).
     wtOptions.protocols = [options.alpnVersion ?? MOQ_ALPN_DRAFT18_VERSION];
+    wtOptions.congestionControl = 'low-latency'
 
     console.info(`${LOG_PREFIX} Opening MOQT to ${url}, options: ${JSON.stringify(wtOptions)}`);
 
