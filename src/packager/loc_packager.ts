@@ -15,6 +15,7 @@ LICENSE file in the root directory of this source tree.
 
 import { buffRead, readUntilEof } from '../moq/buffer_utils.js';
 import { moqCreateKvPair, type KvPair } from '../moq/moqt.js';
+import type { MediaPackager } from './media_packager.js';
 
 export const LOC_PACKAGER_VERSION = '04+codecstringPR';
 
@@ -57,7 +58,7 @@ export interface LOCData {
  * publisher and the subscriber both know it from their own per-track config, so
  * it is passed to the constructor.
  */
-export class LOCPackager {
+export class LOCPackager implements MediaPackager {
   mediaType: LOCMediaType;
 
   timestamp: number | undefined;

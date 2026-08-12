@@ -38,6 +38,10 @@ let last_keyframe_metadata: any = undefined;
 // WebCodecs reports the decoder config on the first chunk only; the LOC
 // Codecstring property rides every video object.
 let last_codec: string | undefined = undefined;
+// Coded dimensions, also reported on the first chunk only. The CMAF packager
+// needs them to describe the track (tkhd / visual sample entry); LOC does not.
+let last_coded_width: number | undefined = undefined;
+let last_coded_height: number | undefined = undefined;
 
 // Encoder
 const initVideoEncoder = {
@@ -69,6 +73,10 @@ function handleChunk(chunk: any, metadata: any) {
   if (metadata?.decoderConfig?.codec != undefined) {
     last_codec = metadata.decoderConfig.codec;
   }
+  if (metadata?.decoderConfig?.codedWidth != undefined) {
+    last_coded_width = metadata.decoderConfig.codedWidth;
+    last_coded_height = metadata.decoderConfig.codedHeight;
+  }
 
   const msg = {
     type: 'vchunk',
@@ -77,6 +85,8 @@ function handleChunk(chunk: any, metadata: any) {
     metadata: frame_metadata,
     timebase: WEBCODECS_TIMESCALE,
     codec: last_codec,
+    codedWidth: last_coded_width,
+    codedHeight: last_coded_height,
   };
 
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description

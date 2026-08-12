@@ -100,7 +100,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: ENCODER</h1>
-    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a id="moqMediaPackagerLink" href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
 
     <!-- Connection / track -->
     <div class="boxed">
@@ -114,6 +114,12 @@ LICENSE file in the root directory of this source tree.
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <div class="clear"></div>
+                <label>Media packager:<select id="mediaPackager">
+                    <option value="loc" selected>LOC (draft-ietf-moq-loc)</option>
+                    <option value="cmaf">CMAF (draft-wilaw-moq-cmafpackaging)</option>
+                </select></label>
+                <label id="mediaPackagerWarning" hidden>⚠️ The player in this repo only understands LOC</label>
                 <div class="clear"></div>
                 <label>Add latency information in video: <input type="checkbox" id="addLatencyInfoInVideo"></label>
                 <div class="clear"></div>
@@ -423,7 +429,9 @@ LICENSE file in the root directory of this source tree.
     import { MOQ_MAPPING_SUBGROUP_PER_GROUP, MOQ_MAPPING_OBJECT_PER_DATAGRAM, MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { GetVideoCodecStringFromProfileLevel } from "../../dist/utils/media/avc_decoder_configuration_record_parser.js"
-    import { LOC_PACKAGER_VERSION, LOCgetTrackName } from "../../dist/packager/loc_packager.js"
+    import { LOC_PACKAGER_VERSION } from "../../dist/packager/loc_packager.js"
+    import { CMAF_PACKAGER_VERSION } from "../../dist/packager/cmaf/cmaf_packager.js"
+    import { getMediaTrackName } from "../../dist/packager/media_packager.js"
 
     // Main vars
     let VERBOSE = false;
@@ -480,6 +488,25 @@ LICENSE file in the root directory of this source tree.
         encoderMaxQueueSize: 10,
     };
 
+    // ---------------------------------------------------------------------
+    // CMAF dump to a local file (debug aid, no UI). Flip CMAF_DUMP_TO_FILE to
+    // true and select the CMAF packager: the encoder captures the packaged
+    // objects (starting on a group boundary, so the capture opens with a CMAF
+    // Header) and downloads cmaf-<mediaType>.mp4 when the object cap is reached
+    // or when you press Stop. The file is a plain concatenation of the MoQ
+    // object payloads, which is a playable fragmented MP4:
+    //
+    //   ffprobe -v error -show_streams -count_frames cmaf-video.mp4
+    //   ffplay cmaf-video.mp4
+    //
+    // Off by default because it buffers the captured objects in memory. The
+    // same capture can be driven by hand from the console at any time with
+    // armCmafDump("video") / dumpCmaf("video").
+    // ---------------------------------------------------------------------
+    const CMAF_DUMP_TO_FILE = false;
+    const CMAF_DUMP_MEDIA_TYPES = ["video", "audio"];
+    const CMAF_DUMP_MAX_OBJECTS = 600; // ~20s of 30fps video / ~12s of 20ms audio
+
     // To keep some stats
     let dropChunksTotals = {};
     let statsHelper = {};
@@ -507,6 +534,16 @@ LICENSE file in the root directory of this source tree.
         certificateHash: null,
 
         usePublishNamespace: true,
+
+        // "loc" | "cmaf", picked from the UI on start
+        packagerFormat: 'loc',
+
+        // Debug: save the packaged CMAF objects to a local file (see CMAF_DUMP_TO_FILE)
+        cmafDump: {
+            enabled: CMAF_DUMP_TO_FILE,
+            mediaTypes: CMAF_DUMP_MEDIA_TYPES,
+            maxObjects: CMAF_DUMP_MAX_OBJECTS,
+        },
 
         moqTracks: {
             "audio": {
@@ -1054,15 +1091,26 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, true))}`
-        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, false))}`
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, true))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, false))}`
 
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
 
     function initVersions() {
         document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION
-        document.getElementById("moqMediaPackagerVersion").innerHTML = LOC_PACKAGER_VERSION;
+        updateMediaPackagerUI();
+    }
+
+    // Reflect the selected media packager (LOC / CMAF) in the header: version,
+    // spec link, and a warning that this repo's player only speaks LOC.
+    function updateMediaPackagerUI() {
+        const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
+        document.getElementById("moqMediaPackagerVersion").innerHTML = isCmaf ? CMAF_PACKAGER_VERSION : LOC_PACKAGER_VERSION;
+        const link = document.getElementById("moqMediaPackagerLink");
+        link.innerHTML = isCmaf ? "CMAF MediaPackager Version" : "LOC MediaPackager Version";
+        link.href = isCmaf ? "https://datatracker.ietf.org/doc/draft-wilaw-moq-cmafpackaging/" : "https://datatracker.ietf.org/doc/draft-ietf-moq-loc/";
+        document.getElementById("mediaPackagerWarning").hidden = !isCmaf;
     }
 
     // Read the simulated-frame-drop settings for a media type ("video"/"audio")
@@ -1111,6 +1159,46 @@ LICENSE file in the root directory of this source tree.
         const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
         const burst = readForceBurst(`forceHold${cap}Burst`);
         muxerSenderWorker.postMessage({ type: "forceHoldBurst", mediaType, burst });
+    }
+
+    // Manual version of the CMAF dump described at CMAF_DUMP_TO_FILE, usable
+    // from the console mid-session without changing any constant:
+    //
+    //   armCmafDump("video")   // starts capturing at the next group boundary
+    //   ... wait a few seconds ...
+    //   dumpCmaf("video")      // downloads cmaf-video.mp4
+    window.armCmafDump = function (mediaType = "video", maxObjects = 300) {
+        if (muxerSenderWorker == null) {
+            console.error("Start the encoder first");
+            return;
+        }
+        muxerSenderWorker.postMessage({ type: "armCmafDump", mediaType, maxObjects });
+        console.log(`Arming ${mediaType} CMAF capture (up to ${maxObjects} objects). Call dumpCmaf("${mediaType}") to download it.`);
+    };
+
+    window.dumpCmaf = function (mediaType = "video") {
+        if (muxerSenderWorker == null) {
+            console.error("Start the encoder first");
+            return;
+        }
+        muxerSenderWorker.postMessage({ type: "dumpCmaf", mediaType });
+    };
+
+    // Write one captured media type to a local file. Capturing both audio and
+    // video downloads two files, so the browser may ask to allow multiple
+    // downloads the first time.
+    function downloadCmafDump(mediaType, bytes) {
+        if (bytes == null || bytes.byteLength <= 0) {
+            console.error(`Nothing captured for ${mediaType}. Did you call armCmafDump("${mediaType}") and wait for a new group?`);
+            return;
+        }
+        const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `cmaf-${mediaType}.mp4`;
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log(`Downloaded cmaf-${mediaType}.mp4 (${bytes.byteLength} bytes)`);
     }
 
     // The interval / burst inputs only make sense when a drop mode is selected;
@@ -1424,7 +1512,7 @@ LICENSE file in the root directory of this source tree.
             updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
             updateEncodingVideoLatencyUI(Date.now() - firstFrameClkms);
 
-            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", compensatedTs, seqId: seqId, chunk: chunk, metadata, timebase, codec: e.data.codec });
+            muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", compensatedTs, seqId: seqId, chunk: chunk, metadata, timebase, codec: e.data.codec, codedWidth: e.data.codedWidth, codedHeight: e.data.codedHeight });
         } else if (e.data.type === "achunk") {
             const chunk = e.data.chunk;
             const metadata = e.data.metadata;
@@ -1442,6 +1530,10 @@ LICENSE file in the root directory of this source tree.
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
             updateUploadStats(e.data.queuedReq, e.data.openStreamsReq);
+
+            // CMAF DEBUG DUMP (see window.dumpCmaf)
+        } else if (e.data.type === "cmafdump") {
+            downloadCmafDump(e.data.mediaType, e.data.data);
 
             // UNKNOWN
         } else {
@@ -1613,12 +1705,15 @@ LICENSE file in the root directory of this source tree.
 
         muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked
 
+        // Media packaging format (same for audio and video): "loc" or "cmaf"
+        muxerSenderConfig.packagerFormat = document.getElementById('mediaPackager').value;
+
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
 
         //Get max Inflight requests & auth info
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
-        muxerSenderConfig.moqTracks["video"].name = LOCgetTrackName(document.getElementById('trackName').value, false);
+        muxerSenderConfig.moqTracks["video"].name = getMediaTrackName(document.getElementById('trackName').value, false);
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsVideo').value);
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
@@ -1630,7 +1725,7 @@ LICENSE file in the root directory of this source tree.
             muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         }
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
-        muxerSenderConfig.moqTracks["audio"].name = LOCgetTrackName(document.getElementById('trackName').value, true);
+        muxerSenderConfig.moqTracks["audio"].name = getMediaTrackName(document.getElementById('trackName').value, true);
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsAudio').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
@@ -1665,6 +1760,8 @@ LICENSE file in the root directory of this source tree.
 
     document.getElementById('videoDropMode').addEventListener("change", () => { updateDropModeUI("video"); });
     document.getElementById('audioDropMode').addEventListener("change", () => { updateDropModeUI("audio"); });
+
+    document.getElementById('mediaPackager').addEventListener("change", () => { updateMediaPackagerUI(); });
 
     document.getElementById('videoHoldMode').addEventListener("change", () => { updateHoldModeUI("video"); });
     document.getElementById('audioHoldMode').addEventListener("change", () => { updateHoldModeUI("audio"); });

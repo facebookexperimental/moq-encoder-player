@@ -7,8 +7,14 @@ LICENSE file in the root directory of this source tree.
 
 import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../../moq/moqt.js';
-import { LOCPackager, type LOCMediaType } from '../../packager/loc_packager.js';
+import { type LOCMediaType } from '../../packager/loc_packager.js';
+import {
+  createPackager,
+  type MediaPackager,
+  type PackagerFormat,
+} from '../../packager/media_packager.js';
 import type { WireDropConfig, WireHoldConfig } from '../../moq/network_simulator.js';
+import { concatBuffer } from '../../moq/buffer_utils.js';
 
 const WORKER_PREFIX = '[MOQ-SENDER]';
 
@@ -31,6 +37,26 @@ export interface TrackData {
   holdConfig?: WireHoldConfig;
 }
 
+/**
+ * Debug aid: save the packaged CMAF objects to a local file so the stream can be
+ * inspected with ffprobe / ffplay / an MP4 analyzer. Disabled unless `enabled`,
+ * because it buffers the captured objects in memory.
+ *
+ * The capture starts on the first group boundary of each media type (so it
+ * begins with a CMAF Header) and is handed back to the main thread — as a
+ * `cmafdump` message — when `maxObjects` is reached or when the session stops.
+ */
+export interface CmafDumpConfig {
+  enabled: boolean;
+  // Media types to capture. Defaults to audio and video.
+  mediaTypes?: string[];
+  // Cap on the captured objects, so a long session cannot exhaust memory.
+  maxObjects?: number;
+}
+
+const CMAF_DUMP_DEFAULT_MEDIA_TYPES = ['video', 'audio'];
+const CMAF_DUMP_DEFAULT_MAX_OBJECTS = 600;
+
 // Configuration passed in the `init` message (formerly `muxerSenderConfig`).
 export interface MuxerSenderConfig {
   urlHostPort: string;
@@ -39,6 +65,10 @@ export interface MuxerSenderConfig {
   keepAlivesEveryMs: number;
   certificateHash: any;
   usePublishNamespace: boolean;
+  // Media packaging format for every track: LOC (default) or CMAF.
+  packagerFormat: PackagerFormat;
+  // Off by default. See CmafDumpConfig.
+  cmafDump: CmafDumpConfig;
   verbose: boolean;
 }
 
@@ -52,14 +82,31 @@ interface ChunkMessage {
   timebase?: number;
   codec?: string;
   moqMapping?: string;
+  // Video only, reported by the encoder. Needed by the CMAF packager to
+  // describe the track; LOC ignores them.
+  codedWidth?: number;
+  codedHeight?: number;
+}
+
+/**
+ * Debug capture of the packaged bytes for one media type. Only used by the CMAF
+ * dump helper in the encoder demo: the capture starts at a group boundary, so
+ * the first object carries the CMAF Header and the concatenation of everything
+ * captured is a playable fragmented MP4.
+ */
+interface CmafDumpState {
+  maxObjects: number;
+  started: boolean;
+  chunks: Uint8Array[];
 }
 
 /**
  * MoQ publisher Web Worker.
  * MoQ publisher Web Worker. Translates main-thread messages into calls on the
- * high-level MoQ API (src/moq/moq.ts) and packages encoded media with
- * LOCPackager. All MoQ protocol work (session, control loop, subscriptions,
- * object scheduling) lives in the `Moq`/`Track` classes.
+ * high-level MoQ API (src/moq/moq.ts) and packages encoded media with the
+ * configured packager (LOC or CMAF, see src/packager/media_packager.ts). All
+ * MoQ protocol work (session, control loop, subscriptions, object scheduling)
+ * lives in the `Moq`/`Track` classes.
  */
 export class MoqSender {
   private config: MuxerSenderConfig | null = null;
@@ -68,6 +115,11 @@ export class MoqSender {
   private moq: Moq | null = null;
   // Published tracks keyed by mediaType ('audio' | 'video' | 'data').
   private tracks: Record<string, Track> = {};
+  // One packager per media type, kept for the lifetime of the session: the CMAF
+  // packager is stateful (sequence numbers, initialization header).
+  private packagers: Record<string, MediaPackager> = {};
+  // Optional CMAF capture, armed from the demo console (see handleArmCmafDump).
+  private cmafDump: Record<string, CmafDumpState> = {};
 
   // -------------------------------------------------------------------------
   // Worker message dispatch
@@ -89,6 +141,12 @@ export class MoqSender {
           break;
         case 'forceHoldBurst':
           this.handleForceHoldBurst(e.data);
+          break;
+        case 'armCmafDump':
+          this.handleArmCmafDump(e.data);
+          break;
+        case 'dumpCmaf':
+          this.handleDumpCmaf(e.data);
           break;
         case 'stop':
           this.handleStop();
@@ -119,6 +177,12 @@ export class MoqSender {
       keepAlivesEveryMs: cfg.keepAlivesEveryMs ?? 0,
       certificateHash: cfg.certificateHash ?? null,
       usePublishNamespace: cfg.usePublishNamespace ?? false,
+      packagerFormat: cfg.packagerFormat === 'cmaf' ? 'cmaf' : 'loc',
+      cmafDump: {
+        enabled: cfg.cmafDump?.enabled === true,
+        mediaTypes: cfg.cmafDump?.mediaTypes ?? CMAF_DUMP_DEFAULT_MEDIA_TYPES,
+        maxObjects: cfg.cmafDump?.maxObjects ?? CMAF_DUMP_DEFAULT_MAX_OBJECTS,
+      },
       verbose: cfg.verbose ?? false,
     };
     if (config.urlHostPort === '') {
@@ -159,6 +223,13 @@ export class MoqSender {
     this.config = this.parseSenderConfig(data.config);
     this.verbose = this.config.verbose;
 
+    // Packaging is set up before the transport: chunks are packaged (and
+    // captured by the debug dump, if armed) whether or not a session is ever
+    // established, so a CMAF file can be produced without a relay.
+    this.tracks = {};
+    this.packagers = {};
+    this.startConfiguredCmafDump();
+
     // Open the transport and perform the MoQ SETUP handshake. The keep-alive
     // loop (if enabled) is managed by the Moq session itself.
     this.moq = new Moq();
@@ -172,7 +243,6 @@ export class MoqSender {
     );
     console.log(`${WORKER_PREFIX} MOQ session established`);
 
-    this.tracks = {};
     if (this.config.usePublishNamespace) {
       // Single PUBLISH_NAMESPACE per namespace; tracks are served lazily when a
       // subscriber SUBSCRIBEs (see offerTrack below).
@@ -270,32 +340,32 @@ export class MoqSender {
   // chunk (media)
   // -------------------------------------------------------------------------
 
-  /** Package one encoded media chunk and hand it to its track. */
-  handleChunk(data: ChunkMessage): void {
+  // Why this chunk cannot be published right now, or undefined when it can.
+  private sendBlockedReason(mediaType: string): string | undefined {
     if (this.moq === null || this.moq.state !== MoqState.Running) {
-      this.emitDropped(
-        data.seqId,
-        data.chunk?.timestamp,
-        'transport is NOT open yet',
-        data.mediaType,
-      );
-      return;
+      return 'transport is NOT open yet';
     }
-
-    const track = this.tracks[data.mediaType];
+    // In PUBLISH_NAMESPACE mode a track exists only once a subscriber has
+    // subscribed; drop until then instead of erroring.
+    const track = this.tracks[mediaType];
     if (track === undefined) {
-      // In PUBLISH_NAMESPACE mode a track exists only once a subscriber has
-      // subscribed; drop until then instead of erroring.
-      this.emitDropped(
-        data.seqId,
-        data.chunk?.timestamp,
-        'track not subscribed yet',
-        data.mediaType,
-      );
-      return;
+      return 'track not subscribed yet';
     }
     if (track.getInfo().numSubscribers <= 0) {
-      this.emitDropped(data.seqId, data.chunk?.timestamp, 'no subscribers', data.mediaType);
+      return 'no subscribers';
+    }
+    return undefined;
+  }
+
+  /** Package one encoded media chunk and hand it to its track. */
+  handleChunk(data: ChunkMessage): void {
+    const blockedReason = this.sendBlockedReason(data.mediaType);
+    // The debug capture does not depend on the transport: while it is armed the
+    // chunk is packaged (and written to the dump) even with no session and no
+    // subscriber, so a CMAF file can be produced without a relay.
+    const capturing = this.cmafDump[data.mediaType] !== undefined;
+    if (blockedReason !== undefined && !capturing) {
+      this.emitDropped(data.seqId, data.chunk?.timestamp, blockedReason, data.mediaType);
       return;
     }
 
@@ -303,23 +373,27 @@ export class MoqSender {
     const packet = this.packetizeChunk(chunkData);
     const newGroup = !packet.IsDelta();
     const seqId = chunkData.seqId;
+    const payload = packet.PayloadToBytes();
+    this.captureForDump(data.mediaType, payload, newGroup);
+
+    if (blockedReason !== undefined) {
+      // Captured, but there is nowhere to publish it.
+      this.emitDropped(seqId, data.chunk?.timestamp, blockedReason, data.mediaType);
+      return;
+    }
+    const track = this.tracks[data.mediaType];
 
     // Priority only applies when starting a new group.
     const newGroupOptions = newGroup
       ? { priority: this.priorityForMediaType(data.mediaType) }
       : undefined;
-    const obj = track.sendObject(
-      packet.PayloadToBytes(),
-      newGroupOptions,
-      packet.Properties(),
-      () => {
-        if (this.verbose) {
-          console.debug(
-            `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${obj.getInfo().groupId}/${obj.getInfo().objId})`,
-          );
-        }
-      },
-    );
+    const obj = track.sendObject(payload, newGroupOptions, packet.Properties(), () => {
+      if (this.verbose) {
+        console.debug(
+          `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${obj.getInfo().groupId}/${obj.getInfo().objId})`,
+        );
+      }
+    });
 
     if (obj.getInfo().status === 'dropped') {
       this.emitDropped(
@@ -348,12 +422,29 @@ export class MoqSender {
       metadata: data.metadata,
       timebase: data.timebase,
       codec: data.codec,
+      codedWidth: data.codedWidth,
+      codedHeight: data.codedHeight,
+      // WebCodecs reports a duration for audio and (when the source provides
+      // one) for video. The CMAF packager uses it as the sample duration.
+      durationUs: data.chunk?.duration ?? undefined,
       newSubgroupEvery: trackCfg?.newSubgroupEvery,
     };
   }
 
-  // Wrap a media chunk into a LOC packet.
-  private packetizeChunk(chunkData: any): LOCPackager {
+  // The packager for one media type, created on first use. CMAF packagers hold
+  // per-track state, so they must not be recreated per chunk; LOC packagers are
+  // stateless (SetData overwrites every field) and are reused the same way.
+  private packagerFor(mediaType: LOCMediaType): MediaPackager {
+    let packager = this.packagers[mediaType];
+    if (packager === undefined) {
+      packager = createPackager(this.config?.packagerFormat ?? 'loc', mediaType);
+      this.packagers[mediaType] = packager;
+    }
+    return packager;
+  }
+
+  // Wrap a media chunk into a LOC or CMAF packet.
+  private packetizeChunk(chunkData: any): MediaPackager {
     if (
       chunkData.mediaType !== 'video' &&
       chunkData.mediaType !== 'audio' &&
@@ -361,7 +452,7 @@ export class MoqSender {
     ) {
       throw new Error(`Not supported media type ${chunkData.mediaType}`);
     }
-    const packet = new LOCPackager(chunkData.mediaType as LOCMediaType);
+    const packet = this.packagerFor(chunkData.mediaType as LOCMediaType);
 
     if (chunkData.mediaType === 'data') {
       // No LOC properties: the payload is opaque and its group boundaries are
@@ -376,6 +467,11 @@ export class MoqSender {
 
     const buf = new Uint8Array(chunkData.chunk.byteLength);
     chunkData.chunk.copyTo(buf);
+    packet.SetSourceInfo?.({
+      codedWidth: chunkData.codedWidth,
+      codedHeight: chunkData.codedHeight,
+      durationUs: chunkData.durationUs,
+    });
     // Video carries its config (the AVCDecoderConfigurationRecord) on key frames
     // only; audio carries it on every object.
     packet.SetData(
@@ -414,14 +510,98 @@ export class MoqSender {
   }
 
   // -------------------------------------------------------------------------
+  // CMAF dump (debug aid for the encoder demo)
+  // -------------------------------------------------------------------------
+
+  // Arm the captures asked for by the `init` config (cmafDump.enabled).
+  private startConfiguredCmafDump(): void {
+    this.cmafDump = {};
+    const dumpConfig = this.config!.cmafDump;
+    if (!dumpConfig.enabled) {
+      return;
+    }
+    if (this.config!.packagerFormat !== 'cmaf') {
+      console.warn(
+        `${WORKER_PREFIX} The CMAF dump is enabled but the packager is ${this.config!.packagerFormat.toUpperCase()}: the captured file will NOT be a valid MP4`,
+      );
+    }
+    for (const mediaType of dumpConfig.mediaTypes!) {
+      this.armDump(mediaType, dumpConfig.maxObjects!);
+    }
+  }
+
+  /**
+   * Start capturing packaged object payloads for one media type. Capture only
+   * begins on the next group boundary, so what is captured starts with a CMAF
+   * Header and can be written straight to a .mp4 file.
+   */
+  private handleArmCmafDump(data: any): void {
+    this.armDump(data?.mediaType ?? 'video', data?.maxObjects ?? CMAF_DUMP_DEFAULT_MAX_OBJECTS);
+  }
+
+  private armDump(mediaType: string, maxObjects: number): void {
+    this.cmafDump[mediaType] = { maxObjects, started: false, chunks: [] };
+    console.log(
+      `${WORKER_PREFIX} Armed ${mediaType} dump, capturing up to ${maxObjects} objects from the next group`,
+    );
+  }
+
+  /** Hand the captured bytes back to the main thread and disarm the capture. */
+  private handleDumpCmaf(data: any): void {
+    this.emitDump(data?.mediaType ?? 'video');
+  }
+
+  // Post the captured bytes to the main thread (which writes the file) and
+  // disarm. `skipIfEmpty` is for the automatic dumps, which must stay quiet when
+  // there was nothing to capture.
+  private emitDump(mediaType: string, skipIfEmpty = false): void {
+    const state = this.cmafDump[mediaType];
+    if (skipIfEmpty && (state === undefined || state.chunks.length <= 0)) {
+      return;
+    }
+    delete this.cmafDump[mediaType];
+    const payload = concatBuffer(state?.chunks ?? []);
+    console.log(
+      `${WORKER_PREFIX} Dumping ${state?.chunks.length ?? 0} ${mediaType} objects (${payload.byteLength} bytes)`,
+    );
+    self.postMessage({ type: 'cmafdump', mediaType, data: payload }, [payload.buffer] as any);
+  }
+
+  private captureForDump(mediaType: string, payload: any, newGroup: boolean): void {
+    const state = this.cmafDump[mediaType];
+    if (state === undefined || !(payload instanceof Uint8Array)) {
+      return;
+    }
+    if (!state.started) {
+      if (!newGroup) {
+        return;
+      }
+      state.started = true;
+    }
+    // The payload is handed to the transport as-is, so keep a copy.
+    state.chunks.push(new Uint8Array(payload));
+    if (state.chunks.length >= state.maxObjects) {
+      console.log(
+        `${WORKER_PREFIX} ${mediaType} dump reached its ${state.maxObjects} object cap, saving it now (the rest of the session is NOT captured)`,
+      );
+      this.emitDump(mediaType);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // stop
   // -------------------------------------------------------------------------
 
   /** Stop publishing and close the session. */
   handleStop(): void {
+    // Save whatever the debug capture collected before tearing the session down.
+    for (const mediaType of Object.keys(this.cmafDump)) {
+      this.emitDump(mediaType, true);
+    }
     this.moq?.close();
     this.moq = null;
     this.tracks = {};
+    this.packagers = {};
   }
 
   // -------------------------------------------------------------------------
