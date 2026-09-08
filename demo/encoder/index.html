@@ -429,30 +429,34 @@ LICENSE file in the root directory of this source tree.
     let VERBOSE = false;
     let IS_LOCALHOST = false;
 
-    // Shared capture-time anchor, set once from the first frame of EITHER stream.
-    // Audio and video share the same monotonic capture timebase (same device), so a
-    // single anchor re-bases both streams (compensatedTs) AND lets us reconstruct the
-    // capture wallclock as a linear function of the WebCodecs timestamp. This replaces
-    // the per-frame clkms side-channel and the TimeBufferChecker lookup tables.
-    let anchorTsUs = undefined;    // first frame.timestamp seen (microseconds)
-    let anchorWallMs = undefined;  // Date.now() captured alongside that first frame (ms)
-    let firstVideoFrame = true;    // gate the "first TS" UI update (video)
-    let firstAudioFrame = true;    // gate the "first TS" UI update (audio)
+    // Per-stream capture-time anchors. Audio and video do NOT share a timebase:
+    // AudioData.timestamp starts at ~0 on track start, while VideoFrame.timestamp comes
+    // from the camera/system capture clock (roughly since boot). Each stream is therefore
+    // re-based on its own first timestamp, and the two are aligned to each other through
+    // the capture wallclock (clkms) recorded alongside their respective first frames.
+    const anchorTsUs = {};        // mediaType -> first frame.timestamp (microseconds)
+    const anchorWallMs = {};      // mediaType -> Date.now() captured alongside that frame (ms)
+    let originWallMs = undefined; // wallclock of the first frame of EITHER stream (ms)
+    let firstVideoFrame = true;   // gate the "first TS" UI update (video)
+    let firstAudioFrame = true;   // gate the "first TS" UI update (audio)
 
-    // Anchor the capture clock on the first frame of either stream.
-    function ensureCaptureAnchor(tsUs, wallMs) {
-        if (anchorTsUs === undefined) {
-            anchorTsUs = tsUs;
-            anchorWallMs = wallMs;
+    // Anchor the capture clock on the first frame of each stream.
+    function ensureCaptureAnchor(type, tsUs, wallMs) {
+        if (anchorTsUs[type] === undefined) {
+            anchorTsUs[type] = tsUs;
+            anchorWallMs[type] = wallMs;
+            if (originWallMs === undefined) {
+                originWallMs = wallMs;
+            }
         }
     }
     // A/V-aligned presentation timestamp (microseconds, ~0 origin).
-    function compensatedTsFor(tsUs) {
-        return tsUs - anchorTsUs;
+    function compensatedTsFor(type, tsUs) {
+        return (tsUs - anchorTsUs[type]) + (anchorWallMs[type] - originWallMs) * 1000;
     }
     // Reconstructed capture wallclock (integer ms) for a given media timestamp.
-    function captureClkmsFor(tsUs) {
-        return Math.round(anchorWallMs + (tsUs - anchorTsUs) / 1000);
+    function captureClkmsFor(type, tsUs) {
+        return Math.round(anchorWallMs[type] + (tsUs - anchorTsUs[type]) / 1000);
     }
 
     // Video encoder config
@@ -1380,22 +1384,22 @@ LICENSE file in the root directory of this source tree.
             // ENCODING
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.data;
-            // Anchor the shared capture clock on the first frame of either stream.
-            ensureCaptureAnchor(vFrame.timestamp, e.data.clkms);
+            // Anchor the video capture clock on its first frame.
+            ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms);
             if (firstVideoFrame) {
                 firstVideoFrame = false;
-                updateFirstTS("video", vFrame.timestamp, compensatedTsFor(vFrame.timestamp));
+                updateFirstTS("video", vFrame.timestamp, compensatedTsFor("video", vFrame.timestamp));
             }
 
             // Encode video frame
             vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms }, [ vFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
-            // Anchor the shared capture clock on the first frame of either stream.
-            ensureCaptureAnchor(aFrame.timestamp, e.data.clkms);
+            // Anchor the audio capture clock on its first frame.
+            ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms);
             if (firstAudioFrame) {
                 firstAudioFrame = false;
-                updateFirstTS("audio", aFrame.timestamp, compensatedTsFor(aFrame.timestamp));
+                updateFirstTS("audio", aFrame.timestamp, compensatedTsFor("audio", aFrame.timestamp));
             }
             // Encode audio frame. AudioData is not transferable, so postMessage structured-clones
             // it (the worker references the same backing samples). Close our handle right after to
@@ -1417,9 +1421,9 @@ LICENSE file in the root directory of this source tree.
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
-            // Reconstruct timing from the chunk timestamp + the shared anchor (no lookup table).
-            const compensatedTs = compensatedTsFor(chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor(chunk.timestamp);
+            // Reconstruct timing from the chunk timestamp + the video anchor (no lookup table).
+            const compensatedTs = compensatedTsFor("video", chunk.timestamp);
+            const firstFrameClkms = captureClkmsFor("video", chunk.timestamp);
 
             updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
             updateEncodingVideoLatencyUI(Date.now() - firstFrameClkms);
@@ -1431,9 +1435,9 @@ LICENSE file in the root directory of this source tree.
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
             const codec = e.data.codec;
-            // Reconstruct timing from the chunk timestamp + the shared anchor (no lookup table).
-            const compensatedTs = compensatedTsFor(chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor(chunk.timestamp);
+            // Reconstruct timing from the chunk timestamp + the audio anchor (no lookup table).
+            const compensatedTs = compensatedTsFor("audio", chunk.timestamp);
+            const firstFrameClkms = captureClkmsFor("audio", chunk.timestamp);
 
             updateEncodedAudioTSUI(chunk.timestamp, compensatedTs);
             updateEncodingAudioLatencyUI(Date.now() - firstFrameClkms);
@@ -1519,8 +1523,11 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
-        anchorTsUs = undefined;
-        anchorWallMs = undefined;
+        delete anchorTsUs.video;
+        delete anchorTsUs.audio;
+        delete anchorWallMs.video;
+        delete anchorWallMs.audio;
+        originWallMs = undefined;
         firstVideoFrame = true;
         firstAudioFrame = true;
 
