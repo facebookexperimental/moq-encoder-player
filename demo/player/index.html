@@ -81,7 +81,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: PLAYER</h1>
-    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="locPackagerVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/">CMSF MediaPackager Version</a>: <label id="cmsfPackagerVersion">-</label></h2>
     <!-- Connection / track -->
     <div class="boxed">
         <div class="styleform">
@@ -94,6 +94,12 @@ LICENSE file in the root directory of this source tree.
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <div class="clear"></div>
+                <label>Media packager expected:<select id="mediaPackager">
+                    <option value="loc" selected>LOC (draft-ietf-moq-loc)</option>
+                    <option value="cmaf">CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
+                </select></label>
+                <label id="mediaPackagerWarning" hidden>⚠️ It has to match what the encoder publishes, there is no catalog to negotiate it. Playback starts on the first object carrying a CMAF Header (up to ~1s after joining)</label>
                 <div class="clear"></div>
                 <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
                 <div class="clear"></div>
@@ -335,6 +341,7 @@ LICENSE file in the root directory of this source tree.
     import { getBinaryFile } from "../../dist/utils/utils.js"
     import { MOQ_CURRENT_VERSION, getFullTrackName } from "../../dist/moq/moqt.js"
     import { LOC_PACKAGER_VERSION, LOCgetTrackName } from "../../dist/packager/loc_packager.js"
+    import { CMAF_PACKAGER_VERSION } from "../../dist/packager/cmaf/cmaf_packager.js"
 
     // Audio states (reflects AudioContext running state)
     const AUDIO_STOPPED = 0;
@@ -349,6 +356,9 @@ LICENSE file in the root directory of this source tree.
         urlPath: '',
 
         certificateHash: null,
+
+        // "loc" | "cmaf" (CMSF), picked from the UI on start
+        packagerFormat: 'loc',
 
         moqTracks: {
             "audio": {
@@ -765,7 +775,16 @@ LICENSE file in the root directory of this source tree.
 
     function initVersions() {
         document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION;
-        document.getElementById("moqMediaPackagerVersion").innerHTML = LOC_PACKAGER_VERSION;
+        document.getElementById("locPackagerVersion").innerHTML = LOC_PACKAGER_VERSION;
+        document.getElementById("cmsfPackagerVersion").innerHTML = CMAF_PACKAGER_VERSION;
+        updateMediaPackagerUI();
+    }
+
+    // CMSF carries its track description inside the media, so warn that the
+    // choice has to match the encoder and that playback starts on a header.
+    function updateMediaPackagerUI() {
+        document.getElementById("mediaPackagerWarning").hidden =
+            document.getElementById("mediaPackager").value !== "cmaf";
     }
 
     function updateFullTrackNameUI() {
@@ -1011,6 +1030,9 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+
+        // Packaging the publisher is expected to use: "loc" or "cmaf" (CMSF)
+        downloaderConfig.packagerFormat = document.getElementById('mediaPackager').value;
 
         const orignal_ns = document.getElementById('namespace').value;
         const ns_tuples = orignal_ns.split("/");
@@ -1554,6 +1576,7 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnPlaybackTargetLatencyUpdate').addEventListener("click", (event) => {updatePlaybackTargetLatency();});
     document.getElementById('btnPlaybackCompensationUpdate').addEventListener("click", () => {updatePlaybackCompensation();});
     document.getElementById('enableSpeedCompensation').addEventListener("change", () => {onToggleSpeedCompensation();});
+    document.getElementById('mediaPackager').addEventListener("change", () => {updateMediaPackagerUI();});
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not

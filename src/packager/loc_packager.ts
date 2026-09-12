@@ -15,7 +15,7 @@ LICENSE file in the root directory of this source tree.
 
 import { buffRead, readUntilEof } from '../moq/buffer_utils.js';
 import { moqCreateKvPair, type KvPair } from '../moq/moqt.js';
-import type { MediaPackager } from './media_packager.js';
+import type { MediaPackager, MediaDepackager } from './media_packager.js';
 
 export const LOC_PACKAGER_VERSION = '04+codecstringPR';
 
@@ -58,7 +58,7 @@ export interface LOCData {
  * publisher and the subscriber both know it from their own per-track config, so
  * it is passed to the constructor.
  */
-export class LOCPackager implements MediaPackager {
+export class LOCPackager implements MediaPackager, MediaDepackager {
   mediaType: LOCMediaType;
 
   timestamp: number | undefined;
@@ -105,6 +105,13 @@ export class LOCPackager implements MediaPackager {
   }
 
   async ParseData(readerStream: any, properties: KvPair[], payloadLength?: number) {
+    // Every LOC object describes itself, so nothing carries over from the
+    // previous one: a reused instance must not inherit its config or timing.
+    this.timestamp = undefined;
+    this.timescale = undefined;
+    this.codec = undefined;
+    this.config = undefined;
+    this.isDelta = undefined;
     this.parseProperties(properties);
 
     // Read payload with length

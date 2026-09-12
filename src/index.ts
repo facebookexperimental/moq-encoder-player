@@ -37,8 +37,10 @@ export * from './moq/moq.js';
 export * from './packager/media_packager.js';
 export * from './packager/loc_packager.js';
 export * from './packager/cmaf/box_writer.js';
+export * from './packager/cmaf/box_reader.js';
 export * from './packager/cmaf/cmaf_init_segment.js';
 export * from './packager/cmaf/cmaf_packager.js';
+export * from './packager/cmaf/cmaf_depackager.js';
 
 // Render buffers
 export * from './render/video_render_buffer.js';

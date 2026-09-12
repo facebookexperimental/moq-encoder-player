@@ -100,7 +100,7 @@ LICENSE file in the root directory of this source tree.
 
 <body>
     <h1>MOQT Test Ultra low latency with Webcodecs: ENCODER</h1>
-    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a id="moqMediaPackagerLink" href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="moqMediaPackagerVersion">-</label></h2>
+    <h2><a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/">MOQT Version</a>: <label id="moqtVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-loc/">LOC MediaPackager Version</a>: <label id="locPackagerVersion">-</label>, <a href="https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/">CMSF MediaPackager Version</a>: <label id="cmsfPackagerVersion">-</label></h2>
 
     <!-- Connection / track -->
     <div class="boxed">
@@ -119,7 +119,7 @@ LICENSE file in the root directory of this source tree.
                     <option value="loc" selected>LOC (draft-ietf-moq-loc)</option>
                     <option value="cmaf">CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
                 </select></label>
-                <label id="mediaPackagerWarning" hidden>⚠️ The player in this repo only understands LOC</label>
+                <label id="mediaPackagerWarning" hidden>⚠️ Set "Media packager expected" to CMSF in the player too, there is no catalog to negotiate it</label>
                 <div class="clear"></div>
                 <label>Add latency information in video: <input type="checkbox" id="addLatencyInfoInVideo"></label>
                 <div class="clear"></div>
@@ -1109,17 +1109,15 @@ LICENSE file in the root directory of this source tree.
 
     function initVersions() {
         document.getElementById("moqtVersion").innerHTML = MOQ_CURRENT_VERSION
+        document.getElementById("locPackagerVersion").innerHTML = LOC_PACKAGER_VERSION
+        document.getElementById("cmsfPackagerVersion").innerHTML = CMAF_PACKAGER_VERSION
         updateMediaPackagerUI();
     }
 
-    // Reflect the selected media packager (LOC / CMSF) in the header: version,
-    // spec link, and a warning that this repo's player only speaks LOC.
+    // React to the selected media packager (LOC / CMSF): remind the user that the
+    // player has to be set to the same format, and lock the QUIC mapping.
     function updateMediaPackagerUI() {
         const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
-        document.getElementById("moqMediaPackagerVersion").innerHTML = isCmaf ? CMAF_PACKAGER_VERSION : LOC_PACKAGER_VERSION;
-        const link = document.getElementById("moqMediaPackagerLink");
-        link.innerHTML = isCmaf ? "CMSF MediaPackager Version" : "LOC MediaPackager Version";
-        link.href = isCmaf ? "https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/" : "https://datatracker.ietf.org/doc/draft-ietf-moq-loc/";
         document.getElementById("mediaPackagerWarning").hidden = !isCmaf;
         updateMoqMappingUI();
     }

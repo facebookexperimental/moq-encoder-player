@@ -5,8 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-// The publisher side of a media packager, and the factory the sender uses to
-// pick one. Two formats are implemented:
+// The two sides of a media packager — packaging on the publisher, parsing on
+// the subscriber — and the factories the sender and the receiver use to pick
+// one. Two formats are implemented:
 //
 //  * 'loc'  - draft-ietf-moq-loc (see ./loc_packager.ts): the payload is the
 //             raw encoded chunk and the metadata rides the MoQ Object
@@ -21,6 +22,7 @@ LICENSE file in the root directory of this source tree.
 import type { KvPair } from '../moq/moqt.js';
 import { LOCPackager, LOCgetTrackName, type LOCMediaType } from './loc_packager.js';
 import { CMAFPackager } from './cmaf/cmaf_packager.js';
+import { CMAFDepackager } from './cmaf/cmaf_depackager.js';
 
 export type PackagerFormat = 'loc' | 'cmaf';
 
@@ -36,8 +38,6 @@ export interface PackagerSourceInfo {
 /**
  * What the sender needs from a packager to turn one encoded chunk into one MoQ
  * object: set the chunk, then read back the payload and the object properties.
- * (Parsing lives on the receiver side and is LOC specific, so it is not part of
- * this interface.)
  */
 export interface MediaPackager {
   SetData(
@@ -56,6 +56,36 @@ export interface MediaPackager {
   SetSourceInfo?(info: PackagerSourceInfo): void;
 }
 
+/** One received object, decoded far enough to feed a WebCodecs decoder. */
+export interface ParsedMediaData {
+  mediaType: LOCMediaType;
+  timestamp: number | undefined;
+  // Timescale of `timestamp` (ticks per second), as stated by the publisher.
+  timescale: number | undefined;
+  codec: string | undefined;
+  // The WebCodecs decoder `description`.
+  config: Uint8Array | ArrayBuffer | undefined;
+  data: any;
+}
+
+/**
+ * The mirror image of MediaPackager: what the receiver needs to turn one MoQ
+ * object back into an encoded frame.
+ *
+ * A depackager instance belongs to ONE track and is kept for the lifetime of
+ * the subscription: CMSF spreads its track description over the objects that
+ * carry a CMAF Header, so the parser has to remember it. Until one has been
+ * received, `GetData()` reports an undefined timescale and the object cannot be
+ * decoded.
+ */
+export interface MediaDepackager {
+  ParseData(readerStream: any, properties: KvPair[], payloadLength?: number): Promise<void>;
+  GetData(): ParsedMediaData;
+  GetDataStr(): string;
+  IsDelta(): boolean | undefined;
+  IsEof(): boolean;
+}
+
 /**
  * One packager instance per media type. CMAF instances are stateful (they carry
  * the `moof` sequence number and the initialization header), so the caller must
@@ -70,6 +100,21 @@ export function createPackager(format: PackagerFormat, mediaType: LOCMediaType):
       throw new Error(`CMAF only covers audio and video, it can NOT package a ${mediaType} track`);
     }
     return new CMAFPackager(mediaType);
+  }
+  return new LOCPackager(mediaType);
+}
+
+/**
+ * One depackager instance per subscribed track, kept for the lifetime of the
+ * subscription (see MediaDepackager). Like createPackager, CMAF covers audio
+ * and video only.
+ */
+export function createDepackager(format: PackagerFormat, mediaType: LOCMediaType): MediaDepackager {
+  if (format === 'cmaf') {
+    if (mediaType !== 'audio' && mediaType !== 'video') {
+      throw new Error(`CMAF only covers audio and video, it can NOT parse a ${mediaType} track`);
+    }
+    return new CMAFDepackager(mediaType);
   }
   return new LOCPackager(mediaType);
 }

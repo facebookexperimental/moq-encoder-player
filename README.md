@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring**. The encoder can also publish CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), see [Packager](#packager)
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring**. The encoder and the player can also use CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)) instead, see [Packager](#packager)
 
 This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
@@ -39,7 +39,8 @@ moq-encoder-player/
 │   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
 │   ├── packager/           #   media_packager.ts (common interface + factory),
 │   │   │                   #   loc_packager.ts                   (LOC media packager)
-│   │   └── cmaf/           #   cmaf_packager.ts, cmaf_init_segment.ts, box_writer.ts (CMAF packager)
+│   │   └── cmaf/           #   cmaf_packager.ts / cmaf_depackager.ts, cmaf_init_segment.ts,
+│   │                       #   box_writer.ts / box_reader.ts        (CMSF media packager)
 │   ├── overlay_processor/  #   overlay_encoder.ts / overlay_decoder.ts (pixel latency overlay)
 │   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
 │   │                       #   video_render_buffer.ts
@@ -114,7 +115,7 @@ CI (GitHub Actions, see [`.github/workflows/main.yml`](./.github/workflows/main.
 
 ## Packager
 
-Two media packagers are implemented behind a common publisher-side interface (`MediaPackager` in [`src/packager/media_packager.ts`](./src/packager/media_packager.ts)). **The encoder can publish with either one; the player only understands LOC.** The format is chosen from the "Media packager" dropdown in the encoder demo and defaults to LOC.
+Two media packagers are implemented behind a common pair of interfaces in [`src/packager/media_packager.ts`](./src/packager/media_packager.ts): `MediaPackager` on the publisher and `MediaDepackager` on the subscriber. **The encoder can publish with either one and the player can receive either one**, chosen from the "Media packager" dropdown in the encoder demo and the "Media packager expected" selector in the player. Both default to LOC, and there is no catalog to negotiate the choice, so the two ends have to agree.
 
 ### LOC (default)
 
@@ -122,7 +123,7 @@ It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc
 
 That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
-### CMSF / CMAF (encoder only)
+### CMSF / CMAF
 
 It follows [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (CMAF packaging for MoQ, written against the individual draft the working group adopted, `draft-wilaw-moq-cmafpackaging-01`) with the box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF: each MoQ object payload is a self-describing ISOBMFF media fragment and no MoQ Object Properties are sent at all. See [src/packager/cmaf/](#srcpackagercmaf-cmsf--cmaf-packager) for the mapping and the two documented deviations from the draft.
 
@@ -232,7 +233,7 @@ Main encoder webpage and also glues all encoder pieces together
   - Reconstructs the capture wall clock of the chunk from the capture anchor
   - Sends the chunk (augmented with seqId and metadata) to the muxer
 
-It also owns the **"Media packager" dropdown** (LOC or CMSF, the UI name of the CMAF packaging, see [Packager](#packager)), which is the only place the format can be selected. Remember the player only decodes LOC. Selecting CMSF also locks the QUIC mapping to subgroup per GOP (video) and subgroup per frame (audio), which is the grouping the CMAF mapping assumes.
+It also owns the **"Media packager" dropdown** (LOC or CMSF, the UI name of the CMAF packaging, see [Packager](#packager)), which is where the published format is selected; the player has its own "Media packager expected" selector that has to match. Selecting CMSF also locks the QUIC mapping to subgroup per GOP (video) and subgroup per frame (audio), which is the grouping the CMAF mapping assumes.
 
 #### Saving the stream to a local file
 
@@ -307,13 +308,15 @@ The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVid
 
 ### src/packager/cmaf/ (CMSF / CMAF packager)
 
-- Implements [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (written against `draft-wilaw-moq-cmafpackaging-01`), boxes per CMAF (ISO/IEC 23000-19) and ISOBMFF (ISO/IEC 14496-12). **Encoder only: the player in this repo does not parse CMSF**
+- Implements [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (written against `draft-wilaw-moq-cmafpackaging-01`), boxes per CMAF (ISO/IEC 23000-19) and ISOBMFF (ISO/IEC 14496-12), on both the publisher and the subscriber side
 
 | File | Role |
 | --- | --- |
 | `box_writer.ts` | Minimal ISOBMFF box primitives (`box`, `fullBox`, integer / fixed-point helpers) |
 | `cmaf_init_segment.ts` | The CMAF Header (`ftyp` + `moov`): AVC (`avc1`/`avcC`), Opus (`Opus`/`dOps`) and AAC (`mp4a`/`esds`) tracks |
 | `cmaf_packager.ts` | Per-track packager: turns one encoded chunk into one MoQ object payload |
+| `box_reader.ts` | The read side of `box_writer.ts`: walks the boxes of a received payload |
+| `cmaf_depackager.ts` | Per-track depackager: turns one MoQ object payload back into an encoded frame, and remembers the CMAF Header |
 
 Mapping (draft §4.2, "CMAF Chunk to MOQT Object"):
 
@@ -360,6 +363,8 @@ The encoder implements MOQT subscriber role. It uses [Webcodecs](https://develop
 ![Player block diagram](./pics/player-block-diagram.svg)
 Fig5: Player block diagram
 
+The packaging it expects is selected with the "Media packager expected" dropdown under the track name (LOC by default, CMSF being the other option) and has to match what the encoder publishes: nothing on the wire announces the format and there is no catalog to negotiate it.
+
 ### Audio video sync strategy
 
 To keep the audio and video in-sync the following strategy is applied:
@@ -377,19 +382,20 @@ To keep the audio and video in-sync the following strategy is applied:
 The MOQT subscriber logic is split in two layers:
 
 - `src/moq/moq.ts` — the high-level, media-free `Moq` client (shared with the publisher). It owns the WebTransport session, the control loop, the SUBSCRIBE handshake (`Moq.subscribe` → `Subscription`), and the incoming stream / datagram receive loops. Received object payloads are routed to the matching `Subscription` by track alias.
-- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and demuxes the received payloads (see `loc_packager.ts`) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline.
+- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and parses the received payloads with the depackager the `packagerFormat` config asks for (`loc_packager.ts` or `cmaf/cmaf_depackager.ts`, see [Packager](#packager)) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline. One depackager instance is kept per track for the whole subscription, because the CMSF one is stateful (it remembers the CMAF Header).
 
-It implements MOQT and extracts video and audio packets from the server / relay following MOQT and [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/):
+It implements MOQT and extracts video and audio packets from the server / relay following MOQT and the selected packaging format:
 
 - Opens WebTransport session
 - Implements MOQT subscriber handshake for 2 tracks (video and audio)
 - Waits for incoming unidirectional (Server -> Player) QUIC streams (and datagrams)
 - For every received chunk (QUIC stream) we:
-  - Demuxed it (see `loc_packager.ts`)
+  - Parse it with the track's depackager (`loc_packager.ts` or `cmaf/cmaf_depackager.ts`)
   - Video: Create `EncodedVideoChunk`
-    - Could be enhanced by init metadata and wallclock
   - Audio: Create `EncodedAudioChunk`
-    - Could be enhanced by init metadata and wallclock
+  - The timestamp is converted from the timescale the publisher stated (LOC Timescale property, or the CMSF `mdhd`) into the per-track timebase the player pipeline runs at
+
+With CMSF the track description (timescale, codec, decoder configuration) travels inside the media, in the CMAF Header that rides the objects starting a group. A player that joins mid-group therefore has nothing to configure its decoders with: those objects are dropped, with one log line per media type, until the first header arrives (at most ~1s later, see `initRepeatEveryMs`).
 
 ### src/utils/jitter_buffer.ts
 
