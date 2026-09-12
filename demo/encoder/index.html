@@ -117,7 +117,7 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Media packager:<select id="mediaPackager">
                     <option value="loc" selected>LOC (draft-ietf-moq-loc)</option>
-                    <option value="cmaf">CMAF (draft-wilaw-moq-cmafpackaging)</option>
+                    <option value="cmaf">CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
                 </select></label>
                 <label id="mediaPackagerWarning" hidden>⚠️ The player in this repo only understands LOC</label>
                 <div class="clear"></div>
@@ -196,6 +196,23 @@ LICENSE file in the root directory of this source tree.
                         <label>Audio burst length:<input id="audioHoldBurst" type="number" min="1" step="1" value="1" size="6"></label>
                         <div class="clear"></div>
                         <label>Those holds are at QUIC STREAM / datagram level, so the data hold will depend on the selected QUIC mapping</label>
+                        <div class="clear"></div>
+                    </div>
+                    <div class="boxed">
+                        <h3>Save media to a local file (dumper)</h3>
+                        <div class="clear"></div>
+                        <label>Save the first N seconds (0 = off):<input id="dumpSeconds" type="number" min="0" step="1" value="0" size="6"></label>
+                        <label>Media to save:<select id="dumpMediaTypes">
+                            <option value="video,audio" selected>Video + audio</option>
+                            <option value="video">Video only</option>
+                            <option value="audio">Audio only</option>
+                        </select></label>
+                        <div class="clear"></div>
+                        <label>The file is the concatenation of the packaged objects, it is saved when the N seconds are captured or when you press Stop. With CMSF it is a playable fragmented MP4 (cmaf-video.mp4), with LOC it is the raw elementary stream (loc-video.bin). The capture does NOT need a relay, and it buffers in memory</label>
+                        <div class="clear"></div>
+                        <label>⚠️ It also stops at <span id="dumpMaxObjects">-</span> objects per media type (one object = one frame), whichever limit comes first. At 30fps that caps video at <span id="dumpMaxObjectsVideoSecs">-</span>s, and at 10ms frames it caps audio at <span id="dumpMaxObjectsAudioSecs">-</span>s</label>
+                        <div class="clear"></div>
+                        <label>Last saved:<input id="dumpStatus" type="text" value="-" size="64" readonly></label>
                         <div class="clear"></div>
                     </div>
                 </div>
@@ -492,24 +509,10 @@ LICENSE file in the root directory of this source tree.
         encoderMaxQueueSize: 10,
     };
 
-    // ---------------------------------------------------------------------
-    // CMAF dump to a local file (debug aid, no UI). Flip CMAF_DUMP_TO_FILE to
-    // true and select the CMAF packager: the encoder captures the packaged
-    // objects (starting on a group boundary, so the capture opens with a CMAF
-    // Header) and downloads cmaf-<mediaType>.mp4 when the object cap is reached
-    // or when you press Stop. The file is a plain concatenation of the MoQ
-    // object payloads, which is a playable fragmented MP4:
-    //
-    //   ffprobe -v error -show_streams -count_frames cmaf-video.mp4
-    //   ffplay cmaf-video.mp4
-    //
-    // Off by default because it buffers the captured objects in memory. The
-    // same capture can be driven by hand from the console at any time with
-    // armCmafDump("video") / dumpCmaf("video").
-    // ---------------------------------------------------------------------
-    const CMAF_DUMP_TO_FILE = false;
-    const CMAF_DUMP_MEDIA_TYPES = ["video", "audio"];
-    const CMAF_DUMP_MAX_OBJECTS = 600; // ~20s of 30fps video / ~12s of 20ms audio
+    // Hard cap on the objects a dump buffers in memory, whatever duration the
+    // "Save media to a local file" box asks for (~100s of 30fps video, ~30s of
+    // 10ms audio).
+    const DUMP_MAX_OBJECTS = 3000;
 
     // To keep some stats
     let dropChunksTotals = {};
@@ -542,11 +545,12 @@ LICENSE file in the root directory of this source tree.
         // "loc" | "cmaf", picked from the UI on start
         packagerFormat: 'loc',
 
-        // Debug: save the packaged CMAF objects to a local file (see CMAF_DUMP_TO_FILE)
-        cmafDump: {
-            enabled: CMAF_DUMP_TO_FILE,
-            mediaTypes: CMAF_DUMP_MEDIA_TYPES,
-            maxObjects: CMAF_DUMP_MAX_OBJECTS,
+        // Debug: save the packaged objects to a local file, read from the UI on start
+        mediaDump: {
+            enabled: false,
+            mediaTypes: ["video", "audio"],
+            maxObjects: DUMP_MAX_OBJECTS,
+            maxDurationMs: 0,
         },
 
         moqTracks: {
@@ -780,6 +784,7 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('VACompdiff').value = "";
 
         document.getElementById('droppedFrames').innerHTML = '';
+        document.getElementById('dumpStatus').value = "-";
 
         statsHelper = {};
         dropChunksTotals = {};
@@ -802,8 +807,9 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function initUI() {
-        initVersions();
         initMOQMappingModesUI();
+        initVersions();
+        initMediaDumpUI();
         updateDropModeUI("video");
         updateDropModeUI("audio");
         updateHoldModeUI("video");
@@ -1106,15 +1112,31 @@ LICENSE file in the root directory of this source tree.
         updateMediaPackagerUI();
     }
 
-    // Reflect the selected media packager (LOC / CMAF) in the header: version,
+    // Reflect the selected media packager (LOC / CMSF) in the header: version,
     // spec link, and a warning that this repo's player only speaks LOC.
     function updateMediaPackagerUI() {
         const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
         document.getElementById("moqMediaPackagerVersion").innerHTML = isCmaf ? CMAF_PACKAGER_VERSION : LOC_PACKAGER_VERSION;
         const link = document.getElementById("moqMediaPackagerLink");
-        link.innerHTML = isCmaf ? "CMAF MediaPackager Version" : "LOC MediaPackager Version";
-        link.href = isCmaf ? "https://datatracker.ietf.org/doc/draft-wilaw-moq-cmafpackaging/" : "https://datatracker.ietf.org/doc/draft-ietf-moq-loc/";
+        link.innerHTML = isCmaf ? "CMSF MediaPackager Version" : "LOC MediaPackager Version";
+        link.href = isCmaf ? "https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/" : "https://datatracker.ietf.org/doc/draft-ietf-moq-loc/";
         document.getElementById("mediaPackagerWarning").hidden = !isCmaf;
+        updateMoqMappingUI();
+    }
+
+    // CMSF maps one CMAF fragment (GOP) to a group and one CMAF chunk (frame) to
+    // an object, so the QUIC mapping is not a free choice: video goes subgroup
+    // per GOP and audio subgroup per frame. Lock both selects while CMSF is
+    // selected, and hand them back for LOC.
+    function updateMoqMappingUI() {
+        const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
+        ['moqVideoQuicMapping', 'moqAudioQuicMapping'].forEach((id) => {
+            const select = document.getElementById(id);
+            if (isCmaf) {
+                select.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+            }
+            select.disabled = isCmaf;
+        });
     }
 
     // Read the simulated-frame-drop settings for a media type ("video"/"audio")
@@ -1165,44 +1187,74 @@ LICENSE file in the root directory of this source tree.
         muxerSenderWorker.postMessage({ type: "forceHoldBurst", mediaType, burst });
     }
 
-    // Manual version of the CMAF dump described at CMAF_DUMP_TO_FILE, usable
-    // from the console mid-session without changing any constant:
+    // Both dumps report into the same line, so keep the previous one visible.
+    function updateDumpStatusUI(text) {
+        const status = document.getElementById('dumpStatus');
+        status.value = status.value === '-' ? text : `${status.value} | ${text}`;
+    }
+
+    // Show the object cap, and what it means in seconds for a typical 30fps
+    // video / 10ms audio setup, next to the duration the user asks for.
+    function initMediaDumpUI() {
+        document.getElementById('dumpMaxObjects').textContent = DUMP_MAX_OBJECTS;
+        document.getElementById('dumpMaxObjectsVideoSecs').textContent = Math.round(DUMP_MAX_OBJECTS / 30);
+        document.getElementById('dumpMaxObjectsAudioSecs').textContent = Math.round(DUMP_MAX_OBJECTS / 100);
+    }
+
+    // Read the "Save media to a local file" box into the config the sender
+    // worker consumes (see MediaDumpConfig).
+    function readMediaDumpConfig() {
+        const seconds = Math.max(0, parseInt(document.getElementById('dumpSeconds').value) || 0);
+        return {
+            enabled: seconds > 0,
+            mediaTypes: document.getElementById('dumpMediaTypes').value.split(","),
+            maxObjects: DUMP_MAX_OBJECTS,
+            maxDurationMs: seconds * 1000,
+        };
+    }
+
+    // Manual version of the same capture, usable from the console mid-session
+    // without touching the UI:
     //
-    //   armCmafDump("video")   // starts capturing at the next group boundary
+    //   armMediaDump("video")   // starts capturing at the next group boundary
     //   ... wait a few seconds ...
-    //   dumpCmaf("video")      // downloads cmaf-video.mp4
-    window.armCmafDump = function (mediaType = "video", maxObjects = 300) {
+    //   dumpMedia("video")      // downloads the file
+    window.armMediaDump = function (mediaType = "video", maxObjects = 300, maxDurationMs = 0) {
         if (muxerSenderWorker == null) {
             console.error("Start the encoder first");
             return;
         }
-        muxerSenderWorker.postMessage({ type: "armCmafDump", mediaType, maxObjects });
-        console.log(`Arming ${mediaType} CMAF capture (up to ${maxObjects} objects). Call dumpCmaf("${mediaType}") to download it.`);
+        muxerSenderWorker.postMessage({ type: "armMediaDump", mediaType, maxObjects, maxDurationMs });
+        console.log(`Arming ${mediaType} capture (up to ${maxObjects} objects). Call dumpMedia("${mediaType}") to download it.`);
     };
 
-    window.dumpCmaf = function (mediaType = "video") {
+    window.dumpMedia = function (mediaType = "video") {
         if (muxerSenderWorker == null) {
             console.error("Start the encoder first");
             return;
         }
-        muxerSenderWorker.postMessage({ type: "dumpCmaf", mediaType });
+        muxerSenderWorker.postMessage({ type: "dumpMedia", mediaType });
     };
 
     // Write one captured media type to a local file. Capturing both audio and
     // video downloads two files, so the browser may ask to allow multiple
     // downloads the first time.
-    function downloadCmafDump(mediaType, bytes) {
-        if (bytes == null || bytes.byteLength <= 0) {
-            console.error(`Nothing captured for ${mediaType}. Did you call armCmafDump("${mediaType}") and wait for a new group?`);
+    function downloadMediaDump(dump) {
+        if (dump.data == null || dump.data.byteLength <= 0) {
+            console.error(`Nothing captured for ${dump.mediaType}. Did the capture reach a new group?`);
+            updateDumpStatusUI(`${dump.mediaType}: nothing captured (no group boundary reached)`);
             return;
         }
-        const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+        const secs = (dump.durationMs / 1000).toFixed(1);
+        const why = dump.reason === 'objectCap' ? ` - TRUNCATED at the ${DUMP_MAX_OBJECTS} object cap` : '';
+        updateDumpStatusUI(`${dump.fileName}: ${dump.objects} objects, ${secs}s${why}`);
+        const url = URL.createObjectURL(new Blob([dump.data], { type: dump.mimeType }));
         const a = document.createElement("a");
         a.href = url;
-        a.download = `cmaf-${mediaType}.mp4`;
+        a.download = dump.fileName;
         a.click();
         URL.revokeObjectURL(url);
-        console.log(`Downloaded cmaf-${mediaType}.mp4 (${bytes.byteLength} bytes)`);
+        console.log(`Downloaded ${dump.fileName} (${dump.data.byteLength} bytes)`);
     }
 
     // The interval / burst inputs only make sense when a drop mode is selected;
@@ -1406,6 +1458,7 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("btnForceHoldAudio").disabled = true
             // Restore controls whose enabled state is conditional on another input.
             UIUseToken(document.getElementById('useAuthToken').checked);
+            updateMoqMappingUI();
             updateDropModeUI('video');
             updateDropModeUI('audio');
             updateHoldModeUI('video');
@@ -1535,9 +1588,9 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "sendstats") {
             updateUploadStats(e.data.queuedReq, e.data.openStreamsReq);
 
-            // CMAF DEBUG DUMP (see window.dumpCmaf)
-        } else if (e.data.type === "cmafdump") {
-            downloadCmafDump(e.data.mediaType, e.data.data);
+            // DEBUG DUMP TO A LOCAL FILE (see window.dumpMedia)
+        } else if (e.data.type === "mediadump") {
+            downloadMediaDump(e.data);
 
             // UNKNOWN
         } else {
@@ -1712,8 +1765,11 @@ LICENSE file in the root directory of this source tree.
 
         muxerSenderConfig.usePublishNamespace = document.getElementById('usePublishNamespace').checked
 
-        // Media packaging format (same for audio and video): "loc" or "cmaf"
+        // Media packaging format (same for audio and video): "loc" or "cmaf" (CMSF)
         muxerSenderConfig.packagerFormat = document.getElementById('mediaPackager').value;
+
+        // Debug: save the first N seconds of packaged objects to a local file
+        muxerSenderConfig.mediaDump = readMediaDumpConfig();
 
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;

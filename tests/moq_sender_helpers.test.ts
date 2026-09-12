@@ -68,11 +68,11 @@ describe('packaging config', () => {
     moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } },
   };
 
-  it('defaults to LOC with the CMAF dump disabled', () => {
+  it('defaults to LOC with the media dump disabled', () => {
     const cfg = parseSenderConfig(baseConfig);
     expect(cfg.packagerFormat).toBe('loc');
-    expect(cfg.cmafDump.enabled).toBe(false);
-    expect(cfg.cmafDump.mediaTypes).toEqual(['video', 'audio']);
+    expect(cfg.mediaDump.enabled).toBe(false);
+    expect(cfg.mediaDump.mediaTypes).toEqual(['video', 'audio']);
   });
 
   it('only accepts the formats it implements', () => {
@@ -82,17 +82,22 @@ describe('packaging config', () => {
     expect(parseSenderConfig({ ...baseConfig, packagerFormat: 'mp2t' }).packagerFormat).toBe('loc');
   });
 
-  it('reads the CMAF dump settings', () => {
+  it('reads the media dump settings', () => {
     const cfg = parseSenderConfig({
       ...baseConfig,
       packagerFormat: 'cmaf',
-      cmafDump: { enabled: true, mediaTypes: ['video'], maxObjects: 10 },
+      mediaDump: { enabled: true, mediaTypes: ['video'], maxObjects: 10, maxDurationMs: 5000 },
     });
-    expect(cfg.cmafDump).toEqual({ enabled: true, mediaTypes: ['video'], maxObjects: 10 });
+    expect(cfg.mediaDump).toEqual({
+      enabled: true,
+      mediaTypes: ['video'],
+      maxObjects: 10,
+      maxDurationMs: 5000,
+    });
   });
 });
 
-describe('CMAF dump capture', () => {
+describe('media dump capture', () => {
   // The capture posts the collected bytes back to the main thread; in the
   // worker that is `self.postMessage`.
   let posted: any[] = [];
@@ -107,61 +112,23 @@ describe('CMAF dump capture', () => {
   });
 
   // A MoqSender with the dump armed from its config, without a live session.
-  function armedSender(cmafDump: any, packagerFormat = 'cmaf') {
+  function armedSender(mediaDump: any, packagerFormat = 'cmaf') {
     const s = new MoqSender() as any;
     s.config = parseSenderConfig({
       urlHostPort: 'https://relay:4433',
       moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } },
       packagerFormat,
-      cmafDump,
+      mediaDump,
     });
-    s.startConfiguredCmafDump();
+    s.startConfiguredDump();
     return s;
   }
 
-  it('captures nothing until a group starts, so the file opens with a CMAF Header', () => {
-    const s = armedSender({ enabled: true, mediaTypes: ['video'], maxObjects: 10 });
-
-    s.captureForDump('video', new Uint8Array([1]), false); // mid-group, ignored
-    s.captureForDump('video', new Uint8Array([2]), true); // group boundary
-    s.captureForDump('video', new Uint8Array([3]), false);
-    s.handleStop();
-
-    expect(posted).toHaveLength(1);
-    expect(posted[0]).toMatchObject({ type: 'cmafdump', mediaType: 'video' });
-    expect(posted[0].data).toEqual(new Uint8Array([2, 3]));
-  });
-
-  it('saves the file as soon as the object cap is reached', () => {
-    const s = armedSender({ enabled: true, mediaTypes: ['video'], maxObjects: 2 });
-
-    s.captureForDump('video', new Uint8Array([1]), true);
-    s.captureForDump('video', new Uint8Array([2]), false);
-    expect(posted).toHaveLength(1);
-    expect(posted[0].data).toEqual(new Uint8Array([1, 2]));
-
-    // Disarmed afterwards: the rest of the session is not captured.
-    s.captureForDump('video', new Uint8Array([3]), true);
-    s.handleStop();
-    expect(posted).toHaveLength(1);
-  });
-
-  it('stays inert when disabled, and on media types it was not armed for', () => {
+  it('stays inert when the dump is disabled', () => {
     const s = armedSender({ enabled: false });
-    s.captureForDump('video', new Uint8Array([1]), true);
+    s.dumper.capture('video', new Uint8Array([1]), true);
     s.handleStop();
     expect(posted).toHaveLength(0);
-
-    const armedForVideo = armedSender({ enabled: true, mediaTypes: ['video'], maxObjects: 10 });
-    armedForVideo.captureForDump('audio', new Uint8Array([1]), true);
-    armedForVideo.handleStop();
-    expect(posted).toHaveLength(0);
-  });
-
-  it('warns when dumping a LOC stream, which is not a valid MP4', () => {
-    const warn = jest.spyOn(console, 'warn');
-    armedSender({ enabled: true, mediaTypes: ['video'] }, 'loc');
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/NOT be a valid MP4/));
   });
 
   it('captures with no session at all: the file does not depend on the transport', () => {
@@ -193,9 +160,56 @@ describe('CMAF dump capture', () => {
 
     // ... but it was still packaged and captured.
     s.handleStop();
-    const dump = posted.find((m) => m.type === 'cmafdump');
+    const dump = posted.find((m) => m.type === 'mediadump');
     expect(dump).toBeDefined();
+    expect(dump.fileName).toBe('cmaf-video.mp4');
     expect(new TextDecoder().decode(dump.data.subarray(4, 8))).toBe('ftyp');
     expect(dump.data.byteLength).toBeGreaterThan(avcConfig.byteLength);
+  });
+
+  // `compensatedTs` is relative to a capture anchor shared by audio and video,
+  // and normalizeChunk clamps it at 0, so the stream that does not own the
+  // anchor reports 0 for its first seconds. The duration cap must not be fooled
+  // by that: it reads the chunk timestamp instead.
+  it('caps the capture on media duration, even when compensatedTs starts clamped', () => {
+    const s = armedSender({
+      enabled: true,
+      mediaTypes: ['audio'],
+      maxObjects: 10_000,
+      maxDurationMs: 5000,
+    });
+    const opusHead = new Uint8Array(19);
+    opusHead.set(new TextEncoder().encode('OpusHead'), 0);
+    new DataView(opusHead.buffer).setUint32(12, 48000, true);
+    opusHead[8] = 1;
+    opusHead[9] = 1;
+
+    // 15s of 10ms Opus whose first 3s land before the shared capture anchor.
+    const ANCHOR_OFFSET_US = 3_000_000;
+    for (let i = 0; i < 1500; i++) {
+      const tsUs = i * 10_000;
+      s.handleChunk({
+        mediaType: 'audio',
+        chunk: {
+          byteLength: 2,
+          timestamp: tsUs,
+          duration: 10_000,
+          type: 'key',
+          copyTo: (buf: Uint8Array) => buf.set([1, 2]),
+        },
+        seqId: i,
+        compensatedTs: tsUs - ANCHOR_OFFSET_US,
+        metadata: opusHead,
+        timebase: 1_000_000,
+        codec: 'opus',
+      });
+    }
+    s.handleStop();
+
+    const dumps = posted.filter((m) => m.type === 'mediadump');
+    expect(dumps).toHaveLength(1);
+    expect(dumps[0].reason).toBe('durationCap');
+    expect(dumps[0].durationMs).toBe(5000);
+    expect(dumps[0].objects).toBe(501);
   });
 });

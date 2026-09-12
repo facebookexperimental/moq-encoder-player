@@ -18,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 export * from './utils/utils.js';
 export * from './utils/ts_queue.js';
 export * from './utils/jitter_buffer.js';
+export * from './utils/media_dumper.js';
 
 // Media (H.264 / AVCC) helpers
 export * from './utils/media/avcc_parser.js';

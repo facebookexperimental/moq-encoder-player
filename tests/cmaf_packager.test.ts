@@ -245,6 +245,14 @@ describe('CMAF timing', () => {
     expect(sample.duration).toBe(960);
   });
 
+  it('needs a source timescale, it does not assume one', () => {
+    const packager = new CMAFPackager('video');
+    packager.SetSourceInfo({ codedWidth: 320, codedHeight: 180, durationUs: 33_333 });
+    packager.SetData(0, undefined, 'avc1.42001e', AVC_CONFIG, new Uint8Array([1]), false);
+
+    expect(() => packager.PayloadToBytes()).toThrow(/source timescale/);
+  });
+
   it('falls back to the interval since the previous chunk when there is no duration', () => {
     const packager = new CMAFPackager('video');
     packager.SetSourceInfo({ codedWidth: 320, codedHeight: 180 });
@@ -383,11 +391,9 @@ describe('packager factory', () => {
     expect(createPackager('cmaf', 'audio')).toBeInstanceOf(CMAFPackager);
   });
 
-  it('falls back to LOC for opaque data tracks, which CMAF does not cover', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(createPackager('cmaf', 'data')).toBeInstanceOf(LOCPackager);
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+  it('rejects media types CMAF does not cover, instead of packaging them as LOC', () => {
+    expect(() => createPackager('cmaf', 'data')).toThrow(/only covers audio and video/);
+    expect(createPackager('loc', 'data')).toBeInstanceOf(LOCPackager);
   });
 
   it('names tracks the same way in both formats', () => {

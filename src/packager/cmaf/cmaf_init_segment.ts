@@ -11,7 +11,7 @@ LICENSE file in the root directory of this source tree.
 // defaults live in `mvex`/`trex`.
 //
 // One CMAF Track per MOQT track, so the movie always holds exactly ONE ISOBMFF
-// track (draft-wilaw-moq-cmafpackaging-01 §3).
+// track (CMSF, draft-wilaw-moq-cmafpackaging-01 §3).
 
 import {
   box,

@@ -1,6 +1,6 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring**. The encoder can also publish CMAF (draft-wilaw-moq-cmafpackaging-01), see [Packager](#packager)
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring**. The encoder can also publish CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), see [Packager](#packager)
 
 This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
@@ -44,6 +44,7 @@ moq-encoder-player/
 │   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
 │   │                       #   video_render_buffer.ts
 │   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, avg_last_n_items.ts, utils.ts,
+│   │                       #   media_dumper.ts (save packaged objects to a local file),
 │   │   └── media/          #   avcc_parser.ts, avc_decoder_configuration_record_parser.ts
 │   └── types/              #   globals.d.ts (ambient types for WebTransport / WebCodecs)
 ├── tests/                  # Jest unit tests for the pure utilities
@@ -121,9 +122,9 @@ It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc
 
 That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
-### CMAF (encoder only)
+### CMSF / CMAF (encoder only)
 
-It follows [draft-wilaw-moq-cmafpackaging](https://datatracker.ietf.org/doc/draft-wilaw-moq-cmafpackaging/) with the box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF: each MoQ object payload is a self-describing ISOBMFF media fragment and no MoQ Object Properties are sent at all. See [src/packager/cmaf/](#srcpackagercmaf-cmaf-packager) for the mapping and the two documented deviations from the draft.
+It follows [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (CMAF packaging for MoQ, written against the individual draft the working group adopted, `draft-wilaw-moq-cmafpackaging-01`) with the box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF: each MoQ object payload is a self-describing ISOBMFF media fragment and no MoQ Object Properties are sent at all. See [src/packager/cmaf/](#srcpackagercmaf-cmsf--cmaf-packager) for the mapping and the two documented deviations from the draft.
 
 ## Encoder
 
@@ -231,26 +232,22 @@ Main encoder webpage and also glues all encoder pieces together
   - Reconstructs the capture wall clock of the chunk from the capture anchor
   - Sends the chunk (augmented with seqId and metadata) to the muxer
 
-It also owns the **"Media packager" dropdown** (LOC or CMAF, see [Packager](#packager)), which is the only place the format can be selected. Remember the player only decodes LOC.
+It also owns the **"Media packager" dropdown** (LOC or CMSF, the UI name of the CMAF packaging, see [Packager](#packager)), which is the only place the format can be selected. Remember the player only decodes LOC. Selecting CMSF also locks the QUIC mapping to subgroup per GOP (video) and subgroup per frame (audio), which is the grouping the CMAF mapping assumes.
 
-#### Saving the CMAF stream to a local file
+#### Saving the stream to a local file
 
-To analyse what the CMAF packager actually puts on the wire, the encoder can save the packaged objects to a file. It is **off by default** (it buffers the captured objects in memory) and has no UI; flip the constant at the top of the page script:
+To analyse what the selected packager actually puts on the wire, the encoder can save the packaged objects to a file. Set **"Save the first N seconds"** in _Advanced > Save media to a local file (dumper)_ (0, the default, disables it) and pick which media types to capture.
 
-```javascript
-const CMAF_DUMP_TO_FILE = false; // true -> save the CMAF objects to a file
-const CMAF_DUMP_MEDIA_TYPES = ['video', 'audio'];
-const CMAF_DUMP_MAX_OBJECTS = 600; // ~20s of 30fps video / ~12s of 20ms audio
-```
+A second limit applies at the same time: the capture also stops at `DUMP_MAX_OBJECTS` objects per media type (one object = one frame), so a long / high-frame-rate session cannot exhaust memory. The box shows that cap and, once a file is written, how many objects and how many seconds it actually holds (flagged when the object cap truncated it). The N seconds are **media** seconds, measured from the chunk timestamps of the stream being captured.
 
-With it enabled and the CMAF packager selected, each media type is downloaded as `cmaf-<mediaType>.mp4` when its object cap is reached or when you press Stop (capturing both means two downloads, so the browser may ask to allow multiple files). **The capture is independent of the transport**: chunks are packaged and written to the dump even when there is no MoQ session or no subscriber, so a file can be produced with no relay running at all. The same capture can be driven by hand mid-session from the console:
+Each media type is downloaded when its N seconds are captured or when you press Stop (capturing both means two downloads, so the browser may ask to allow multiple files). With CMSF the file is `cmaf-<mediaType>.mp4`, with LOC it is `loc-<mediaType>.bin`. **The capture is independent of the transport**: chunks are packaged and written to the dump even when there is no MoQ session or no subscriber, so a file can be produced with no relay running at all. The same capture can be driven by hand mid-session from the console:
 
 ```javascript
-armCmafDump('video'); // start capturing at the next group boundary (also 'audio')
-dumpCmaf('video'); // downloads cmaf-video.mp4 with everything captured
+armMediaDump('video'); // start capturing at the next group boundary (also 'audio')
+dumpMedia('video'); // downloads everything captured so far
 ```
 
-Either way the capture starts on a group carrying the CMAF Header, so the downloaded concatenation of object payloads is a playable fragmented MP4: `ffprobe -count_frames cmaf-video.mp4`, `ffplay cmaf-video.mp4`, or any MP4 box analyzer.
+Either way the capture starts on a group boundary, so for CMSF it carries the CMAF Header and the downloaded concatenation of object payloads is a playable fragmented MP4: `ffprobe -count_frames cmaf-video.mp4`, `ffplay cmaf-video.mp4`, or any MP4 box analyzer. The capture logic itself lives in [`src/utils/media_dumper.ts`](./src/utils/media_dumper.ts) (`MediaDumper`) and works with any packager.
 
 ### src/overlay_processor/overlay_encoder.ts (OverlayEncoder)
 
@@ -308,9 +305,9 @@ The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVid
 - LOC has no media type on the wire (that is a catalog's job), so the publisher and the player both take it from their own per-track config
 - LOC covers audio and video only. The `data` track used by the `simple.html` demos is an opaque payload with no properties
 
-### src/packager/cmaf/ (CMAF packager)
+### src/packager/cmaf/ (CMSF / CMAF packager)
 
-- Implements [draft-wilaw-moq-cmafpackaging-01](https://datatracker.ietf.org/doc/draft-wilaw-moq-cmafpackaging/), boxes per CMAF (ISO/IEC 23000-19) and ISOBMFF (ISO/IEC 14496-12). **Encoder only: the player in this repo does not parse CMAF**
+- Implements [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (written against `draft-wilaw-moq-cmafpackaging-01`), boxes per CMAF (ISO/IEC 23000-19) and ISOBMFF (ISO/IEC 14496-12). **Encoder only: the player in this repo does not parse CMSF**
 
 | File | Role |
 | --- | --- |
@@ -335,10 +332,10 @@ Each object payload is `[ftyp moov] styp moof mdat`, and there are **two deliber
 Other details:
 
 - CMAF is self-describing, so **no MoQ Object Properties are sent**: timing lives in `tfdt` / `trun`, the codec in the sample entry, and key frames in the `trun` sample flags (`sample_depends_on` / `sample_is_non_sync_sample`)
-- Media timescale: video keeps the WebCodecs microsecond timebase; audio uses its sample rate, as CMAF §7.5.13 recommends. Timestamps are converted per chunk from the absolute source timestamp, so rounding cannot accumulate
+- Media timescale: video keeps the source (WebCodecs, microsecond) timebase, which the caller must provide; audio uses its sample rate, as CMAF §7.5.13 recommends. Timestamps are converted per chunk from the absolute source timestamp, so rounding cannot accumulate
 - Sample duration comes from the WebCodecs chunk when the encoder reports one, otherwise from the interval since the previous chunk (a live stream has no lookahead). `tfdt` is exact in both cases
 - The samples go into `mdat` untouched, which requires the WebCodecs default AVC format (`avc`: length-prefixed AVCC, not Annex-B)
-- CMAF covers audio and video only; an opaque `data` track falls back to the LOC packager
+- CMAF covers audio and video only; asking for any other media type (an opaque `data` track) is an error rather than a silent fallback to another format
 - If the object carrying a header is dropped by the send queue / stream caps, the subscriber simply waits for the next repeat
 
 ### src/sender/moq_sender.ts (+ src/sender/moq/moq_sender_internals.ts)

@@ -5,9 +5,10 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-// CMAF packaging for MOQT, following "draft-wilaw-moq-cmafpackaging-01"
-// (local-scratch/moqt-cmaf.txt) with the box syntax of CMAF (ISO/IEC 23000-19)
-// and ISOBMFF (ISO/IEC 14496-12).
+// CMSF (CMAF packaging for MOQT), https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/.
+// Written against "draft-wilaw-moq-cmafpackaging-01" (local-scratch/moqt-cmaf.txt),
+// the individual draft the working group adopted as draft-ietf-moq-cmsf, with the
+// box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF (ISO/IEC 14496-12).
 //
 // Mapping used here (§4.2, "CMAF Chunk to MOQT Object"):
 //
@@ -44,9 +45,6 @@ export const CMAF_PACKAGER_VERSION = 'cmafpackaging-01(self-init)';
 
 // Each MOQT track carries a single ISOBMFF track (§3), always with this id.
 const CMAF_TRACK_ID = 1;
-
-// WebCodecs timestamps and durations are microseconds.
-const WEBCODECS_TIMESCALE = 1_000_000;
 
 // Used for the very first sample only, when WebCodecs reports no duration and
 // there is no previous timestamp to diff against.
@@ -304,7 +302,7 @@ export class CMAFPackager implements MediaPackager {
     if (this.mediaTimescale !== undefined) {
       return this.mediaTimescale;
     }
-    let timescale = this.sourceTimescale ?? WEBCODECS_TIMESCALE;
+    let timescale = this.requireSourceTimescale();
     if (this.mediaType === 'audio' && this.config !== undefined && this.codec !== undefined) {
       try {
         timescale = GetAudioDecoderConfig(this.codec, this.config).sampleRate;
@@ -318,8 +316,19 @@ export class CMAFPackager implements MediaPackager {
     return timescale;
   }
 
+  /**
+   * Timescale of the timestamps the caller passes in. There is no safe default:
+   * guessing it would silently scale every timestamp in the stream.
+   */
+  private requireSourceTimescale(): number {
+    if (this.sourceTimescale === undefined || this.sourceTimescale <= 0) {
+      throw new Error(`${this.mediaType} CMAF objects need a source timescale`);
+    }
+    return this.sourceTimescale;
+  }
+
   private toMediaTime(sourceTime: number, mediaTimescale: number): number {
-    const sourceTimescale = this.sourceTimescale ?? WEBCODECS_TIMESCALE;
+    const sourceTimescale = this.requireSourceTimescale();
     if (mediaTimescale === sourceTimescale) {
       return sourceTime;
     }

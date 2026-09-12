@@ -11,7 +11,7 @@ LICENSE file in the root directory of this source tree.
 //  * 'loc'  - draft-ietf-moq-loc (see ./loc_packager.ts): the payload is the
 //             raw encoded chunk and the metadata rides the MoQ Object
 //             Properties. This is the format the player in this repo speaks.
-//  * 'cmaf' - draft-wilaw-moq-cmafpackaging (see ./cmaf/cmaf_packager.ts): the
+//  * 'cmaf' - CMSF, draft-ietf-moq-cmsf (see ./cmaf/cmaf_packager.ts): the
 //             payload is a self-describing ISOBMFF fragment and there are no
 //             MoQ Object Properties.
 //
@@ -61,16 +61,13 @@ export interface MediaPackager {
  * the `moof` sequence number and the initialization header), so the caller must
  * keep them for the lifetime of the track rather than creating one per chunk.
  *
- * CMAF describes audio and video only, so an opaque `data` track falls back to
- * the LOC packager (which sends the payload through untouched).
+ * CMAF describes audio and video only, so any other media type (an opaque
+ * `data` track) is rejected rather than silently packaged as something else.
  */
 export function createPackager(format: PackagerFormat, mediaType: LOCMediaType): MediaPackager {
   if (format === 'cmaf') {
-    if (mediaType === 'data') {
-      console.warn(
-        '[PACKAGER] CMAF does not cover opaque data tracks, packaging this one as LOC instead',
-      );
-      return new LOCPackager(mediaType);
+    if (mediaType !== 'audio' && mediaType !== 'video') {
+      throw new Error(`CMAF only covers audio and video, it can NOT package a ${mediaType} track`);
     }
     return new CMAFPackager(mediaType);
   }
