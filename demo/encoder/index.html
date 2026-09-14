@@ -302,10 +302,31 @@ LICENSE file in the root directory of this source tree.
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio queued</label>
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video queued</label>
-            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle;border-top:2px dashed #d62728;height:0"></span> Audio open streams (dashed)</label>
-            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle;border-top:2px dashed #1f77b4;height:0"></span> Video open streams (dashed)</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #d62728;vertical-align:middle"></span> Audio open streams</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #1f77b4;vertical-align:middle"></span> Video open streams</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio packet loss</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video packet loss</label>
+        </div>
+    </div>
+
+    <!-- Per-subgroup overhead added by the packager + MoQ (last 60s), one per track -->
+    <div class="boxed">
+        <h2><span id="overheadTitleAudio">Audio</span> overhead (last 60s)</h2>
+        <canvas id="overheadTimelineAudio" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #d62728;vertical-align:middle"></span> Overhead bytes</label>
+        </div>
+    </div>
+
+    <div class="boxed">
+        <h2><span id="overheadTitleVideo">Video</span> overhead (last 60s)</h2>
+        <canvas id="overheadTimelineVideo" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #1f77b4;vertical-align:middle"></span> Overhead bytes</label>
+            <div class="clear"></div>
+            <label>One point per subgroup sent. Overhead = packager (CMSF boxes / CMAF Header, none for LOC) + MoQ signaling (subgroup header, object headers, properties, end of group). % = overhead / payload, so it goes over 100% when the overhead is bigger than the media itself</label>
         </div>
     </div>
 
@@ -315,6 +336,7 @@ LICENSE file in the root directory of this source tree.
         <button type="button" class="tab-btn" data-tab="tabCapture">Capture</button>
         <button type="button" class="tab-btn" data-tab="tabEncoder">Encoder output</button>
         <button type="button" class="tab-btn" data-tab="tabMuxer">Muxer sender</button>
+        <button type="button" class="tab-btn" data-tab="tabOverhead">Data overhead</button>
     </div>
     <div class="tab-panels">
         <div id="tabDropped" class="boxed tab-panel active">
@@ -392,6 +414,32 @@ LICENSE file in the root directory of this source tree.
                     </form>
                 </div>
             </div>
+        </div>
+        <div id="tabOverhead" class="boxed tab-panel">
+            <h2>Data overhead (instant: last subgroup sent)</h2>
+            <div>
+                <h3>Audio</h3>
+                <div class="styleform">
+                    <form>
+                        <label>Payload bytes:<input id="subgroupAudioPayload" type="text" value="" readonly></label>
+                        <label>Overhead bytes:<input id="subgroupAudioOverhead" type="text" value="" readonly></label>
+                        <label>Overhead (%):<input id="subgroupAudioOverheadPerct" type="text" value="" readonly></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+            <div>
+                <h3>Video</h3>
+                <div class="styleform">
+                    <form>
+                        <label>Payload bytes:<input id="subgroupVideoPayload" type="text" value="" readonly></label>
+                        <label>Overhead bytes:<input id="subgroupVideoOverhead" type="text" value="" readonly></label>
+                        <label>Overhead (%):<input id="subgroupVideoOverheadPerct" type="text" value="" readonly></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+            <label>Payload = encoded media bytes of the subgroup. Overhead = packager (CMSF boxes / CMAF Header, none for LOC) + MoQ signaling (subgroup header, object headers, properties, end of group). % = overhead / payload, so 100% means the overhead doubles what goes on the wire. See the per-track "&lt;track name&gt; overhead (last 60s)" graphs above for the trend</label>
         </div>
     </div>
 </body>
@@ -591,20 +639,22 @@ LICENSE file in the root directory of this source tree.
     let timelineDrops = [];   // { tMs, mediaType, cum } one entry per dropped packet
     let dropCum = { audio: 0, video: 0 }; // running session totals of dropped packets
     let timelineStartMs = -1; // Date.now() when start was pressed
-    let timelineYMax = 1;     // max(maxInflightVideo, maxInflightAudio)
     let timelineAnimFrame = null;
+
+    // Every axis follows the data currently on screen, with 10% of headroom so
+    // the peak does not touch the top edge.
+    const AXIS_HEADROOM = 1.1;
+    function axisMax(maxValue) {
+        return Math.max(1, maxValue * AXIS_HEADROOM);
+    }
 
     function startTimeline() {
         // Clear and restart on every Start press
         timelineSamples = [];
         timelineDrops = [];
+        overheadSamples = { audio: [], video: [] };
         dropCum = { audio: 0, video: 0 };
         timelineStartMs = Date.now();
-        const maxV = parseInt(document.getElementById('maxInflightVideoRequests').value) || 0;
-        const maxA = parseInt(document.getElementById('maxInflightAudioRequests').value) || 0;
-        const maxStreamsV = parseInt(document.getElementById('maxQUICStreamsVideo').value) || 0;
-        const maxStreamsA = parseInt(document.getElementById('maxQUICStreamsAudio').value) || 0;
-        timelineYMax = Math.max(maxV, maxA, maxStreamsV, maxStreamsA, 1);
         if (timelineAnimFrame === null) {
             timelineAnimFrame = requestAnimationFrame(drawTimeline);
         }
@@ -653,7 +703,7 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function drawTimelineSeries(ctx, w, h, nowMs, key, color, dashed) {
+    function drawTimelineSeries(ctx, w, h, nowMs, key, yMax, color, dashed) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.setLineDash(dashed ? [5, 4] : []);
@@ -663,7 +713,7 @@ LICENSE file in the root directory of this source tree.
             const s = timelineSamples[i];
             // Right edge = now, anything older moves toward the left edge
             const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
-            const y = h - (s[key] / timelineYMax) * h;
+            const y = h - (s[key] / yMax) * h;
             if (!started) {
                 ctx.moveTo(x, y);
                 started = true;
@@ -702,8 +752,14 @@ LICENSE file in the root directory of this source tree.
             timelineDrops.shift();
         }
 
-        // Right axis scale: 0 .. max(audio packet loss, video packet loss)
-        const rightYMax = Math.max(dropCum.audio, dropCum.video, 1);
+        // Both axes follow what is on screen: queued objects / open streams on the
+        // left, cumulative packet loss on the right.
+        let leftMax = 0;
+        for (const s of timelineSamples) {
+            leftMax = Math.max(leftMax, s.audioQueued, s.videoQueued, s.audioStreams, s.videoStreams);
+        }
+        const timelineYMax = axisMax(leftMax);
+        const rightYMax = axisMax(Math.max(dropCum.audio, dropCum.video));
 
         // Grid: horizontal lines every 25% and vertical lines every 5s
         ctx.strokeStyle = 'rgba(128,128,128,0.25)';
@@ -725,7 +781,7 @@ LICENSE file in the root directory of this source tree.
         ctx.fillStyle = 'rgba(128,128,128,0.9)';
         ctx.font = '10px sans-serif';
         ctx.textBaseline = 'top';
-        ctx.fillText(timelineYMax.toString(), 2, 2);
+        ctx.fillText(Math.round(timelineYMax).toString(), 2, 2);
         ctx.textBaseline = 'bottom';
         ctx.fillText('0', 2, h - 2);
         ctx.textBaseline = 'bottom';
@@ -737,18 +793,141 @@ LICENSE file in the root directory of this source tree.
         // Right axis labels (packet loss). Drawn slightly inset from the right edge.
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
-        ctx.fillText('loss ' + rightYMax, w - 2, 2);
+        ctx.fillText('loss ' + Math.round(rightYMax), w - 2, 2);
 
         // Packet-loss bars (one per dropped packet, height = cumulative loss for its media type)
         drawTimelineDrops(ctx, w, h, nowMs, rightYMax);
 
         // Queued objects (solid) and open streams (dashed) per media type
-        drawTimelineSeries(ctx, w, h, nowMs, 'audioQueued', TIMELINE_AUDIO_COLOR, false);
-        drawTimelineSeries(ctx, w, h, nowMs, 'videoQueued', TIMELINE_VIDEO_COLOR, false);
-        drawTimelineSeries(ctx, w, h, nowMs, 'audioStreams', TIMELINE_AUDIO_COLOR, true);
-        drawTimelineSeries(ctx, w, h, nowMs, 'videoStreams', TIMELINE_VIDEO_COLOR, true);
+        drawTimelineSeries(ctx, w, h, nowMs, 'audioQueued', timelineYMax, TIMELINE_AUDIO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, 'videoQueued', timelineYMax, TIMELINE_VIDEO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, 'audioStreams', timelineYMax, TIMELINE_AUDIO_COLOR, true);
+        drawTimelineSeries(ctx, w, h, nowMs, 'videoStreams', timelineYMax, TIMELINE_VIDEO_COLOR, true);
+
+        drawOverheadTimeline(nowMs);
 
         timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
+
+    // ---------------------------------------------------------------------
+    // Data overhead timeline, one chart per track: one point per subgroup sent.
+    // Left axis is the overhead as a share of the payload (so it goes over 100%
+    // when the overhead is bigger than the media), right axis the overhead bytes.
+    // ---------------------------------------------------------------------
+
+    // { tMs, percent, overheadBytes } per media type, relative to session start
+    let overheadSamples = { audio: [], video: [] };
+
+    function addOverheadSample(mediaType, payloadBytes, overheadBytes) {
+        const series = overheadSamples[mediaType];
+        if (series === undefined || timelineStartMs < 0) {
+            return;
+        }
+        series.push({
+            tMs: Date.now() - timelineStartMs,
+            percent: overheadPercent(payloadBytes, overheadBytes),
+            overheadBytes,
+        });
+    }
+
+    // Overhead as a percentage OF THE PAYLOAD: 100% means the overhead doubles
+    // what goes on the wire, and there is no upper bound.
+    function overheadPercent(payloadBytes, overheadBytes) {
+        if (!(payloadBytes > 0)) {
+            return 0;
+        }
+        return (overheadBytes * 100) / payloadBytes;
+    }
+
+    function drawOverheadSeries(ctx, w, h, nowMs, samples, key, yMax, color, dashed) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash(dashed ? [5, 4] : []);
+        ctx.beginPath();
+        let started = false;
+        for (const s of samples) {
+            // Right edge = now, anything older moves toward the left edge
+            const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+            const y = h - (s[key] / yMax) * h;
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    function drawOverheadTimeline(nowMs) {
+        drawTrackOverheadTimeline(nowMs, 'audio', 'overheadTimelineAudio', TIMELINE_AUDIO_COLOR);
+        drawTrackOverheadTimeline(nowMs, 'video', 'overheadTimelineVideo', TIMELINE_VIDEO_COLOR);
+    }
+
+    function drawTrackOverheadTimeline(nowMs, mediaType, canvasId, color) {
+        const canvas = document.getElementById(canvasId);
+        const ctx = canvas.getContext('2d');
+
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        // Drop samples that scrolled off the left edge
+        const samples = overheadSamples[mediaType];
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        while (samples.length > 0 && samples[0].tMs < oldestVisible) {
+            samples.shift();
+        }
+
+        // Both axes follow what is on screen; the share has no 100% ceiling.
+        let maxPercent = 0;
+        let maxOverheadBytes = 0;
+        for (const s of samples) {
+            maxPercent = Math.max(maxPercent, s.percent);
+            maxOverheadBytes = Math.max(maxOverheadBytes, s.overheadBytes);
+        }
+        const leftYMax = axisMax(maxPercent);
+        const rightYMax = axisMax(maxOverheadBytes);
+
+        // Grid: horizontal lines every 25% of the axis and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        // Axis labels: overhead share on the left, overhead bytes on the right
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(Math.round(leftYMax) + '%', 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('0%', 2, h - 2);
+        ctx.fillText('-60s', 2, h - 12);
+        ctx.textAlign = 'right';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textBaseline = 'top';
+        ctx.fillText(Math.round(rightYMax) + ' bytes', w - 2, 2);
+
+        drawOverheadSeries(ctx, w, h, nowMs, samples, 'percent', leftYMax, color, false);
+        drawOverheadSeries(ctx, w, h, nowMs, samples, 'overheadBytes', rightYMax, color, true);
     }
 
     // Read & parse QS data
@@ -774,6 +953,13 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('uploadStatsVideoQueued').value = "0";
         document.getElementById('uploadStatsAudioStreams').value = "0";
         document.getElementById('uploadStatsVideoStreams').value = "0";
+
+        document.getElementById('subgroupAudioPayload').value = "";
+        document.getElementById('subgroupAudioOverhead').value = "";
+        document.getElementById('subgroupAudioOverheadPerct').value = "";
+        document.getElementById('subgroupVideoPayload').value = "";
+        document.getElementById('subgroupVideoOverhead').value = "";
+        document.getElementById('subgroupVideoOverheadPerct').value = "";
 
         document.getElementById('firstVts').value = "";
         document.getElementById('firstAts').value = "";
@@ -1100,11 +1286,21 @@ LICENSE file in the root directory of this source tree.
         optionsElement.options.add(o, 1);
     }
 
+    // The overhead charts are per track, so they are titled with the MOQT track
+    // name they plot (which changes on every Start, see initStreamIDUI).
+    function updateOverheadTitlesUI() {
+        const trackPrefix = document.getElementById("trackName").value;
+        document.getElementById("overheadTitleAudio").textContent = getMediaTrackName(trackPrefix, true);
+        document.getElementById("overheadTitleVideo").textContent = getMediaTrackName(trackPrefix, false);
+    }
+
     function updateFullTrackNameUI() {
         const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, true))}`
         const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, false))}`
 
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
+
+        updateOverheadTitlesUI();
     }
 
     function initVersions() {
@@ -1603,6 +1799,10 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "sendstats") {
             updateUploadStats(e.data.queuedReq, e.data.openStreamsReq);
 
+            // PER-SUBGROUP BYTE ACCOUNTING (payload vs packager + MoQ overhead)
+        } else if (e.data.type === "subgroupbytes") {
+            updateSubgroupBytes(e.data);
+
             // DEBUG DUMP TO A LOCAL FILE (see window.dumpMedia)
         } else if (e.data.type === "mediadump") {
             downloadMediaDump(e.data);
@@ -1620,6 +1820,20 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('uploadStatsVideoStreams').value = `${openStreamsReq["video"]} (${returnMax('streamsVideoReqNum', openStreamsReq["video"])})`;
 
         addTimelineSample(queuedReq["audio"], queuedReq["video"], openStreamsReq["audio"], openStreamsReq["video"]);
+    }
+
+    // One finished subgroup: show what it cost and plot it.
+    function updateSubgroupBytes(data) {
+        const mediaType = data.mediaType;
+        if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+        document.getElementById(`subgroup${cap}Payload`).value = data.payloadBytes;
+        document.getElementById(`subgroup${cap}Overhead`).value = data.overheadBytes;
+        document.getElementById(`subgroup${cap}OverheadPerct`).value =
+            data.payloadBytes > 0 ? overheadPercent(data.payloadBytes, data.overheadBytes).toFixed(1) : "";
+        addOverheadSample(mediaType, data.payloadBytes, data.overheadBytes);
     }
 
     function updateDroppedFrame(droppedFrameData) {

@@ -97,6 +97,12 @@ export class MoqSender {
   private packagers: Record<string, MediaPackager> = {};
   // Optional capture of the packaged objects to a local file (debug aid).
   private dumper: MediaDumper | null = null;
+  // Encoded media bytes written per group, keyed by media type then group id.
+  // The packaging overhead of a group is what the track counted as payload minus
+  // this (see emitSubgroupBytes).
+  private groupMediaBytes: Record<string, Map<number, number>> = {};
+  // Last group already reported per media type, so each subgroup is reported once.
+  private reportedGroup: Record<string, number> = {};
 
   // -------------------------------------------------------------------------
   // Worker message dispatch
@@ -367,10 +373,17 @@ export class MoqSender {
     const newGroupOptions = newGroup
       ? { priority: this.priorityForMediaType(data.mediaType) }
       : undefined;
-    const obj = track.sendObject(payload, newGroupOptions, packet.Properties(), () => {
+    // Media bytes as the encoder produced them: everything the packager added on
+    // top is overhead (see emitSubgroupBytes).
+    const mediaBytes = chunkData.chunk?.byteLength ?? 0;
+    const obj = track.sendObject(payload, newGroupOptions, packet.Properties(), (sent) => {
+      // Only objects that reached the wire are accounted for, so the numbers
+      // match what the track counted.
+      const info = sent.getInfo();
+      this.accountSentObject(data.mediaType, info.groupId, mediaBytes);
       if (this.verbose) {
         console.debug(
-          `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${obj.getInfo().groupId}/${obj.getInfo().objId})`,
+          `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${info.groupId}/${info.objId})`,
         );
       }
     });
@@ -386,6 +399,7 @@ export class MoqSender {
 
     if (this.config?.isSendingStats) {
       this.emitStats();
+      this.emitSubgroupBytes();
     }
   }
 
@@ -532,6 +546,8 @@ export class MoqSender {
     this.moq = null;
     this.tracks = {};
     this.packagers = {};
+    this.groupMediaBytes = {};
+    this.reportedGroup = {};
   }
 
   // -------------------------------------------------------------------------
@@ -562,6 +578,59 @@ export class MoqSender {
       openStreamsReq[mediaType] = info.numOpenStreams;
     }
     self.postMessage({ type: 'sendstats', clkms: Date.now(), queuedReq, openStreamsReq });
+  }
+
+  // Remember the encoded media bytes of an object that reached the wire, against
+  // the group it went out in.
+  private accountSentObject(mediaType: string, groupId: number, mediaBytes: number): void {
+    let groups = this.groupMediaBytes[mediaType];
+    if (groups === undefined) {
+      groups = new Map();
+      this.groupMediaBytes[mediaType] = groups;
+    }
+    groups.set(groupId, (groups.get(groupId) ?? 0) + mediaBytes);
+  }
+
+  /**
+   * Report what the last finished subgroup cost, per track, once each.
+   *
+   * payload  = the encoded media bytes the encoder produced
+   * overhead = everything added on top of them to put that subgroup on the wire:
+   *            the packager (CMSF boxes and the periodic CMAF Header; LOC adds
+   *            nothing to the payload) plus the MoQ signaling the track counted
+   *            (subgroup header, per-object headers, object properties,
+   *            end-of-group marker).
+   */
+  private emitSubgroupBytes(): void {
+    for (const [mediaType, track] of Object.entries(this.tracks)) {
+      const subgroup = track.getInfo().lastSubgroup;
+      if (subgroup === undefined || subgroup.groupId === this.reportedGroup[mediaType]) {
+        continue;
+      }
+      this.reportedGroup[mediaType] = subgroup.groupId;
+
+      const groups = this.groupMediaBytes[mediaType];
+      const payloadBytes = groups?.get(subgroup.groupId) ?? subgroup.payloadBytes;
+      // Groups older than the one being reported are done (or were dropped):
+      // their media bytes will never be claimed.
+      if (groups !== undefined) {
+        for (const groupId of groups.keys()) {
+          if (groupId <= subgroup.groupId) {
+            groups.delete(groupId);
+          }
+        }
+      }
+      const packagingBytes = subgroup.payloadBytes - payloadBytes;
+      self.postMessage({
+        type: 'subgroupbytes',
+        clkms: Date.now(),
+        mediaType,
+        groupId: subgroup.groupId,
+        objects: subgroup.objects,
+        payloadBytes,
+        overheadBytes: packagingBytes + subgroup.signalingBytes,
+      });
+    }
   }
 }
 

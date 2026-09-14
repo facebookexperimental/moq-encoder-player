@@ -406,6 +406,17 @@ It implements MOQT and extracts video and audio packets from the server / relay 
 
 With CMSF the track description (timescale, codec, decoder configuration) travels inside the media, in the CMAF Header that rides the objects starting a group. A player that joins mid-group therefore has nothing to configure its decoders with: those objects are dropped, with one log line per media type, until the first header arrives (at most ~1s later, see `initRepeatEveryMs`).
 
+#### Data overhead
+
+The encoder measures what it costs to put each subgroup on the wire and reports it per track: the instant figures (payload bytes, overhead bytes and overhead %) live in the **"Data overhead" tab**, and a **"&lt;track name&gt; overhead (last 60s)" chart per track** plots the trend (overhead % on the left axis, overhead bytes on the right). The percentage is relative to the payload (`overhead / payload`), so it goes over 100% when the overhead is bigger than the media itself — which is the normal case for small audio frames.
+
+- **Payload** = the encoded media bytes the encoder produced
+- **Overhead** = the packager (CMSF boxes and the periodic CMAF Header; LOC adds nothing to the payload) + the MoQ signaling the track counted (subgroup header, per-object headers, object properties, end-of-group marker)
+
+Both come from the bytes actually written — `Track` accumulates them per wire unit from the byte counts the `moqSend*` helpers return (see `SubgroupBytes` in [`src/moq/moq.ts`](./src/moq/moq.ts)) — so objects the send queue, the open-stream cap or a drop simulator skipped are not counted.
+
+For 40 byte Opus frames, one frame per subgroup, that works out at roughly 47 bytes of MoQ signaling per object with LOC (its properties carry the timestamp, timescale, codec string and the audio config), and ~140 bytes of boxes per object with CMSF. Grouping 10 frames per subgroup amortizes the subgroup header but not the per-object cost.
+
 ### src/utils/jitter_buffer.ts
 
 Since we do not have any guarantee that QUIC streams are delivered in order we need to order them before sending them to the decoder. This is the function of the deJitter. We create one instance per track, in this case one for Audio, one for video

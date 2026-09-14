@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { MoqSender, type TrackData } from '../src/sender/moq/moq_sender_internals.js';
 import { CMAFDepackager } from '../src/packager/cmaf/cmaf_depackager.js';
+import { MoqState } from '../src/moq/moq.js';
 
 // parseSenderConfig and checkTrackData are private methods; access them through
 // a cast so the pure config logic can still be unit tested in isolation.
@@ -342,5 +343,147 @@ describe('audio subgroup grouping', () => {
       depackager.ParseObject(object.payload);
       expect(depackager.IsDelta()).toBe(false);
     }
+  });
+});
+
+describe('subgroup byte accounting', () => {
+  let posted: any[] = [];
+  beforeEach(() => {
+    posted = [];
+    (globalThis as any).self = { postMessage: (msg: any) => posted.push(msg) };
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // A Track stand-in: it accepts objects (reporting them as sent, like the real
+  // drain does) and lets the test declare which subgroup has finished.
+  function fakeTrack(groupId: number) {
+    const sent: Uint8Array[] = [];
+    const state = {
+      sent,
+      groupId,
+      lastSubgroup: undefined as any,
+      getInfo: () => ({
+        numSubscribers: 1,
+        numQueued: 0,
+        numOpenStreams: 1,
+        lastSubgroup: state.lastSubgroup,
+      }),
+      sendObject: (payload: Uint8Array, _opts: any, _props: any, onSent: (o: any) => void) => {
+        sent.push(payload);
+        const handle = {
+          getInfo: () => ({ groupId: state.groupId, objId: sent.length - 1, status: 'sent' }),
+        };
+        // The real drain hands the object back to its callback once written.
+        onSent(handle);
+        return handle;
+      },
+    };
+    return state;
+  }
+
+  function senderWithTrack(packagerFormat: string, track: any) {
+    const s = new MoqSender() as any;
+    s.config = parseSenderConfig({
+      urlHostPort: 'https://relay:4433',
+      moqTracks: {
+        audio: { namespace: ['vc'], name: 'a0', authInfo: 'secret', newSubgroupEvery: 2 },
+      },
+      packagerFormat,
+    });
+    s.moq = { state: MoqState.Running };
+    s.tracks = { audio: track };
+    return s;
+  }
+
+  const OPUS_HEAD = (() => {
+    const head = new Uint8Array(19);
+    head.set(new TextEncoder().encode('OpusHead'), 0);
+    new DataView(head.buffer).setUint32(12, 48000, true);
+    head[8] = 1;
+    head[9] = 1;
+    return head;
+  })();
+
+  function sendAudio(sender: any, count: number, mediaBytes: number) {
+    for (let i = 0; i < count; i++) {
+      sender.handleChunk({
+        mediaType: 'audio',
+        chunk: {
+          byteLength: mediaBytes,
+          timestamp: i * 20_000,
+          duration: 20_000,
+          type: 'key',
+          copyTo: (buf: Uint8Array) => buf.fill(7),
+        },
+        seqId: i,
+        compensatedTs: i * 20_000,
+        metadata: OPUS_HEAD,
+        timebase: 1_000_000,
+        codec: 'opus',
+      });
+    }
+  }
+
+  it('reports the media payload and the MoQ signaling of a finished subgroup (LOC)', () => {
+    const track = fakeTrack(0);
+    const sender = senderWithTrack('loc', track);
+
+    sendAudio(sender, 2, 100);
+    // LOC leaves the payload alone, so the whole overhead is MoQ signaling.
+    expect(track.sent.map((p: Uint8Array) => p.byteLength)).toEqual([100, 100]);
+
+    track.lastSubgroup = { groupId: 0, objects: 2, payloadBytes: 200, signalingBytes: 37 };
+    track.groupId = 1; // the next chunk belongs to the next group
+    sendAudio(sender, 1, 100); // any later chunk flushes the stats
+
+    const report = posted.find((m) => m.type === 'subgroupbytes');
+    expect(report).toMatchObject({
+      mediaType: 'audio',
+      groupId: 0,
+      objects: 2,
+      payloadBytes: 200,
+      overheadBytes: 37,
+    });
+  });
+
+  it('counts what the packager added as overhead too (CMSF)', () => {
+    const track = fakeTrack(0);
+    const sender = senderWithTrack('cmaf', track);
+
+    sendAudio(sender, 2, 100);
+    const packagedBytes = track.sent.reduce((acc: number, p: Uint8Array) => acc + p.byteLength, 0);
+    // The CMAF boxes (and the header on the first object) are real bytes.
+    expect(packagedBytes).toBeGreaterThan(200);
+
+    track.lastSubgroup = {
+      groupId: 0,
+      objects: 2,
+      payloadBytes: packagedBytes,
+      signalingBytes: 37,
+    };
+    track.groupId = 1;
+    sendAudio(sender, 1, 100);
+
+    const report = posted.find((m) => m.type === 'subgroupbytes');
+    expect(report.payloadBytes).toBe(200);
+    expect(report.overheadBytes).toBe(packagedBytes - 200 + 37);
+  });
+
+  it('reports each finished subgroup once', () => {
+    const track = fakeTrack(0);
+    const sender = senderWithTrack('loc', track);
+
+    track.lastSubgroup = { groupId: 0, objects: 1, payloadBytes: 100, signalingBytes: 20 };
+    sendAudio(sender, 3, 100);
+    expect(posted.filter((m) => m.type === 'subgroupbytes')).toHaveLength(1);
+
+    track.groupId = 1;
+    track.lastSubgroup = { groupId: 1, objects: 1, payloadBytes: 100, signalingBytes: 20 };
+    sendAudio(sender, 1, 100);
+    expect(posted.filter((m) => m.type === 'subgroupbytes')).toHaveLength(2);
   });
 });
