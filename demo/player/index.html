@@ -162,7 +162,6 @@ LICENSE file in the root directory of this source tree.
         <canvas id="latencyTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video latency (ms)</label>
-            <label><span style="display:inline-block;width:18px;height:3px;background:#17becf;vertical-align:middle"></span> Audio render buffer (ms)</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio gaps (right axis)</label>
             <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video gaps (right axis)</label>
         </div>
@@ -466,7 +465,6 @@ LICENSE file in the root directory of this source tree.
     const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
     const TIMELINE_AUDIO_COLOR = '#d62728';
     const TIMELINE_VIDEO_COLOR = '#1f77b4';
-    const TIMELINE_AUDIO_BUFFER_COLOR = '#17becf'; // cyan, audio render buffer on the latency graph
     let timelineSamples = []; // { tMs, audio, video, speed } renderer buffer length (ms) + playback speed
     let timelineGaps = [];    // { tMs, mediaType, cum } one entry per detected gap
     let gapCum = { audio: 0, video: 0 }; // running session totals of detected gaps
@@ -481,7 +479,7 @@ LICENSE file in the root directory of this source tree.
     // Latency-and-gaps timeline (video capture-to-render latency + audio render
     // buffer on the left axis, jitter gaps on the right). Shares the same 60s
     // window and update timer as the renderer buffer timeline above.
-    let latencySamples = []; // { tMs, video, audioBuf } video latency + audio render buffer (ms); null when unknown
+    let latencySamples = []; // { tMs, video } video latency (ms); null when unknown
     let lastVideoLatencyMs = -1; // latest reported video latency, -1 until known
     let lastPlaybackSpeed = -1;  // latest playback speed (1 = normal), -1 until known
     const PLAYBACK_SPEED_COLOR = '#ffd700'; // yellow, plotted on the renderer buffer graph right axis
@@ -671,11 +669,11 @@ LICENSE file in the root directory of this source tree.
 
         const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
 
-        // Sample the latest video latency and audio render buffer (both ms)
+        // Sample the latest video latency (ms). The audio render buffer is on the
+        // "Renderer buffer & speed" graph below, so it is not repeated here.
         if (timelineStartMs >= 0) {
             const v = lastVideoLatencyMs >= 0 ? lastVideoLatencyMs : null;
-            const audioBuf = buffersInfo.renderer.audio.lengthMs >= 0 ? buffersInfo.renderer.audio.lengthMs : null;
-            latencySamples.push({ tMs: nowMs, video: v, audioBuf: audioBuf });
+            latencySamples.push({ tMs: nowMs, video: v });
         }
 
         // Drop samples / gap bars that scrolled off the left edge
@@ -688,13 +686,12 @@ LICENSE file in the root directory of this source tree.
         }
 
         // Left axis (ms): 5 * playback target latency, expanded to fit the largest
-        // observed latency / audio-buffer sample. Read the target live each draw.
+        // observed latency sample. Read the target live each draw.
         const targetLatencyMs = Number(document.getElementById('playbackTargetLatencyMs').value);
         let yMax = Math.max((targetLatencyMs > 0 ? targetLatencyMs : 0) * 5, 1);
         for (let i = 0; i < latencySamples.length; i++) {
             const ls = latencySamples[i];
             if (ls.video != null) { yMax = Math.max(yMax, ls.video); }
-            if (ls.audioBuf != null) { yMax = Math.max(yMax, ls.audioBuf); }
         }
 
         // Right axis (gap counts): 0 .. max(audio gaps, video gaps)
@@ -738,7 +735,6 @@ LICENSE file in the root directory of this source tree.
         drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
 
         drawSeries(ctx, w, h, nowMs, latencySamples, 'video', TIMELINE_VIDEO_COLOR, yMax);
-        drawSeries(ctx, w, h, nowMs, latencySamples, 'audioBuf', TIMELINE_AUDIO_BUFFER_COLOR, yMax);
     }
 
     // Read & parse QS data
