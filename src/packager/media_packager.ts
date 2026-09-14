@@ -33,6 +33,10 @@ export interface PackagerSourceInfo {
   codedHeight?: number;
   // The WebCodecs chunk duration in microseconds, when the encoder reports one.
   durationUs?: number;
+  // Whether this chunk starts a new MoQ group. It is not always "this is a key
+  // frame": a track can group several (independent) audio frames per group.
+  // Defaults to "not a delta frame" when the sender does not say.
+  startsGroup?: boolean;
 }
 
 /**

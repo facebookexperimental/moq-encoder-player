@@ -1119,22 +1119,21 @@ LICENSE file in the root directory of this source tree.
     function updateMediaPackagerUI() {
         const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
         document.getElementById("mediaPackagerWarning").hidden = !isCmaf;
+        initAudioMappingUI();
         updateMoqMappingUI();
     }
 
-    // CMSF maps one CMAF fragment (GOP) to a group and one CMAF chunk (frame) to
-    // an object, so the QUIC mapping is not a free choice: video goes subgroup
-    // per GOP and audio subgroup per frame. Lock both selects while CMSF is
-    // selected, and hand them back for LOC.
+    // CMSF maps one CMAF fragment (GOP) to a group, so the video mapping is not a
+    // free choice: lock it to subgroup per GOP while CMSF is selected and hand it
+    // back for LOC. The audio mapping stays editable in both (the options
+    // themselves differ, see initAudioMappingUI).
     function updateMoqMappingUI() {
         const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
-        ['moqVideoQuicMapping', 'moqAudioQuicMapping'].forEach((id) => {
-            const select = document.getElementById(id);
-            if (isCmaf) {
-                select.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
-            }
-            select.disabled = isCmaf;
-        });
+        const videoSelect = document.getElementById('moqVideoQuicMapping');
+        if (isCmaf) {
+            videoSelect.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+        }
+        videoSelect.disabled = isCmaf;
     }
 
     // Read the simulated-frame-drop settings for a media type ("video"/"audio")
@@ -1283,35 +1282,53 @@ LICENSE file in the root directory of this source tree.
             mode === 'random' ? `${label} hold between 1 and this: ` : `${label} hold every: `;
     }
 
-    function initMOQMappingModesUI(selectElement) {
-        initMOQMappingModeUI(document.getElementById('moqVideoQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "video");
-        initMOQMappingModeUI(document.getElementById('moqAudioQuicMapping'), MOQ_MAPPING_SUBGROUP_PER_GROUP, "audio");
+    // Audio QUIC mapping choices. Each one is a MoQ mapping PLUS how many audio
+    // frames share a group (audio frames are all independent, so grouping them is
+    // a pure transport trade-off: fewer streams and less per-object overhead,
+    // against losing a whole group at once). Datagrams are not offered for CMSF,
+    // which the sender rejects (see checkPackagerMappings).
+    const AUDIO_MAPPING_OPTIONS = [
+        { id: 'subgroup1', label: 'Subgroup per frame', mapping: MOQ_MAPPING_SUBGROUP_PER_GROUP, framesPerSubgroup: 1, cmsf: true },
+        { id: 'subgroup5', label: 'Subgroup per 5 frames', mapping: MOQ_MAPPING_SUBGROUP_PER_GROUP, framesPerSubgroup: 5, cmsf: true },
+        { id: 'subgroup10', label: 'Subgroup per 10 frames', mapping: MOQ_MAPPING_SUBGROUP_PER_GROUP, framesPerSubgroup: 10, cmsf: true },
+        { id: 'datagram', label: 'Object per datagram (AKA: Frame per datagram)', mapping: MOQ_MAPPING_OBJECT_PER_DATAGRAM, framesPerSubgroup: 1, cmsf: false },
+    ];
+    // Video is always one subgroup per GOP: an IFrame does not fit in a datagram,
+    // so offering datagrams there would mean dropping almost every IFrame.
+    const VIDEO_MAPPING_LABEL = 'Subgroup per GOP (AKA: GOP per stream)';
+
+    function initMOQMappingModesUI() {
+        const videoSelect = document.getElementById('moqVideoQuicMapping');
+        videoSelect.innerHTML = '';
+        const videoOption = document.createElement('option');
+        videoOption.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
+        videoOption.selected = true;
+        videoOption.appendChild(document.createTextNode(VIDEO_MAPPING_LABEL));
+        videoSelect.appendChild(videoOption);
+
+        initAudioMappingUI();
     }
 
-    function initMOQMappingModeUI(selectElement, moqMappingSelected, mediaType) {
-        // Multi object streams (track per stream)
-        const optionObjStream = document.createElement('option');
-        optionObjStream.value = MOQ_MAPPING_SUBGROUP_PER_GROUP;
-        if (moqMappingSelected == MOQ_MAPPING_SUBGROUP_PER_GROUP || moqMappingSelected == undefined) {
-            optionObjStream.selected = true;
-        }
-        if (mediaType === "video") {
-            optionObjStream.appendChild(document.createTextNode("Subgroup per GOP (AKA: GOP per stream)"));
-            selectElement.appendChild(optionObjStream);
-        } else if (mediaType === "audio") {
-            optionObjStream.appendChild(document.createTextNode("Subgroup per frame"));
-            selectElement.appendChild(optionObjStream);
+    // (Re)build the audio mapping options for the selected packager, and select
+    // that packager's default: one frame per subgroup for LOC, ten for CMSF
+    // (which pays ~100 bytes of boxes per object, so one stream per frame is
+    // wasteful).
+    function initAudioMappingUI() {
+        const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
+        const select = document.getElementById('moqAudioQuicMapping');
+        select.innerHTML = '';
+        AUDIO_MAPPING_OPTIONS.filter((opt) => !isCmaf || opt.cmsf).forEach((opt) => {
+            const option = document.createElement('option');
+            option.value = opt.id;
+            option.appendChild(document.createTextNode(opt.label));
+            select.appendChild(option);
+        });
+        select.value = isCmaf ? 'subgroup10' : 'subgroup1';
+    }
 
-            // This protection is because usually IFrames are bigger than a datagram, and allowing to use datagram in video would mean dropping almost all Iframes
-            // Stream per datagram
-            const optionObjTrack = document.createElement('option');
-            optionObjTrack.value = MOQ_MAPPING_OBJECT_PER_DATAGRAM;
-            if (moqMappingSelected == MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
-                optionObjTrack.selected = true;
-            }
-            optionObjTrack.appendChild(document.createTextNode("Object per datagram (AKA: Frame per datagram)"));
-            selectElement.appendChild(optionObjTrack);
-        }
+    function selectedAudioMapping() {
+        const id = document.getElementById('moqAudioQuicMapping').value;
+        return AUDIO_MAPPING_OPTIONS.find((opt) => opt.id === id) ?? AUDIO_MAPPING_OPTIONS[0];
     }
 
     function initStreamIDUI() {
@@ -1790,7 +1807,10 @@ LICENSE file in the root directory of this source tree.
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsAudio').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
-        muxerSenderConfig.moqTracks["audio"].moqMapping = document.getElementById('moqAudioQuicMapping').value;
+        const audioMapping = selectedAudioMapping();
+        muxerSenderConfig.moqTracks["audio"].moqMapping = audioMapping.mapping;
+        // How many audio frames share a MoQ group / subgroup stream
+        muxerSenderConfig.moqTracks["audio"].newSubgroupEvery = audioMapping.framesPerSubgroup;
         muxerSenderConfig.moqTracks["audio"].dropConfig = readDropConfig("audio");
         muxerSenderConfig.moqTracks["audio"].holdConfig = readHoldConfig("audio");
         if (document.getElementById('authInfo').disabled) {

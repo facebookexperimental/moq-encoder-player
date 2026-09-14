@@ -218,8 +218,17 @@ const muxerSenderConfig = {
 
 `moqMapping` selects how objects hit the QUIC wire (see [`src/moq/README.md`](./src/moq/README.md)):
 `MOQ_MAPPING_SUBGROUP_PER_GROUP` (one unidirectional stream per group) or
-`MOQ_MAPPING_OBJECT_PER_DATAGRAM` (one datagram per object). Both are selectable
-per track from the encoder UI.
+`MOQ_MAPPING_OBJECT_PER_DATAGRAM` (one datagram per object).
+
+Video is always one subgroup per GOP (an IFrame does not fit in a datagram, so
+offering datagrams there would mean dropping almost every IFrame). Audio frames
+are all independent, so how many of them share a group is a free transport
+choice: `newSubgroupEvery` (the "MOQ audio packager" dropdown: 1, 5 or 10 frames
+per subgroup) trades fewer streams and less per-object overhead against losing a
+whole group at once. With CMSF the dropdown drops the datagram option and
+defaults to 10 frames — its objects carry ~100 bytes of boxes each, so a stream
+per 20ms frame is wasteful — and the sender rejects a CMSF track configured for
+datagrams.
 
 ### demo/encoder/index.html
 

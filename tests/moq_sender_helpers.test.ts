@@ -6,6 +6,7 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { MoqSender, type TrackData } from '../src/sender/moq/moq_sender_internals.js';
+import { CMAFDepackager } from '../src/packager/cmaf/cmaf_depackager.js';
 
 // parseSenderConfig and checkTrackData are private methods; access them through
 // a cast so the pure config logic can still be unit tested in isolation.
@@ -80,6 +81,20 @@ describe('packaging config', () => {
       'cmaf',
     );
     expect(parseSenderConfig({ ...baseConfig, packagerFormat: 'mp2t' }).packagerFormat).toBe('loc');
+  });
+
+  it('rejects CMSF over datagrams, which it can not initialize', () => {
+    const datagramTracks = {
+      audio: { namespace: ['vc'], name: 'a0', authInfo: 'secret', moqMapping: 'ObjPerDatagram' },
+    };
+    expect(() =>
+      parseSenderConfig({ ...baseConfig, packagerFormat: 'cmaf', moqTracks: datagramTracks }),
+    ).toThrow(/object per datagram/i);
+    // ... but LOC is free to use them.
+    expect(
+      parseSenderConfig({ ...baseConfig, packagerFormat: 'loc', moqTracks: datagramTracks })
+        .packagerFormat,
+    ).toBe('loc');
   });
 
   it('reads the media dump settings', () => {
@@ -211,5 +226,121 @@ describe('media dump capture', () => {
     expect(dumps[0].reason).toBe('durationCap');
     expect(dumps[0].durationMs).toBe(5000);
     expect(dumps[0].objects).toBe(501);
+  });
+});
+
+describe('audio subgroup grouping', () => {
+  beforeEach(() => {
+    (globalThis as any).self = { postMessage: () => {} };
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const OPUS_HEAD = (() => {
+    const head = new Uint8Array(19);
+    head.set(new TextEncoder().encode('OpusHead'), 0);
+    new DataView(head.buffer).setUint32(12, 48000, true);
+    head[8] = 1;
+    head[9] = 1;
+    return head;
+  })();
+
+  // A sender that packages chunks without a session, reporting every packaged
+  // object (and whether it starts a group) through a stand-in dumper.
+  function packagingSender(packagerFormat: string, newSubgroupEvery?: number) {
+    const s = new MoqSender() as any;
+    s.config = parseSenderConfig({
+      urlHostPort: 'https://relay:4433',
+      moqTracks: {
+        audio: { namespace: ['vc'], name: 'a0', authInfo: 'secret', newSubgroupEvery },
+      },
+      packagerFormat,
+    });
+    const objects: { newGroup: boolean; payload: Uint8Array }[] = [];
+    s.dumper = {
+      isArmed: () => true,
+      capture: (_mediaType: string, payload: Uint8Array, newGroup: boolean) =>
+        objects.push({ newGroup, payload }),
+    };
+    return { sender: s, objects };
+  }
+
+  function sendAudio(sender: any, count: number) {
+    for (let i = 0; i < count; i++) {
+      const tsUs = i * 20_000;
+      sender.handleChunk({
+        mediaType: 'audio',
+        chunk: {
+          byteLength: 4,
+          timestamp: tsUs,
+          duration: 20_000,
+          type: 'key',
+          copyTo: (buf: Uint8Array) => buf.set([1, 2, 3, 4]),
+        },
+        seqId: i,
+        compensatedTs: tsUs,
+        metadata: OPUS_HEAD,
+        timebase: 1_000_000,
+        codec: 'opus',
+      });
+    }
+  }
+
+  const carriesCmafHeader = (payload: Uint8Array) =>
+    new TextDecoder().decode(payload.subarray(4, 8)) === 'ftyp';
+
+  it('starts a group on every frame by default', () => {
+    const { sender, objects } = packagingSender('loc');
+    sendAudio(sender, 6);
+
+    expect(objects.map((o) => o.newGroup)).toEqual([true, true, true, true, true, true]);
+  });
+
+  it('starts a group every N frames when the track asks for it', () => {
+    const { sender, objects } = packagingSender('loc', 5);
+    sendAudio(sender, 12);
+
+    expect(objects.map((o) => o.newGroup)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false, // frames 0-4
+      true,
+      false,
+      false,
+      false,
+      false, // frames 5-9
+      true,
+      false, // frames 10-11
+    ]);
+  });
+
+  it('keeps the CMSF CMAF Header on the objects that open a group', () => {
+    // 120 frames of 20ms = 2.4s, so the header (repeated at most every 1s) has
+    // to ride more than one group.
+    const { sender, objects } = packagingSender('cmaf', 10);
+    sendAudio(sender, 120);
+
+    const withHeader = objects.filter((o) => carriesCmafHeader(o.payload));
+    expect(withHeader.length).toBeGreaterThan(1);
+    expect(withHeader.every((o) => o.newGroup)).toBe(true);
+    expect(objects.filter((o) => o.newGroup)).toHaveLength(12);
+  });
+
+  it('does NOT mark the grouped CMSF audio frames as delta samples', () => {
+    const { sender, objects } = packagingSender('cmaf', 5);
+    sendAudio(sender, 5);
+
+    // Every audio frame is independent, whatever group it ends up in: a
+    // subscriber must not see the mid-group ones as non-sync samples.
+    const depackager = new CMAFDepackager('audio');
+    for (const object of objects) {
+      depackager.ParseObject(object.payload);
+      expect(depackager.IsDelta()).toBe(false);
+    }
   });
 });

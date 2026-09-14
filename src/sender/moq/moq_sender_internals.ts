@@ -6,7 +6,11 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
-import { MOQ_CURRENT_VERSION, MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT } from '../../moq/moqt.js';
+import {
+  MOQ_CURRENT_VERSION,
+  MOQ_MAPPING_OBJECT_PER_DATAGRAM,
+  MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
+} from '../../moq/moqt.js';
 import { type LOCMediaType } from '../../packager/loc_packager.js';
 import {
   createPackager,
@@ -162,7 +166,9 @@ export class MoqSender {
     if (config.urlHostPort === '') {
       throw new Error('Empty host port');
     }
-    const trackErr = this.checkTrackData(config.moqTracks);
+    const trackErr =
+      this.checkTrackData(config.moqTracks) ??
+      checkPackagerMappings(config.packagerFormat, config.moqTracks);
     if (trackErr !== undefined) {
       throw new Error(trackErr);
     }
@@ -344,8 +350,8 @@ export class MoqSender {
     }
 
     const chunkData = this.normalizeChunk(data);
-    const packet = this.packetizeChunk(chunkData);
-    const newGroup = !packet.IsDelta();
+    const newGroup = startsNewGroup(chunkData);
+    const packet = this.packetizeChunk(chunkData, newGroup);
     const seqId = chunkData.seqId;
     const payload = packet.PayloadToBytes();
     this.dumper?.capture(data.mediaType, payload, newGroup, chunkTimestampMs(data));
@@ -417,8 +423,11 @@ export class MoqSender {
     return packager;
   }
 
-  // Wrap a media chunk into a LOC or CMAF packet.
-  private packetizeChunk(chunkData: any): MediaPackager {
+  // Wrap a media chunk into a LOC or CMAF packet. `startsGroup` is the transport
+  // grouping decision (see startsNewGroup), which the packager needs because it
+  // does not always match "this frame is a key frame": several audio frames can
+  // share one group.
+  private packetizeChunk(chunkData: any, startsGroup: boolean): MediaPackager {
     if (
       chunkData.mediaType !== 'video' &&
       chunkData.mediaType !== 'audio' &&
@@ -431,11 +440,7 @@ export class MoqSender {
     if (chunkData.mediaType === 'data') {
       // No LOC properties: the payload is opaque and its group boundaries are
       // driven by the track config rather than by frame types.
-      let isDelta = false;
-      if (chunkData.newSubgroupEvery > 1) {
-        isDelta = chunkData.seqId % chunkData.newSubgroupEvery !== 0;
-      }
-      packet.SetData(undefined, undefined, undefined, undefined, chunkData.chunk, isDelta);
+      packet.SetData(undefined, undefined, undefined, undefined, chunkData.chunk, !startsGroup);
       return packet;
     }
 
@@ -445,6 +450,7 @@ export class MoqSender {
       codedWidth: chunkData.codedWidth,
       codedHeight: chunkData.codedHeight,
       durationUs: chunkData.durationUs,
+      startsGroup,
     });
     // Video carries its config (the AVCDecoderConfigurationRecord) on key frames
     // only; audio carries it on every object.
@@ -557,6 +563,50 @@ export class MoqSender {
     }
     self.postMessage({ type: 'sendstats', clkms: Date.now(), queuedReq, openStreamsReq });
   }
+}
+
+/**
+ * CMSF is only published over subgroup streams here. Its objects are
+ * self-describing (`styp moof mdat`, plus the CMAF Header on the object that
+ * opens a group), and the datagram mapping sends every object on its own,
+ * size-limited datagram, so the combination is rejected instead of silently
+ * producing a stream no subscriber can initialize.
+ */
+function checkPackagerMappings(
+  format: PackagerFormat,
+  tracks: Record<string, TrackData>,
+): string | undefined {
+  if (format !== 'cmaf') {
+    return undefined;
+  }
+  for (const [mediaType, track] of Object.entries(tracks)) {
+    if (track.moqMapping === MOQ_MAPPING_OBJECT_PER_DATAGRAM) {
+      return `CMSF can NOT be sent with the "object per datagram" mapping (${mediaType} track), use a subgroup mapping`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether a chunk starts a new MoQ group, which is what opens a new subgroup
+ * stream. Video groups are GOPs, so a new group starts on every key frame.
+ * Audio frames are all independent, so the grouping is a pure transport choice:
+ * `newSubgroupEvery` frames share a group (1, the default, gives one group per
+ * frame). The opaque `data` track works the same way.
+ *
+ * This is deliberately NOT "the packager says this is a key frame": grouping
+ * several audio frames must not make them look like delta frames to the
+ * packagers (CMSF would then mark them as non-sync samples in `trun`).
+ */
+function startsNewGroup(chunkData: any): boolean {
+  if (chunkData.mediaType === 'video') {
+    return chunkData.chunk?.type !== 'delta';
+  }
+  const framesPerGroup = chunkData.newSubgroupEvery;
+  if (!(framesPerGroup > 1)) {
+    return true;
+  }
+  return chunkData.seqId % framesPerGroup === 0 && chunkData.chunk?.type !== 'delta';
 }
 
 // Media time of a chunk in milliseconds, or undefined when the chunk carries no

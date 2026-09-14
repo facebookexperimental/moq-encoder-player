@@ -92,6 +92,7 @@ export class CMAFPackager implements MediaPackager {
   private codedWidth: number | undefined;
   private codedHeight: number | undefined;
   private chunkDurationUs: number | undefined;
+  private startsGroup: boolean | undefined;
 
   // Packaging state that must survive across chunks.
   private initSegment: Uint8Array | undefined;
@@ -127,9 +128,10 @@ export class CMAFPackager implements MediaPackager {
 
   /**
    * Per-chunk extras that the LOC `SetData` shape has no room for: the coded
-   * dimensions (needed by `tkhd` / the visual sample entry) and the WebCodecs
-   * chunk duration (needed by `trun`). Both are optional; see
-   * `sampleDurationInSourceUnits` for the fallbacks.
+   * dimensions (needed by `tkhd` / the visual sample entry), the WebCodecs chunk
+   * duration (needed by `trun`), and whether this chunk starts a MoQ group
+   * (which is where the CMAF Header goes). All optional; see
+   * `sampleDurationInSourceUnits` and `startsNewGroup` for the fallbacks.
    */
   SetSourceInfo(info: PackagerSourceInfo): void {
     if (info.codedWidth !== undefined && info.codedWidth > 0) {
@@ -139,6 +141,7 @@ export class CMAFPackager implements MediaPackager {
       this.codedHeight = info.codedHeight;
     }
     this.chunkDurationUs = info.durationUs;
+    this.startsGroup = info.startsGroup;
   }
 
   IsDelta(): boolean | undefined {
@@ -156,7 +159,10 @@ export class CMAFPackager implements MediaPackager {
       throw new Error(`${this.mediaType} CMAF objects need a timestamp`);
     }
     const payload = this.data ?? new Uint8Array();
-    const startsGroup = this.isDelta !== true;
+    // The CMAF Header rides the first object of a group. With several audio
+    // frames per group that is not every key frame, so the sender says so
+    // explicitly; fall back to the frame type when it does not.
+    const startsGroup = this.startsGroup ?? this.isDelta !== true;
 
     const timescale = this.resolveMediaTimescale();
     const decodeTime = this.toMediaTime(this.timestamp, timescale);
