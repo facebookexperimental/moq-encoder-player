@@ -434,19 +434,29 @@ LICENSE file in the root directory of this source tree.
     // the capture wallclock (clkms) recorded alongside their respective first frames.
     const anchorTsUs = {};        // mediaType -> first frame.timestamp (microseconds)
     const anchorWallMs = {};      // mediaType -> Date.now() captured alongside that frame (ms)
-    let originWallMs = undefined; // wallclock of the first frame of EITHER stream (ms)
-    let firstVideoFrame = true;   // gate the "first TS" UI update (video)
-    let firstAudioFrame = true;   // gate the "first TS" UI update (audio)
+    let originWallMs = undefined; // EARLIEST capture wallclock seen across both streams (ms)
 
     // Anchor the capture clock on the first frame of each stream.
+    //
+    // The origin is the SMALLEST anchor wallclock, not the first one we happen to see:
+    // audio and video are captured by 2 independent workers, so the order their first
+    // frames reach this thread does not have to match the order they were captured in.
+    // Taking the first arrival as the origin would give the other stream a negative
+    // compensated timestamp, which the sender clamps at 0 (the LOC Timestamp is a vi64),
+    // producing a run of duplicated 0s and losing the A/V offset for those frames.
+    // Lowering the origin later only shifts the already anchored stream forward once, in
+    // the first frames, so timestamps stay monotonic.
     function ensureCaptureAnchor(type, tsUs, wallMs) {
+        let ret = false
         if (anchorTsUs[type] === undefined) {
             anchorTsUs[type] = tsUs;
             anchorWallMs[type] = wallMs;
-            if (originWallMs === undefined) {
+            ret = true
+            if (originWallMs === undefined || wallMs < originWallMs) {
                 originWallMs = wallMs;
             }
         }
+        return ret;
     }
     // A/V-aligned presentation timestamp (microseconds, ~0 origin).
     function compensatedTsFor(type, tsUs) {
@@ -1662,10 +1672,9 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.data;
             // Anchor the video capture clock on its first frame.
-            ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms);
+            const firstVideoFrame = ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms);
             if (firstVideoFrame) {
-                firstVideoFrame = false;
-                updateFirstTS("video", vFrame.timestamp, compensatedTsFor("video", vFrame.timestamp));
+                refreshFirstTsUI();
             }
 
             // Encode video frame
@@ -1673,10 +1682,9 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
-            ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms);
+            const firstAudioFrame = ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms);
             if (firstAudioFrame) {
-                firstAudioFrame = false;
-                updateFirstTS("audio", aFrame.timestamp, compensatedTsFor("audio", aFrame.timestamp));
+                refreshFirstTsUI();
             }
             // Encode audio frame. AudioData is not transferable, so postMessage structured-clones
             // it (the worker references the same backing samples). Close our handle right after to
@@ -1796,7 +1804,18 @@ LICENSE file in the root directory of this source tree.
         list.appendChild(entry);
     }
 
-    function updateFirstTS(type, ts, compensatedTs) {
+    // Repaint both "first TS" rows once both streams are anchored: the origin drops
+    // when the second anchor turns out to be older than the first one we saw, which
+    // changes the compensated value already shown for the stream that anchored first.
+    function refreshFirstTsUI() {
+        if (anchorTsUs.video === undefined || anchorTsUs.audio === undefined) {
+            return;
+        }
+        updateFirstTsUIbyType("video", anchorTsUs.video, compensatedTsFor("video", anchorTsUs.video));
+        updateFirstTsUIbyType("audio", anchorTsUs.audio, compensatedTsFor("audio", anchorTsUs.audio));
+    }
+
+    function updateFirstTsUIbyType(type, ts, compensatedTs) {
         const tsms = (ts / 1000).toFixed(3);
         const compensatedTsms = (compensatedTs / 1000).toFixed(3);
 
@@ -1827,8 +1846,6 @@ LICENSE file in the root directory of this source tree.
         delete anchorWallMs.video;
         delete anchorWallMs.audio;
         originWallMs = undefined;
-        firstVideoFrame = true;
-        firstAudioFrame = true;
 
         enableUI("publishing");
 

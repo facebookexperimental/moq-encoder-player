@@ -681,9 +681,10 @@ function startsNewGroup(chunkData: any): boolean {
 // Media time of a chunk in milliseconds, or undefined when the chunk carries no
 // timebase / timestamp (an opaque data track). Only used to cap a dump by
 // duration, so it deliberately reads the chunk's OWN timestamp rather than
-// `compensatedTs`: the compensated value is relative to a capture anchor shared
-// by audio and video and is clamped at 0, so the stream that does not own the
-// anchor starts with a run of zeroes and would make the dump overrun its cap.
+// `compensatedTs`: the compensated value is relative to a capture origin shared
+// by audio and video, and normalizeChunk clamps it at 0. A sender that anchors
+// its streams imperfectly can therefore feed us a run of zeroes at the start of
+// a track, which would make the dump overrun its cap.
 function chunkTimestampMs(data: ChunkMessage): number | undefined {
   const timestamp = data.chunk?.timestamp;
   if (!(data.timebase! > 0) || typeof timestamp !== 'number') {

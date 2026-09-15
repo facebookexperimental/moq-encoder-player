@@ -183,10 +183,10 @@ describe('media dump capture', () => {
     expect(dump.data.byteLength).toBeGreaterThan(avcConfig.byteLength);
   });
 
-  // `compensatedTs` is relative to a capture anchor shared by audio and video,
-  // and normalizeChunk clamps it at 0, so the stream that does not own the
-  // anchor reports 0 for its first seconds. The duration cap must not be fooled
-  // by that: it reads the chunk timestamp instead.
+  // `compensatedTs` is relative to a capture origin shared by audio and video,
+  // and normalizeChunk clamps it at 0, so a sender that anchors its streams
+  // imperfectly can report 0 for the first seconds of a track. The duration cap
+  // must not be fooled by that: it reads the chunk timestamp instead.
   it('caps the capture on media duration, even when compensatedTs starts clamped', () => {
     const s = armedSender({
       enabled: true,
