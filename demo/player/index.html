@@ -388,8 +388,8 @@ LICENSE file in the root directory of this source tree.
 
     let videoRendererBuffer = null;
 
-    // Extracts the capture epoch (ms) that the encoder overlaid into the video (see
-    // src/overlay_processor). Used to measure video capture-to-display latency.
+    // Extracts the frame-read epoch (ms) that the encoder overlaid into the video
+    // (see src/overlay_processor). Used to estimate capture-read-to-display latency.
     const overlayDecoder = new OverlayDecoder();
     let overlayExtractorStopped = false;   // set on extractor error; stops further Decode calls
 
@@ -1460,7 +1460,7 @@ LICENSE file in the root directory of this source tree.
                     buffersInfo.renderer.video.size = retData.queueSize;
                     buffersInfo.renderer.video.lengthMs = retData.queueLengthMs;
 
-                    // Latency overlay: recover the capture epoch (ms) baked into the
+                    // Latency overlay: recover the frame-read epoch (ms) baked into the
                     // displayed frame's top rows. videoLatencyMs = now - that epoch,
                     // but only when the START_SEQ marker is present (encoder overlay on).
                     // Track a rolling recovery-confidence %; on any extractor error,

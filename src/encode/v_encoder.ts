@@ -23,12 +23,12 @@ let encoderMaxQueueSize = 5;
 let keyframeEvery = 60;
 let insertNextKeyframe = false;
 
-// Latency overlay: when enabled, stamp the capture wall-clock epoch (ms) into the
+// Latency overlay: when enabled, stamp the capture-read wall-clock epoch (ms) into the
 // top rows of each frame before encoding so the player can later recover it and
-// measure glass-to-glass latency (see src/overlay_processor). The epoch is
-// generated in v_capture (as close to pixel capture as possible) and piped here;
-// it is NOT generated at encode time. Requires NV12 raw frames; skipped (warned
-// once) for other source formats.
+// estimate capture-read-to-render latency (see src/overlay_processor). The epoch
+// is sampled in v_capture when its track processor yields the frame and piped here;
+// it is NOT generated at encode time. Requires NV12 raw frames; skipped (warned once)
+// for other source formats.
 let addLatencyInfoInVideo = false;
 const overlayEncoder = new OverlayEncoder();
 let overlayWarned = false;
@@ -152,9 +152,9 @@ self.addEventListener('message', async function (e) {
   }
 
   const vFrame = e.data.vframe;
-  // Capture wall-clock epoch (ms), stamped in v_capture when the frame was read
+  // Capture-read wall-clock epoch (ms), sampled in v_capture when the frame was read
   // and piped through the main thread. Used for the latency overlay so the value
-  // reflects capture time rather than encode time.
+  // reflects processor delivery time rather than encode time.
   const captureClkms = e.data.captureClkms;
 
   if (vEncoder.encodeQueueSize > encoderMaxQueueSize) {

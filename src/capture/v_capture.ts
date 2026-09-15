@@ -111,4 +111,6 @@ self.addEventListener('message', async function (e) {
   sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received.');
 });
 
+// The page waits for both capture workers before it creates either track
+// processor, keeping worker-module load time out of the A/V start offset.
 self.postMessage({ type: 'ready' });

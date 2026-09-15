@@ -7,8 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 // Overlays an integer value (e.g. an epoch-ms timestamp) into the top rows of a
 // raw video frame by writing bright/dark pixel runs, one run per bit. Paired with
-// OverlayDecoder on the player side, this measures glass-to-glass latency without
-// any side-channel metadata: the value survives encode/decode as image content.
+// OverlayDecoder on the player side, a frame-read epoch estimates capture-read-to-render
+// latency without side-channel metadata: the value survives encode/decode as image content.
 
 const DEFAULT_START_LINE = 0;
 const DEFAULT_NUM_LINES = 2;

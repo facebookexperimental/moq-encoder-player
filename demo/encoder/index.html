@@ -453,7 +453,8 @@ LICENSE file in the root directory of this source tree.
         return false;
     }
 
-    // A/V-aligned presentation timestamp (microseconds, ~0 origin).
+    // Map this stream onto the shared presentation timeline: elapsed media time
+    // plus its observed first-frame offset from the common capture origin.
     function compensatedTsFor(type, tsUs) {
         const elapsedMediaUs = tsUs - ptsCompensationData.firstTsUs[type];
         const streamStartUs = (ptsCompensationData.firstCaptureClkms[type] - ptsCompensationData.originClkms) * 1000;
@@ -875,6 +876,8 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
 
+    // Do not create the track processors until both remote worker modules have
+    // loaded; otherwise module-fetch skew is indistinguishable from media skew.
     function waitForWorkerReady(worker) {
         return new Promise((resolve, reject) => {
             const cleanup = () => {
@@ -2005,7 +2008,7 @@ LICENSE file in the root directory of this source tree.
         const aFrameStream = aProcessor.readable;
 
         // The shared origin precedes both first reads. Their individual capture
-        // clocks retain a real difference in media availability, if there is one.
+        // clocks retain any observed difference in first-frame availability.
         ptsCompensationData.originClkms = Date.now();
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
         aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);

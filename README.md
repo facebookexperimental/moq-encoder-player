@@ -235,12 +235,18 @@ datagrams.
 
 Main encoder webpage and also glues all encoder pieces together
 
+- Before capture starts:
+  - Creates the audio and video capture workers and waits for a `ready` message from both
+  - Only then creates and transfers the `MediaStreamTrackProcessor` streams. This keeps remote worker-module download time out of the A/V timeline
+  - Records a shared wall-clock origin immediately before starting both capture readers
+
 - When it receives an audio OR video raw frame from `a_capture` or `v_capture`:
-  - Records a single **capture anchor** the first time (the frame's WebCodecs timestamp paired with `Date.now()`), so the capture wall clock can later be reconstructed as a linear function of the media timestamp. This replaced the old per-frame `clkms` side-channel and the `TimeBufferChecker` lookup tables.
-  - Sends it to the encoder (the video frame also carries its capture wall clock so the latency overlay can stamp capture time — see `overlay_processor`)
+  - Records one **capture anchor per stream**: that stream's first WebCodecs timestamp paired with the wall clock sampled when its capture worker read the frame
+  - Maps each stream onto the common presentation timeline as `(timestamp - firstTimestamp) + (firstCaptureClock - sharedOrigin)`. Audio and video may start at different times and may use unrelated raw timestamp origins
+  - Sends it to the encoder (every video frame also carries its frame-read wall clock so the latency overlay can stamp it — see `overlay_processor`)
 
 - When it receives an audio OR video encoded chunk from `a_encoder` or `v_encoder`:
-  - Reconstructs the capture wall clock of the chunk from the capture anchor
+  - Computes its A/V-aligned presentation timestamp from that stream's anchor
   - Sends the chunk (augmented with seqId and metadata) to the muxer
 
 It also owns the **"Media packager" dropdown** (CMSF, the UI name of the CMAF packaging, by default, or LOC — see [Packager](#packager)), which is where the published format is selected; the player has its own "Media packager expected" selector that has to match. Selecting CMSF also locks the video QUIC mapping to subgroup per GOP and rebuilds the audio mapping options (no datagrams, 10 frames per subgroup by default), which is the grouping the CMAF mapping assumes.
@@ -262,15 +268,15 @@ Either way the capture starts on a group boundary, so for CMSF it carries the CM
 
 ### src/overlay_processor/overlay_encoder.ts (OverlayEncoder)
 
-Stamps an integer value (the capture epoch in ms) into the top rows of a raw video frame by writing one bright/dark pixel run per bit, prefixed with a marker sequence. The value survives H.264 encode/decode as image content, so the player can recover it and measure glass-to-glass latency **without any side-channel metadata** (see `OverlayDecoder` on the player side). It requires an NV12 raw frame; the encoder toggles it live from the "Add latency information in video" checkbox (on by default) and falls back to the un-overlaid frame if the source format differs.
+Stamps an integer value (the wall-clock epoch sampled when the capture worker read the frame, in ms) into the top rows of a raw video frame by writing one bright/dark pixel run per bit, prefixed with a marker sequence. The value survives H.264 encode/decode as image content, so the player can recover it and estimate capture-read-to-render latency **without any side-channel metadata** (see `OverlayDecoder` on the player side). It requires an NV12 raw frame; the encoder toggles it live from the "Add latency information in video" checkbox (on by default) and falls back to the un-overlaid frame if the source format differs.
 
 ### src/capture/v_capture.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that waits for the next RGB or YUV video frame from capture device, augments it adding wallclock, and sends it via post message to video encoder
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that announces when its module is ready, then waits for RGB or YUV frames from the capture device. Each frame is sent to the main encoder page with the wall clock sampled when the processor read completed; the page forwards the frame and clock to the video encoder.
 
 ### src/capture/a_capture.ts
 
-[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) Receives the audio PCM frame (few ms, ~10ms to 25ms of audio samples) from capture device, augments it adding wallclock, and finally send it (doing copy) via post message to audio encoder
+[WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that announces when its module is ready, then reads PCM audio frames (typically 10–25 ms of samples) from the capture device. Each frame is structured-cloned to the main encoder page with the wall clock sampled when the processor read completed; the page forwards it to the audio encoder.
 
 ### src/encode/v_encoder.ts
 
@@ -474,17 +480,17 @@ Buffer that stores video decoded frames
 
 ### src/overlay_processor/overlay_decoder.ts (OverlayDecoder)
 
-Recovers the integer value (capture epoch in ms) that `OverlayEncoder` wrote into the top rows of a frame, reading one bright/dark pixel run per bit. It only trusts the value when the marker sequence is present (so ordinary, non-overlaid frames are ignored) and returns a `confidence` flag alongside the value. It requires a decoded I420 frame and does not close it (the caller still owns it).
+Recovers the integer value (frame-read wall-clock epoch in ms) that `OverlayEncoder` wrote into the top rows of a frame, reading one bright/dark pixel run per bit. It only trusts the value when the marker sequence is present (so ordinary, non-overlaid frames are ignored) and returns a `confidence` flag alongside the value. It requires a decoded I420 frame and does not close it (the caller still owns it).
 
 ### Latency measurement
 
-Video (glass-to-glass) latency is measured with the **pixel overlay**, not a side-channel:
+Video capture-read-to-render latency is estimated with the **pixel overlay**, not a side-channel:
 
-- The encoder stamps the capture epoch (ms) into each frame's top rows (`OverlayEncoder`), enabled from the encoder's "Add latency information in video" checkbox.
+- The encoder stamps the wall-clock epoch sampled when the capture worker read the frame (ms) into each frame's top rows (`OverlayEncoder`), enabled from the encoder's "Add latency information in video" checkbox.
 - The player recovers it from the displayed frame (`OverlayDecoder`) and computes `videoLatencyMs = Date.now() - recoveredEpoch`.
 - Because the overlay carries a marker sequence, the player only trusts a value when the marker is present; it shows a rolling **recovery-confidence %** and stops the extractor on error.
 
-Note: Encoder and Player clocks have to be in sync for this metric to be accurate. If you use the same computer as encoder & player then the metric should be pretty accurate
+This excludes capture-device and browser pipeline time before the processor yields the frame, so it is not a full physical glass-to-glass measurement. Encoder and player clocks must also be synchronized; using the same computer avoids inter-machine clock skew.
 
 ## testing (encoder player served from localhost)
 
