@@ -1,8 +1,8 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). LOC (Low Overhead Media Container) packager version: draft-04 **+ Codecstring**. The encoder and the player can also use CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)) instead, see [Packager](#packager)
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). Media packaging can be CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), which is what the encoder and the player default to, or LOC (Low Overhead Media Container) draft-04 **+ Codecstring**; both ends have to be set to the same one, see [Packager](#packager)
 
-This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media transport is based on [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
+This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media packaging is based on [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) or [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
 The goal if ths code is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
@@ -115,15 +115,15 @@ CI (GitHub Actions, see [`.github/workflows/main.yml`](./.github/workflows/main.
 
 ## Packager
 
-Two media packagers are implemented behind a common pair of interfaces in [`src/packager/media_packager.ts`](./src/packager/media_packager.ts): `MediaPackager` on the publisher and `MediaDepackager` on the subscriber. **The encoder can publish with either one and the player can receive either one**, chosen from the "Media packager" dropdown in the encoder demo and the "Media packager expected" selector in the player. Both default to LOC, and there is no catalog to negotiate the choice, so the two ends have to agree.
+Two media packagers are implemented behind a common pair of interfaces in [`src/packager/media_packager.ts`](./src/packager/media_packager.ts): `MediaPackager` on the publisher and `MediaDepackager` on the subscriber. **The encoder can publish with either one and the player can receive either one**, chosen from the "Media packager" dropdown in the encoder demo and the "Media packager expected" selector in the player. Both demos default to **CMSF** (the library falls back to LOC when `packagerFormat` is not set), and there is no catalog to negotiate the choice, so the two ends have to agree.
 
-### LOC (default)
+### LOC
 
 It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 plus the `Codecstring` property** (ID `0x11`), which draft-04 does not register.
 
 That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
-### CMSF / CMAF
+### CMSF / CMAF (default in the demos)
 
 It follows [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (CMAF packaging for MoQ, written against the individual draft the working group adopted, `draft-wilaw-moq-cmafpackaging-01`) with the box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF: each MoQ object payload is a self-describing ISOBMFF media fragment and no MoQ Object Properties are sent at all. See [src/packager/cmaf/](#srcpackagercmaf-cmsf--cmaf-packager) for the mapping and the two documented deviations from the draft.
 
@@ -189,9 +189,10 @@ const muxerSenderConfig = {
         // lazily on subscribe, instead of one PUBLISH per track.
         usePublishNamespace: true,
 
-        // Media packaging format for every track: "loc" (default) or "cmaf",
-        // picked from the "Media packager" dropdown (see Packager)
-        packagerFormat: 'loc',
+        // Media packaging format for every track: "cmaf" (what the demo's
+        // "Media packager" dropdown selects by default) or "loc", which is also
+        // the fallback when this field is missing (see Packager)
+        packagerFormat: 'cmaf',
 
         moqTracks: {
             "audio": {
@@ -226,7 +227,7 @@ are all independent, so how many of them share a group is a free transport
 choice: `newSubgroupEvery` (the "MOQ audio packager" dropdown: 1, 5 or 10 frames
 per subgroup) trades fewer streams and less per-object overhead against losing a
 whole group at once. With CMSF the dropdown drops the datagram option and
-defaults to 10 frames — its objects carry ~100 bytes of boxes each, so a stream
+defaults to 10 frames — its objects carry ~140 bytes of boxes each, so a stream
 per 20ms frame is wasteful — and the sender rejects a CMSF track configured for
 datagrams.
 
@@ -242,7 +243,7 @@ Main encoder webpage and also glues all encoder pieces together
   - Reconstructs the capture wall clock of the chunk from the capture anchor
   - Sends the chunk (augmented with seqId and metadata) to the muxer
 
-It also owns the **"Media packager" dropdown** (LOC or CMSF, the UI name of the CMAF packaging, see [Packager](#packager)), which is where the published format is selected; the player has its own "Media packager expected" selector that has to match. Selecting CMSF also locks the QUIC mapping to subgroup per GOP (video) and subgroup per frame (audio), which is the grouping the CMAF mapping assumes.
+It also owns the **"Media packager" dropdown** (CMSF, the UI name of the CMAF packaging, by default, or LOC — see [Packager](#packager)), which is where the published format is selected; the player has its own "Media packager expected" selector that has to match. Selecting CMSF also locks the video QUIC mapping to subgroup per GOP and rebuilds the audio mapping options (no datagrams, 10 frames per subgroup by default), which is the grouping the CMAF mapping assumes.
 
 #### Saving the stream to a local file
 
@@ -261,7 +262,7 @@ Either way the capture starts on a group boundary, so for CMSF it carries the CM
 
 ### src/overlay_processor/overlay_encoder.ts (OverlayEncoder)
 
-Stamps an integer value (the capture epoch in ms) into the top rows of a raw video frame by writing one bright/dark pixel run per bit, prefixed with a marker sequence. The value survives H.264 encode/decode as image content, so the player can recover it and measure glass-to-glass latency **without any side-channel metadata** (see `OverlayDecoder` on the player side). It requires an NV12 raw frame; the encoder toggles it live from the "Add latency information in video" checkbox and falls back to the un-overlaid frame if the source format differs.
+Stamps an integer value (the capture epoch in ms) into the top rows of a raw video frame by writing one bright/dark pixel run per bit, prefixed with a marker sequence. The value survives H.264 encode/decode as image content, so the player can recover it and measure glass-to-glass latency **without any side-channel metadata** (see `OverlayDecoder` on the player side). It requires an NV12 raw frame; the encoder toggles it live from the "Add latency information in video" checkbox (on by default) and falls back to the un-overlaid frame if the source format differs.
 
 ### src/capture/v_capture.ts
 
@@ -359,7 +360,7 @@ Other details:
 - Opens a WebTransport session against the relay (MOQT version negotiated via ALPN)
 - Announces its track(s): either one `PUBLISH` per track, or a single `PUBLISH_NAMESPACE` per namespace serving tracks lazily on subscribe (`usePublishNamespace`)
 - Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts` and publishes each as a MoQ object via `track.sendObject(...)`
-- Packages them with LOC or CMAF depending on `packagerFormat` (`"loc"` by default). One packager instance is kept per media type for the whole session, because the CMAF one is stateful (`moof` sequence numbers, initialization header)
+- Packages them with LOC or CMAF depending on `packagerFormat` (the demo sends `"cmaf"`; an unset field falls back to `"loc"`). One packager instance is kept per media type for the whole session, because the CMAF one is stateful (`moof` sequence numbers, initialization header)
 - **Object → QUIC wire mapping is configurable per track** (`moqMapping`): `SubgroupPerGroup` opens one unidirectional QUIC stream per group (a video keyframe starts a new group/stream), while `ObjectPerDatagram` sends one datagram per object
 - Send priority uses the MoQ publisher priority carried on each group; audio is published at a higher priority than video (lower numeric value = higher priority)
 - It keeps the per-track send queue below `maxInFlightRequests` and the concurrent open subgroup streams below `maxOpenStreams` (objects / whole groups are dropped once the respective cap is reached). Two stats are reported per track: `numQueued` (objects waiting in the send queue) and `numOpenStreams` (open QUIC subgroup streams)
@@ -372,7 +373,7 @@ The encoder implements MOQT subscriber role. It uses [Webcodecs](https://develop
 ![Player block diagram](./pics/player-block-diagram.svg)
 Fig5: Player block diagram
 
-The packaging it expects is selected with the "Media packager expected" dropdown under the track name (LOC by default, CMSF being the other option) and has to match what the encoder publishes: nothing on the wire announces the format and there is no catalog to negotiate it.
+The packaging it expects is selected with the "Media packager expected" dropdown under the track name (CMSF by default, LOC being the other option) and has to match what the encoder publishes: nothing on the wire announces the format and there is no catalog to negotiate it.
 
 ### Audio video sync strategy
 
@@ -514,6 +515,7 @@ Note: It is better to run webserver using this script (or `npm run serve`) but y
   - Click "Start"
 - Load player webpage, url: http://localhost:8080/demo/player/?local
   - Copy `Track Name` from encoder webpage and paste it into Receiver demuxer `Track Name`
+  - Check that "Media packager expected" matches the encoder's "Media packager" (both default to CMSF, nothing on the wire negotiates it)
   - Click "Start"
 
 ENJOY YOUR POCing!!! :-)

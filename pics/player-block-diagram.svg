@@ -26,10 +26,10 @@
   <path class="flow" d="M615,110 L615,170" marker-end="url(#arrow)"/>
   <text class="edge" x="635" y="145" text-anchor="start">received objects</text>
 
-  <!-- row 2: depacketizer -->
+  <!-- row 2: depackager (LOC or CMSF, selected in the UI) -->
   <rect class="span" x="360" y="170" width="510" height="65" rx="10"/>
-  <text class="title" x="615" y="200">MoQ Media Interop depacketizer</text>
-  <text class="sub" x="615" y="222">mi_packager.ts</text>
+  <text class="title" x="615" y="198">Media depackager — LOC or CMSF</text>
+  <text class="sub" x="615" y="220">packager/loc_packager.ts · packager/cmaf/cmaf_depackager.ts</text>
 
   <path class="flow" d="M470,235 L470,300" marker-end="url(#arrow)"/>
   <text class="edge" x="470" y="272">H.264 + Metadata</text>

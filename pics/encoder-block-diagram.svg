@@ -71,13 +71,13 @@
   <path class="flow" d="M760,290 L760,370" marker-end="url(#arrow)"/>
   <text class="edge" x="780" y="335" text-anchor="start">Opus + Metadata</text>
 
-  <!-- row 3: packager -->
+  <!-- row 3: packager (LOC or CMSF, selected in the UI) -->
   <rect class="span" x="370" y="370" width="500" height="70" rx="10"/>
-  <text class="title" x="620" y="402">MoQ Media Interop packager</text>
-  <text class="sub" x="620" y="424">mi_packager.ts</text>
+  <text class="title" x="620" y="399">Media packager — LOC or CMSF</text>
+  <text class="sub" x="620" y="421">packager/loc_packager.ts · packager/cmaf/cmaf_packager.ts</text>
 
   <path class="flow" d="M620,440 L620,510" marker-end="url(#arrow)"/>
-  <text class="edge" x="640" y="480" text-anchor="start">MoQ objects (+ ext headers)</text>
+  <text class="edge" x="640" y="480" text-anchor="start">MoQ objects (LOC: + properties)</text>
 
   <!-- row 4: sender -->
   <rect class="span" x="370" y="510" width="500" height="85" rx="10"/>
@@ -88,6 +88,13 @@
   <path class="flow" d="M620,595 L620,650" marker-end="url(#arrow)"/>
   <text class="edge" x="640" y="628" text-anchor="start">WebTransport (QUIC)</text>
   <text class="sub" x="620" y="672">to moxygen relay</text>
+
+  <!-- side: optional dump of the packaged objects to a local file -->
+  <rect class="side" x="30" y="615" width="185" height="80" rx="10"/>
+  <text class="title" x="122" y="645" font-size="15">Media dumper</text>
+  <text class="sub" x="122" y="665">media_dumper.ts</text>
+  <text class="sub" x="122" y="683">first N s &#8594; local file</text>
+  <path class="aux" d="M370,588 L218,645" marker-end="url(#arrow)"/>
 
   <!-- legend -->
   <text class="legend" x="30" y="510" font-weight="700">Legend</text>

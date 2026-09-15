@@ -516,7 +516,7 @@ LICENSE file in the root directory of this source tree.
         usePublishNamespace: true,
 
         // "loc" | "cmaf", picked from the UI on start
-        packagerFormat: 'loc',
+        packagerFormat: 'cmaf',
 
         // Debug: save the packaged objects to a local file, read from the UI on start
         mediaDump: {
@@ -1432,7 +1432,7 @@ LICENSE file in the root directory of this source tree.
 
     // (Re)build the audio mapping options for the selected packager, and select
     // that packager's default: one frame per subgroup for LOC, ten for CMSF
-    // (which pays ~100 bytes of boxes per object, so one stream per frame is
+    // (which pays ~140 bytes of boxes per object, so one stream per frame is
     // wasteful).
     function initAudioMappingUI() {
         const isCmaf = document.getElementById("mediaPackager").value === "cmaf";
