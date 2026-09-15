@@ -48,12 +48,12 @@ LICENSE file in the root directory of this source tree.
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
                 <div class="clear"></div>
                 <label>Media packager:<select id="mediaPackager">
-                    <option value="loc" selected>LOC (draft-ietf-moq-loc)</option>
-                    <option value="cmaf">CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
+                    <option value="loc">LOC (draft-ietf-moq-loc)</option>
+                    <option value="cmaf" selected>CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
                 </select></label>
                 <label id="mediaPackagerWarning" hidden>⚠️ Set "Media packager expected" to CMSF in the player too, there is no catalog to negotiate it</label>
                 <div class="clear"></div>
-                <label>Add latency information in video: <input type="checkbox" id="addLatencyInfoInVideo"></label>
+                <label>Add latency information in video: <input type="checkbox" id="addLatencyInfoInVideo" checked></label>
                 <div class="clear"></div>
                 <button id="btnToggleAdvanced" type="button" class="link-btn">Advanced ▼</button>
                 <div class="clear"></div>
