@@ -428,10 +428,10 @@ LICENSE file in the root directory of this source tree.
     let IS_LOCALHOST = false;
 
     // AudioData and VideoFrame timestamps do not necessarily use the same origin.
-    // Rebase each stream through the wall clock captured alongside its first frame.
-    // The session origin is fixed before either capture worker starts, so a worker
-    // that starts late (for example while its script is fetched remotely) keeps that
-    // offset instead of making the older stream appear delayed during playback.
+    // Rebase each stream through the capture clock sampled with its first frame.
+    // Both capture workers are ready before their processors are created, so this
+    // clock difference represents when media became available rather than how long
+    // each worker script took to load.
     const ptsCompensationData = {
         firstTsUs: {
             video: undefined,
@@ -469,7 +469,7 @@ LICENSE file in the root directory of this source tree.
             video: undefined,
             audio: undefined,
         };
-        ptsCompensationData.originClkms = Date.now();
+        ptsCompensationData.originClkms = undefined;
     }
 
     // Video encoder config
@@ -875,10 +875,35 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
 
+    function waitForWorkerReady(worker) {
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
+                worker.removeEventListener("message", onMessage);
+                worker.removeEventListener("error", onError);
+            };
+            const onMessage = (e) => {
+                if (e.data.type === "ready") {
+                    cleanup();
+                    resolve();
+                }
+            };
+            const onError = (e) => {
+                cleanup();
+                reject(e.error ?? new Error(e.message));
+            };
+            worker.addEventListener("message", onMessage);
+            worker.addEventListener("error", onError);
+        });
+    }
+
     function createWorkers() {
         // Create a new workers for video / audio frames capture
         vStreamWorker = new Worker("../../dist/capture/v_capture.js", { type: "module" });
         aStreamWorker = new Worker("../../dist/capture/a_capture.js", { type: "module" });
+        const captureWorkersReady = Promise.all([
+            waitForWorkerReady(vStreamWorker),
+            waitForWorkerReady(aStreamWorker),
+        ]);
 
         // Create a new workers for video / audio frames encode
         vEncoderWorker = new Worker("../../dist/encode/v_encoder.js", { type: "module" });
@@ -886,6 +911,8 @@ LICENSE file in the root directory of this source tree.
 
         // Create send worker
         muxerSenderWorker = new Worker("../../dist/sender/moq_sender.js", { type: "module" });
+
+        return captureWorkersReady;
     }
 
     function clearUI() {
@@ -1658,7 +1685,9 @@ LICENSE file in the root directory of this source tree.
 
     function processWorkerMessage(e) {
         // LOGGING
-        if (e.data.type === "debug") {
+        if (e.data.type === "ready") {
+            return;
+        } else if (e.data.type === "debug") {
             if (VERBOSE) {
                 // logging debug
                 console.debug(e.data.data);
@@ -1849,7 +1878,7 @@ LICENSE file in the root directory of this source tree.
 
         startTimeline();
 
-        createWorkers();
+        const captureWorkersReady = createWorkers();
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
         // Load video encoding settings
         videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
@@ -1910,15 +1939,7 @@ LICENSE file in the root directory of this source tree.
             processWorkerMessage(e);
         });
 
-        // Create a MediaStreamTrackProcessor, which exposes frames from the track
-        // as a ReadableStream of VideoFrames.
-        const vTrack = mediaStream.getVideoTracks()[0];
-        const vProcessor = new MediaStreamTrackProcessor(vTrack);
-        const vFrameStream = vProcessor.readable;
-
-        const aTrack = mediaStream.getAudioTracks()[0];
-        const aProcessor = new MediaStreamTrackProcessor(aTrack);
-        const aFrameStream = aProcessor.readable;
+        await captureWorkersReady;
 
         // Initialize encoders
         vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery, addLatencyInfoInVideo: videoEncoderConfig.addLatencyInfoInVideo });
@@ -1973,7 +1994,19 @@ LICENSE file in the root directory of this source tree.
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
 
-        // Transfer the readable stream to the worker.
+        // Create the processors only after both capture-worker modules are loaded.
+        // This prevents remote script-fetch time from becoming an A/V offset.
+        const vTrack = mediaStream.getVideoTracks()[0];
+        const vProcessor = new MediaStreamTrackProcessor(vTrack);
+        const vFrameStream = vProcessor.readable;
+
+        const aTrack = mediaStream.getAudioTracks()[0];
+        const aProcessor = new MediaStreamTrackProcessor(aTrack);
+        const aFrameStream = aProcessor.readable;
+
+        // The shared origin precedes both first reads. Their individual capture
+        // clocks retain a real difference in media availability, if there is one.
+        ptsCompensationData.originClkms = Date.now();
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
         aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);
     }
