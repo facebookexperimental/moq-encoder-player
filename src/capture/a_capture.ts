@@ -104,3 +104,5 @@ self.addEventListener('message', async function (e) {
 
   sendMessageToMain(WORKER_PREFIX, 'error', 'Invalid message received');
 });
+
+self.postMessage({ type: 'ready' });

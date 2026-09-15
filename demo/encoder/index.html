@@ -427,44 +427,49 @@ LICENSE file in the root directory of this source tree.
     let VERBOSE = false;
     let IS_LOCALHOST = false;
 
-    // Per-stream capture-time anchors. Audio and video do NOT share a timebase:
-    // AudioData.timestamp starts at ~0 on track start, while VideoFrame.timestamp comes
-    // from the camera/system capture clock (roughly since boot). Each stream is therefore
-    // re-based on its own first timestamp, and the two are aligned to each other through
-    // the capture wallclock (clkms) recorded alongside their respective first frames.
-    const anchorTsUs = {};        // mediaType -> first frame.timestamp (microseconds)
-    const anchorWallMs = {};      // mediaType -> Date.now() captured alongside that frame (ms)
-    let originWallMs = undefined; // EARLIEST capture wallclock seen across both streams (ms)
+    // AudioData and VideoFrame timestamps do not necessarily use the same origin.
+    // Rebase each stream through the capture clock sampled with its first frame.
+    // Both capture workers are ready before their processors are created, so this
+    // clock difference represents when media became available rather than how long
+    // each worker script took to load.
+    const ptsCompensationData = {
+        firstTsUs: {
+            video: undefined,
+            audio: undefined,
+        },
+        firstCaptureClkms: {
+            video: undefined,
+            audio: undefined,
+        },
+        originClkms: undefined,
+    };
 
-    // Anchor the capture clock on the first frame of each stream.
-    //
-    // The origin is the SMALLEST anchor wallclock, not the first one we happen to see:
-    // audio and video are captured by 2 independent workers, so the order their first
-    // frames reach this thread does not have to match the order they were captured in.
-    // Taking the first arrival as the origin would give the other stream a negative
-    // compensated timestamp, which the sender clamps at 0 (the LOC Timestamp is a vi64),
-    // producing a run of duplicated 0s and losing the A/V offset for those frames.
-    // Lowering the origin later only shifts the already anchored stream forward once, in
-    // the first frames, so timestamps stay monotonic.
-    function ensureCaptureAnchor(type, tsUs, wallMs) {
-        let ret = false
-        if (anchorTsUs[type] === undefined) {
-            anchorTsUs[type] = tsUs;
-            anchorWallMs[type] = wallMs;
-            ret = true
-            if (originWallMs === undefined || wallMs < originWallMs) {
-                originWallMs = wallMs;
-            }
+    function ensureCaptureAnchor(type, tsUs, captureClkms) {
+        if (ptsCompensationData.firstTsUs[type] === undefined) {
+            ptsCompensationData.firstTsUs[type] = tsUs;
+            ptsCompensationData.firstCaptureClkms[type] = captureClkms;
+            return true;
         }
-        return ret;
+        return false;
     }
+
     // A/V-aligned presentation timestamp (microseconds, ~0 origin).
     function compensatedTsFor(type, tsUs) {
-        return (tsUs - anchorTsUs[type]) + (anchorWallMs[type] - originWallMs) * 1000;
+        const elapsedMediaUs = tsUs - ptsCompensationData.firstTsUs[type];
+        const streamStartUs = (ptsCompensationData.firstCaptureClkms[type] - ptsCompensationData.originClkms) * 1000;
+        return elapsedMediaUs + streamStartUs;
     }
-    // Reconstructed capture wallclock (integer ms) for a given media timestamp.
-    function captureClkmsFor(type, tsUs) {
-        return Math.round(anchorWallMs[type] + (tsUs - anchorTsUs[type]) / 1000);
+
+    function resetCompensateTs() {
+        ptsCompensationData.firstTsUs = {
+            video: undefined,
+            audio: undefined,
+        };
+        ptsCompensationData.firstCaptureClkms = {
+            video: undefined,
+            audio: undefined,
+        };
+        ptsCompensationData.originClkms = undefined;
     }
 
     // Video encoder config
@@ -870,10 +875,35 @@ LICENSE file in the root directory of this source tree.
     console.log("Read querystring: " + queryString);
     const qsParams = new URLSearchParams(queryString);
 
+    function waitForWorkerReady(worker) {
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
+                worker.removeEventListener("message", onMessage);
+                worker.removeEventListener("error", onError);
+            };
+            const onMessage = (e) => {
+                if (e.data.type === "ready") {
+                    cleanup();
+                    resolve();
+                }
+            };
+            const onError = (e) => {
+                cleanup();
+                reject(e.error ?? new Error(e.message));
+            };
+            worker.addEventListener("message", onMessage);
+            worker.addEventListener("error", onError);
+        });
+    }
+
     function createWorkers() {
         // Create a new workers for video / audio frames capture
         vStreamWorker = new Worker("../../dist/capture/v_capture.js", { type: "module" });
         aStreamWorker = new Worker("../../dist/capture/a_capture.js", { type: "module" });
+        const captureWorkersReady = Promise.all([
+            waitForWorkerReady(vStreamWorker),
+            waitForWorkerReady(aStreamWorker),
+        ]);
 
         // Create a new workers for video / audio frames encode
         vEncoderWorker = new Worker("../../dist/encode/v_encoder.js", { type: "module" });
@@ -881,6 +911,8 @@ LICENSE file in the root directory of this source tree.
 
         // Create send worker
         muxerSenderWorker = new Worker("../../dist/sender/moq_sender.js", { type: "module" });
+
+        return captureWorkersReady;
     }
 
     function clearUI() {
@@ -1653,7 +1685,9 @@ LICENSE file in the root directory of this source tree.
 
     function processWorkerMessage(e) {
         // LOGGING
-        if (e.data.type === "debug") {
+        if (e.data.type === "ready") {
+            return;
+        } else if (e.data.type === "debug") {
             if (VERBOSE) {
                 // logging debug
                 console.debug(e.data.data);
@@ -1672,7 +1706,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.data;
             // Anchor the video capture clock on its first frame.
-            const firstVideoFrame = ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms);
+            const firstVideoFrame = ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms)
             if (firstVideoFrame) {
                 refreshFirstTsUI();
             }
@@ -1682,7 +1716,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
-            const firstAudioFrame = ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms);
+            const firstAudioFrame = ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms)
             if (firstAudioFrame) {
                 refreshFirstTsUI();
             }
@@ -1706,12 +1740,11 @@ LICENSE file in the root directory of this source tree.
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
-            // Reconstruct timing from the chunk timestamp + the video anchor (no lookup table).
             const compensatedTs = compensatedTsFor("video", chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor("video", chunk.timestamp);
 
             updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
-            updateEncodingVideoLatencyUI(Date.now() - firstFrameClkms);
+            // TODO: Provide encoding video latency
+            // updateEncodingVideoLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", compensatedTs, seqId: seqId, chunk: chunk, metadata, timebase, codec: e.data.codec, codedWidth: e.data.codedWidth, codedHeight: e.data.codedHeight });
         } else if (e.data.type === "achunk") {
@@ -1720,12 +1753,11 @@ LICENSE file in the root directory of this source tree.
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
             const codec = e.data.codec;
-            // Reconstruct timing from the chunk timestamp + the audio anchor (no lookup table).
             const compensatedTs = compensatedTsFor("audio", chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor("audio", chunk.timestamp);
 
             updateEncodedAudioTSUI(chunk.timestamp, compensatedTs);
-            updateEncodingAudioLatencyUI(Date.now() - firstFrameClkms);
+            // TODO: Provide encoding Audio latency
+            // updateEncodingAudioLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, codec});
             // CHUNKS STATS
@@ -1804,15 +1836,12 @@ LICENSE file in the root directory of this source tree.
         list.appendChild(entry);
     }
 
-    // Repaint both "first TS" rows once both streams are anchored: the origin drops
-    // when the second anchor turns out to be older than the first one we saw, which
-    // changes the compensated value already shown for the stream that anchored first.
+    // Repaint both "first TS" rows once both streams are anchored.
     function refreshFirstTsUI() {
-        if (anchorTsUs.video === undefined || anchorTsUs.audio === undefined) {
-            return;
+        if (ptsCompensationData.firstTsUs.video != undefined && ptsCompensationData.firstTsUs.audio != undefined) {
+            updateFirstTsUIbyType("video", ptsCompensationData.firstTsUs.video, compensatedTsFor("video", ptsCompensationData.firstTsUs.video));
+            updateFirstTsUIbyType("audio", ptsCompensationData.firstTsUs.audio, compensatedTsFor("audio", ptsCompensationData.firstTsUs.audio));
         }
-        updateFirstTsUIbyType("video", anchorTsUs.video, compensatedTsFor("video", anchorTsUs.video));
-        updateFirstTsUIbyType("audio", anchorTsUs.audio, compensatedTsFor("audio", anchorTsUs.audio));
     }
 
     function updateFirstTsUIbyType(type, ts, compensatedTs) {
@@ -1841,11 +1870,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
-        delete anchorTsUs.video;
-        delete anchorTsUs.audio;
-        delete anchorWallMs.video;
-        delete anchorWallMs.audio;
-        originWallMs = undefined;
+        resetCompensateTs();
 
         enableUI("publishing");
 
@@ -1853,7 +1878,7 @@ LICENSE file in the root directory of this source tree.
 
         startTimeline();
 
-        createWorkers();
+        const captureWorkersReady = createWorkers();
         const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
         // Load video encoding settings
         videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
@@ -1914,15 +1939,7 @@ LICENSE file in the root directory of this source tree.
             processWorkerMessage(e);
         });
 
-        // Create a MediaStreamTrackProcessor, which exposes frames from the track
-        // as a ReadableStream of VideoFrames.
-        const vTrack = mediaStream.getVideoTracks()[0];
-        const vProcessor = new MediaStreamTrackProcessor(vTrack);
-        const vFrameStream = vProcessor.readable;
-
-        const aTrack = mediaStream.getAudioTracks()[0];
-        const aProcessor = new MediaStreamTrackProcessor(aTrack);
-        const aFrameStream = aProcessor.readable;
+        await captureWorkersReady;
 
         // Initialize encoders
         vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery, addLatencyInfoInVideo: videoEncoderConfig.addLatencyInfoInVideo });
@@ -1977,7 +1994,19 @@ LICENSE file in the root directory of this source tree.
         // Initialize muxer - sender
         muxerSenderWorker.postMessage({ type: "init", config: muxerSenderConfig });
 
-        // Transfer the readable stream to the worker.
+        // Create the processors only after both capture-worker modules are loaded.
+        // This prevents remote script-fetch time from becoming an A/V offset.
+        const vTrack = mediaStream.getVideoTracks()[0];
+        const vProcessor = new MediaStreamTrackProcessor(vTrack);
+        const vFrameStream = vProcessor.readable;
+
+        const aTrack = mediaStream.getAudioTracks()[0];
+        const aProcessor = new MediaStreamTrackProcessor(aTrack);
+        const aFrameStream = aProcessor.readable;
+
+        // The shared origin precedes both first reads. Their individual capture
+        // clocks retain a real difference in media availability, if there is one.
+        ptsCompensationData.originClkms = Date.now();
         vStreamWorker.postMessage({ type: "stream", vStream: vFrameStream }, [vFrameStream]);
         aStreamWorker.postMessage({ type: "stream", aStream: aFrameStream }, [aFrameStream]);
     }
