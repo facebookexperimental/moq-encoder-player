@@ -13,86 +13,18 @@ LICENSE file in the root directory of this source tree.
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="../shared/demo.css">
     <style>
-        /* Encoder page: compact layout with two-column encoding params and tabbed stats */
-        body {
-            font-size: 12px;
-        }
-        h1 {
-            font-size: 18px;
-        }
-        h2 {
-            font-size: 14px;
-        }
-        h3 {
-            font-size: 12px;
-        }
-        input[type='text'],
-        select,
-        button {
-            font-size: 12px;
-        }
-        .styleform label,
-        .styleform input,
-        .styleform select {
-            margin: 3px 8px;
-        }
-
         /* Two equal columns that stack on narrow screens */
         .two-col {
             display: flex;
             flex-wrap: wrap;
             gap: 16px;
         }
-        .two-col > .boxed {
+        .two-col > .settings-box {
             flex: 1 1 320px;
         }
         /* Ensure [hidden] beats .two-col's display:flex */
         [hidden] {
             display: none !important;
-        }
-
-        /* "Advanced..." toggle styled like a link */
-        .link-btn {
-            margin: 6px 0;
-            padding: 2px 0;
-            background: none;
-            color: var(--accent);
-            border-radius: 0;
-        }
-        .link-btn:hover:not(:disabled) {
-            background: none;
-            text-decoration: underline;
-        }
-
-        /* Tabbed stats */
-        .tabs {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-        }
-        .tab-btn {
-            margin: 0;
-            padding: 6px 14px;
-            background-color: var(--bg);
-            color: var(--muted);
-            border: 1px solid var(--border);
-            border-bottom: none;
-            border-radius: 6px 6px 0 0;
-        }
-        .tab-btn:hover:not(:disabled) {
-            background-color: var(--field-bg);
-            color: var(--text);
-        }
-        .tab-btn.active {
-            color: var(--text);
-            background-color: var(--card-bg);
-            border-color: var(--accent);
-        }
-        .tab-panel {
-            display: none;
-        }
-        .tab-panel.active {
-            display: block;
         }
     </style>
     <title>Test Ultra low latency with WebCodecs ENCODER (by Jordi Cenzano)</title>
@@ -138,25 +70,22 @@ LICENSE file in the root directory of this source tree.
                     <label>MOQ video packager:<select id="moqVideoQuicMapping"></select></label>
                     <label>MOQ audio packager:<select id="moqAudioQuicMapping"></select></label>
                     <div class="clear"></div>
-                    <div class="boxed">
-                        <h3>Queue limits</h3>
-                        <div class="clear"></div>
+                    <fieldset class="settings-box">
+                        <legend>Queue limits</legend>
                         <label>Max send-queue audio objects:<input id="maxInflightAudioRequests" type="text" value="20"></label>
                         <div class="clear"></div>
                         <label>Max send-queue video objects:<input id="maxInflightVideoRequests" type="text" value="10"></label>
                         <div class="clear"></div>
-                    </div>
-                    <div class="boxed">
-                        <h3>QUIC stream limits</h3>
-                        <div class="clear"></div>
+                    </fieldset>
+                    <fieldset class="settings-box">
+                        <legend>QUIC stream limits</legend>
                         <label>Max QUIC streams for audio:<input id="maxQUICStreamsAudio" type="text" value="60"></label>
                         <div class="clear"></div>
                         <label>Max QUIC streams for video:<input id="maxQUICStreamsVideo" type="text" value="39"></label>
                         <div class="clear"></div>
-                    </div>
-                    <div class="boxed">
-                        <h3>Simulated frame drops (A/V sync testing)</h3>
-                        <div class="clear"></div>
+                    </fieldset>
+                    <fieldset class="settings-box">
+                        <legend>Simulated frame drops (A/V sync testing)</legend>
                         <label>Video frame drops:<select id="videoDropMode">
                             <option value="none" selected>None</option>
                             <option value="random">Random</option>
@@ -175,10 +104,9 @@ LICENSE file in the root directory of this source tree.
                         <div class="clear"></div>
                         <label>Those drops are at QUIC STREAM / datagram level, so the data dropped will depend on the selected QUIC mapping</label>
                         <div class="clear"></div>
-                    </div>
-                    <div class="boxed">
-                        <h3>Simulated slowness (A/V sync testing)</h3>
-                        <div class="clear"></div>
+                    </fieldset>
+                    <fieldset class="settings-box">
+                        <legend>Simulated slowness (A/V sync testing)</legend>
                         <label>Video hold:<select id="videoHoldMode">
                             <option value="none" selected>None</option>
                             <option value="random">Random</option>
@@ -197,10 +125,9 @@ LICENSE file in the root directory of this source tree.
                         <div class="clear"></div>
                         <label>Those holds are at QUIC STREAM / datagram level, so the data hold will depend on the selected QUIC mapping</label>
                         <div class="clear"></div>
-                    </div>
-                    <div class="boxed">
-                        <h3>Save media to a local file (dumper)</h3>
-                        <div class="clear"></div>
+                    </fieldset>
+                    <fieldset class="settings-box">
+                        <legend>Save media to a local file (dumper)</legend>
                         <label>Save the first N seconds (0 = off):<input id="dumpSeconds" type="number" min="0" step="1" value="0" size="6"></label>
                         <label>Media to save:<select id="dumpMediaTypes">
                             <option value="video,audio" selected>Video + audio</option>
@@ -214,7 +141,7 @@ LICENSE file in the root directory of this source tree.
                         <div class="clear"></div>
                         <label>Last saved:<input id="dumpStatus" type="text" value="-" size="64" readonly></label>
                         <div class="clear"></div>
-                    </div>
+                    </fieldset>
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
@@ -226,38 +153,36 @@ LICENSE file in the root directory of this source tree.
     <div class="boxed">
         <button id="btnToggleEncodingSettings" type="button" class="link-btn">Encoding settings ▼</button>
         <div id="encodingSettings" class="two-col" hidden>
-        <div class="boxed">
-            <div class="styleform">
-                <form>
-                    <h2>Video encoding params (h264)</h2>
-                    <div class="clear"></div>
-                    <label>Input sources: <select id="videoSources"></select></label>
-                    (If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery )
-                    <div class="clear"></div>
-                    <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
-                    <div class="clear"></div>
-                    <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
-                            size="5"></label>
-                    <div class="clear"></div>
-                    <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
-                    <div class="clear"></div>
-                </form>
-            </div>
-        </div>
-        <div class="boxed">
-            <div class="styleform">
-                <form>
-                    <h2>Audio encoding params</h2>
-                    <div class="clear"></div>
-                    <label>Input sources: <select id="audioSources"></select></label>
-                    <div class="clear"></div>
-                    <label>Codec: <select id="audioCodecOptions"></select></label>
-                    <div class="clear"></div>
-                    <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
-                    <div class="clear"></div>
-                </form>
-            </div>
-        </div>
+            <fieldset class="settings-box">
+                <legend>Video encoding params (h264)</legend>
+                <div class="styleform">
+                    <form>
+                        <label>Input sources: <select id="videoSources"></select></label>
+                        <label>(If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery)</label>
+                        <div class="clear"></div>
+                        <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                        <div class="clear"></div>
+                        <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
+                                size="5"></label>
+                        <div class="clear"></div>
+                        <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </fieldset>
+            <fieldset class="settings-box">
+                <legend>Audio encoding params</legend>
+                <div class="styleform">
+                    <form>
+                        <label>Input sources: <select id="audioSources"></select></label>
+                        <div class="clear"></div>
+                        <label>Codec: <select id="audioCodecOptions"></select></label>
+                        <div class="clear"></div>
+                        <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </fieldset>
         </div>
     </div>
 
@@ -270,8 +195,8 @@ LICENSE file in the root directory of this source tree.
     <div class="boxed">
         <h2>Inject network issues (QUICStream level)</h2>
         <div style="display:flex; gap:32px; align-items:flex-start; flex-wrap:wrap">
-            <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
-                <h3>Drop</h3>
+            <fieldset class="settings-box" style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
+                <legend>Drop</legend>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceDropVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
                     <button id="btnForceDropVideo" type="button" disabled>Video</button>
@@ -280,9 +205,9 @@ LICENSE file in the root directory of this source tree.
                     <input id="forceDropAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
                     <button id="btnForceDropAudio" type="button" disabled>Audio</button>
                 </div>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
-                <h3>Hold</h3>
+            </fieldset>
+            <fieldset class="settings-box" style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
+                <legend>Hold</legend>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceHoldVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
                     <button id="btnForceHoldVideo" type="button" disabled>Video</button>
@@ -291,7 +216,7 @@ LICENSE file in the root directory of this source tree.
                     <input id="forceHoldAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
                     <button id="btnForceHoldAudio" type="button" disabled>Audio</button>
                 </div>
-            </div>
+            </fieldset>
         </div>
     </div>
 

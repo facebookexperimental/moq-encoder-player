@@ -180,6 +180,78 @@ ol:empty {
   display: none;
 }
 
+/* "Advanced ..." toggles, styled like a link */
+.link-btn {
+  margin: 6px 0;
+  padding: 2px 0;
+  background: none;
+  color: var(--accent);
+  border-radius: 0;
+}
+
+.link-btn:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+/* Tabbed stats */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tab-btn {
+  margin: 0;
+  padding: 6px 14px;
+  background-color: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+
+.tab-btn:hover:not(:disabled) {
+  background-color: var(--field-bg);
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--text);
+  background-color: var(--card-bg);
+  border-color: var(--accent);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* Named sub-boxes inside a card (grouped settings) */
+fieldset.settings-box {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 10px;
+  padding: 8px 10px;
+  overflow: hidden; /* establish a BFC so the floated rows are contained */
+}
+
+fieldset.settings-box legend {
+  color: var(--text);
+  padding: 0 6px;
+}
+
+/* "(<value>)" applied hint shown right after a live-tunable field's input */
+.applied-value {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: italic;
+  margin-right: 6px;
+}
+
 /* Two-column layout (used by the event player) */
 .column {
   float: left;
