@@ -427,44 +427,68 @@ LICENSE file in the root directory of this source tree.
     let VERBOSE = false;
     let IS_LOCALHOST = false;
 
-    // Per-stream capture-time anchors. Audio and video do NOT share a timebase:
-    // AudioData.timestamp starts at ~0 on track start, while VideoFrame.timestamp comes
-    // from the camera/system capture clock (roughly since boot). Each stream is therefore
-    // re-based on its own first timestamp, and the two are aligned to each other through
-    // the capture wallclock (clkms) recorded alongside their respective first frames.
-    const anchorTsUs = {};        // mediaType -> first frame.timestamp (microseconds)
-    const anchorWallMs = {};      // mediaType -> Date.now() captured alongside that frame (ms)
-    let originWallMs = undefined; // EARLIEST capture wallclock seen across both streams (ms)
+    // Per-stream capture-time anchors
+    const ptsCompensationData = {
+        firstTsUs: {
+            video: undefined,
+            audio: undefined,
+        },
+        lastTsUs: {
+            video: undefined,
+            audio: undefined,
+        },
+        compensateTsUs: undefined
+    };
 
-    // Anchor the capture clock on the first frame of each stream.
-    //
-    // The origin is the SMALLEST anchor wallclock, not the first one we happen to see:
-    // audio and video are captured by 2 independent workers, so the order their first
-    // frames reach this thread does not have to match the order they were captured in.
-    // Taking the first arrival as the origin would give the other stream a negative
-    // compensated timestamp, which the sender clamps at 0 (the LOC Timestamp is a vi64),
-    // producing a run of duplicated 0s and losing the A/V offset for those frames.
-    // Lowering the origin later only shifts the already anchored stream forward once, in
-    // the first frames, so timestamps stay monotonic.
-    function ensureCaptureAnchor(type, tsUs, wallMs) {
-        let ret = false
-        if (anchorTsUs[type] === undefined) {
-            anchorTsUs[type] = tsUs;
-            anchorWallMs[type] = wallMs;
-            ret = true
-            if (originWallMs === undefined || wallMs < originWallMs) {
-                originWallMs = wallMs;
-            }
+    // Anchor the capture PTS
+    function ensureCaptureAnchorVideo(tsUs) {
+        let ret = false;
+        if ((ptsCompensationData.firstTsUs.video != undefined) && (ptsCompensationData.firstTsUs.audio != undefined)) {
+            return ret;
+        }
+        if (ptsCompensationData.firstTsUs.video === undefined) {
+            ptsCompensationData.firstTsUs.video = tsUs
+            ret = true;
+        }
+        ptsCompensationData.lastTsUs.video = tsUs
+        if (ptsCompensationData.firstTsUs.audio != undefined) {
+            ptsCompensationData.compensateTsUs = ptsCompensationData.lastTsUs.video
+        }
+        return ret;
+    }
+    function ensureCaptureAnchorAudio(tsUs) {
+        let ret = false;
+        if ((ptsCompensationData.firstTsUs.video != undefined) && (ptsCompensationData.firstTsUs.audio != undefined)) {
+            return ret;
+        }
+        if (ptsCompensationData.firstTsUs.audio === undefined) {
+            ptsCompensationData.firstTsUs.audio = tsUs
+            ret = true;
+        }
+        ptsCompensationData.lastTsUs.audio = tsUs
+        if (ptsCompensationData.firstTsUs.video != undefined) {
+            ptsCompensationData.compensateTsUs = ptsCompensationData.lastTsUs.audio
         }
         return ret;
     }
     // A/V-aligned presentation timestamp (microseconds, ~0 origin).
     function compensatedTsFor(type, tsUs) {
-        return (tsUs - anchorTsUs[type]) + (anchorWallMs[type] - originWallMs) * 1000;
+        if (ptsCompensationData.compensateTsUs === undefined) {
+            return 0
+        }
+        return (tsUs - ptsCompensationData.firstTsUs[type]) + ptsCompensationData.compensateTsUs;
     }
-    // Reconstructed capture wallclock (integer ms) for a given media timestamp.
-    function captureClkmsFor(type, tsUs) {
-        return Math.round(anchorWallMs[type] + (tsUs - anchorTsUs[type]) / 1000);
+
+    function resetCompensateTs() {
+        ptsCompensationData.firstTsUs = {
+            video: undefined,
+            audio: undefined,
+        };
+        ptsCompensationData.lastTsUs = {
+            video: undefined,
+            audio: undefined,
+        };
+        ptsCompensationData.compensateTsUs = undefined;
     }
 
     // Video encoder config
@@ -1672,7 +1696,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.data;
             // Anchor the video capture clock on its first frame.
-            const firstVideoFrame = ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms);
+            const firstVideoFrame = ensureCaptureAnchorVideo(vFrame.timestamp)
             if (firstVideoFrame) {
                 refreshFirstTsUI();
             }
@@ -1682,7 +1706,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
-            const firstAudioFrame = ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms);
+            const firstAudioFrame = ensureCaptureAnchorAudio(aFrame.timestamp)
             if (firstAudioFrame) {
                 refreshFirstTsUI();
             }
@@ -1706,12 +1730,11 @@ LICENSE file in the root directory of this source tree.
             const metadata = e.data.metadata;
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
-            // Reconstruct timing from the chunk timestamp + the video anchor (no lookup table).
             const compensatedTs = compensatedTsFor("video", chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor("video", chunk.timestamp);
 
             updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
-            updateEncodingVideoLatencyUI(Date.now() - firstFrameClkms);
+            // TODO: Provide encoding video latency
+            // updateEncodingVideoLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "video", compensatedTs, seqId: seqId, chunk: chunk, metadata, timebase, codec: e.data.codec, codedWidth: e.data.codedWidth, codedHeight: e.data.codedHeight });
         } else if (e.data.type === "achunk") {
@@ -1720,12 +1743,11 @@ LICENSE file in the root directory of this source tree.
             const seqId = e.data.seqId;
             const timebase = e.data.timebase;
             const codec = e.data.codec;
-            // Reconstruct timing from the chunk timestamp + the audio anchor (no lookup table).
             const compensatedTs = compensatedTsFor("audio", chunk.timestamp);
-            const firstFrameClkms = captureClkmsFor("audio", chunk.timestamp);
 
             updateEncodedAudioTSUI(chunk.timestamp, compensatedTs);
-            updateEncodingAudioLatencyUI(Date.now() - firstFrameClkms);
+            // TODO: Provide encoding video latency
+            // updateEncodingAudioLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, codec});
             // CHUNKS STATS
@@ -1808,11 +1830,10 @@ LICENSE file in the root directory of this source tree.
     // when the second anchor turns out to be older than the first one we saw, which
     // changes the compensated value already shown for the stream that anchored first.
     function refreshFirstTsUI() {
-        if (anchorTsUs.video === undefined || anchorTsUs.audio === undefined) {
-            return;
+        if (ptsCompensationData.compensateTsUs != undefined) {
+            updateFirstTsUIbyType("video", ptsCompensationData.firstTsUs.video, compensatedTsFor("video", ptsCompensationData.firstTsUs.video));
+            updateFirstTsUIbyType("audio", ptsCompensationData.firstTsUs.audio, compensatedTsFor("audio", ptsCompensationData.firstTsUs.audio));
         }
-        updateFirstTsUIbyType("video", anchorTsUs.video, compensatedTsFor("video", anchorTsUs.video));
-        updateFirstTsUIbyType("audio", anchorTsUs.audio, compensatedTsFor("audio", anchorTsUs.audio));
     }
 
     function updateFirstTsUIbyType(type, ts, compensatedTs) {
@@ -1841,11 +1862,7 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
-        delete anchorTsUs.video;
-        delete anchorTsUs.audio;
-        delete anchorWallMs.video;
-        delete anchorWallMs.audio;
-        originWallMs = undefined;
+        resetCompensateTs();
 
         enableUI("publishing");
 
