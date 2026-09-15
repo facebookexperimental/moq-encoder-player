@@ -7,7 +7,13 @@ LICENSE file in the root directory of this source tree.
 
 import { Moq, type ObjectCallback, type EndOfGroupCallback } from '../../moq/moq.js';
 import { MOQ_CURRENT_VERSION, type KvPair } from '../../moq/moqt.js';
-import { LOCPackager, type LOCData, type LOCMediaType } from '../../packager/loc_packager.js';
+import { type LOCMediaType } from '../../packager/loc_packager.js';
+import {
+  createDepackager,
+  type MediaDepackager,
+  type PackagerFormat,
+  type ParsedMediaData,
+} from '../../packager/media_packager.js';
 import { sendMessageToMain, convertTimestamp } from '../../utils/utils.js';
 
 const WORKER_PREFIX = '[MOQ-DOWNLOADER]';
@@ -34,21 +40,31 @@ export interface ReceiverConfig {
   isSendingStats: boolean;
   moqTracks: Record<string, TrackData>;
   certificateHash: any;
+  // Packaging the publisher is expected to use on every track: LOC (default) or
+  // CMAF / CMSF. There is no catalog to negotiate it, so it is a player setting.
+  packagerFormat: PackagerFormat;
   verbose: boolean;
 }
 
 /**
  * MoQ subscriber Web Worker. Translates main-thread messages into calls on the
- * high-level MoQ API (src/moq/moq.ts) and demuxes received objects with
- * LOCPackager into EncodedAudioChunk / EncodedVideoChunk for the player
- * pipeline. All MoQ protocol work (session, control loop, subscriptions,
- * object reception) lives in the `Moq`/`Subscription` classes.
+ * high-level MoQ API (src/moq/moq.ts) and parses received objects with the
+ * configured depackager (LOC or CMSF, see src/packager/media_packager.ts) into
+ * EncodedAudioChunk / EncodedVideoChunk for the player pipeline. All MoQ
+ * protocol work (session, control loop, subscriptions, object reception) lives
+ * in the `Moq`/`Subscription` classes.
  */
 export class MoqReceiver {
   private config: ReceiverConfig | null = null;
   private verbose = false;
 
   private moq: Moq | null = null;
+  // One depackager per media type, kept for the lifetime of the subscription:
+  // the CMSF one is stateful (it remembers the CMAF Header).
+  private depackagers: Record<string, MediaDepackager> = {};
+  // Media types already reported as "waiting for a CMAF Header", so joining
+  // mid-group logs once instead of once per object.
+  private waitingForHeader = new Set<string>();
 
   // -------------------------------------------------------------------------
   // Worker message dispatch
@@ -93,6 +109,7 @@ export class MoqReceiver {
       isSendingStats: cfg.isSendingStats ?? false,
       moqTracks: cfg.moqTracks ?? {},
       certificateHash: cfg.certificateHash ?? null,
+      packagerFormat: cfg.packagerFormat === 'cmaf' ? 'cmaf' : 'loc',
       verbose: cfg.verbose ?? false,
     };
     if (config.urlHostPort === '') {
@@ -170,9 +187,9 @@ export class MoqReceiver {
   // object reception (media)
   // -------------------------------------------------------------------------
 
-  // Build the per-object callback handed to Moq.subscribe. LOC does not put the
-  // media type on the wire (that is the catalog's job), so it is bound here from
-  // the track config.
+  // Build the per-object callback handed to Moq.subscribe. Neither format puts
+  // the media type on the wire (that is the catalog's job), so it is bound here
+  // from the track config.
   private objectHandler(mediaType: LOCMediaType): ObjectCallback {
     return (reader, extensionHeaders, length, groupId, objectId, isLastInGroup) =>
       this.handleObject(
@@ -209,13 +226,20 @@ export class MoqReceiver {
   ): Promise<boolean> {
     this.reportStats();
 
-    const packet = new LOCPackager(mediaType);
+    const packet = this.depackagerFor(mediaType);
     await packet.ParseData(reader, properties, length);
     const isEOF = packet.IsEof();
 
-    const locData = packet.GetData();
+    const parsed = packet.GetData();
     if (this.verbose) {
-      sendMessageToMain(WORKER_PREFIX, 'debug', `Decoded LOC: ${packet.GetDataStr()}`);
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'debug',
+        `Parsed ${this.config!.packagerFormat.toUpperCase()}: ${packet.GetDataStr()}`,
+      );
+    }
+    if (!this.isDecodable(mediaType, parsed)) {
+      return isEOF;
     }
 
     let chunk;
@@ -223,22 +247,22 @@ export class MoqReceiver {
     if (mediaType === 'audio') {
       appMediaType = 'audiochunk';
       chunk = new EncodedAudioChunk({
-        timestamp: this.toTrackTimebase(locData, mediaType),
+        timestamp: this.toTrackTimebase(parsed, mediaType),
         type: 'key',
-        data: locData.data,
+        data: parsed.data,
       });
     } else if (mediaType === 'video') {
       appMediaType = 'videochunk';
       chunk = new EncodedVideoChunk({
-        timestamp: this.toTrackTimebase(locData, mediaType),
-        // LOC Video Frame Marking: the publisher marks independent frames, so we
-        // do not need to inspect the payload for an IDR slice.
+        timestamp: this.toTrackTimebase(parsed, mediaType),
+        // Both formats mark independent frames (LOC Video Frame Marking, CMSF
+        // `trun` sample flags), so we never inspect the payload for an IDR slice.
         type: packet.IsDelta() ? 'delta' : 'key',
-        data: locData.data,
+        data: parsed.data,
       });
     } else {
       appMediaType = 'data';
-      chunk = locData.data;
+      chunk = parsed.data;
     }
 
     self.postMessage({
@@ -251,23 +275,63 @@ export class MoqReceiver {
       objectId,
       isLastInGroup,
       chunk,
-      codec: locData.codec,
-      // LOC Video Config / Audio Config: the WebCodecs decoder description.
-      metadata: locData.config,
+      codec: parsed.codec,
+      // The WebCodecs decoder description (LOC Video / Audio Config, or the
+      // CMAF Header sample entry).
+      metadata: parsed.config,
     });
 
     return isEOF;
   }
 
-  // Convert a LOC timestamp from the publisher's timescale into the timebase
-  // this player's pipeline runs the track at.
-  private toTrackTimebase(locData: LOCData, mediaType: LOCMediaType): number {
-    if (locData.timestamp === undefined || locData.timescale === undefined) {
-      throw new Error(`Received a ${mediaType} object with no LOC timestamp or timescale`);
+  // The depackager for one media type, created on first use and kept for the
+  // rest of the session: the CMSF one carries the track description across
+  // objects (see MediaDepackager).
+  private depackagerFor(mediaType: LOCMediaType): MediaDepackager {
+    let depackager = this.depackagers[mediaType];
+    if (depackager === undefined) {
+      depackager = createDepackager(this.config!.packagerFormat, mediaType);
+      this.depackagers[mediaType] = depackager;
+    }
+    return depackager;
+  }
+
+  /**
+   * A CMSF object that arrives before the first CMAF Header (which the
+   * publisher repeats at most once a second) describes neither its timing nor
+   * its codec, so it cannot be decoded. That is expected when joining mid-group:
+   * skip it and report once per media type instead of failing the session.
+   */
+  private isDecodable(mediaType: LOCMediaType, parsed: ParsedMediaData): boolean {
+    if (mediaType === 'data' || parsed.timescale !== undefined) {
+      if (this.waitingForHeader.delete(mediaType)) {
+        sendMessageToMain(WORKER_PREFIX, 'info', `Got the ${mediaType} CMAF Header, decoding now`);
+      }
+      return true;
+    }
+    if (this.config!.packagerFormat !== 'cmaf') {
+      return true;
+    }
+    if (!this.waitingForHeader.has(mediaType)) {
+      this.waitingForHeader.add(mediaType);
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'warning',
+        `Dropping ${mediaType} objects until a CMAF Header arrives (joined mid-group)`,
+      );
+    }
+    return false;
+  }
+
+  // Convert a received timestamp from the publisher's timescale into the
+  // timebase this player's pipeline runs the track at.
+  private toTrackTimebase(parsed: ParsedMediaData, mediaType: LOCMediaType): number {
+    if (parsed.timestamp === undefined || parsed.timescale === undefined) {
+      throw new Error(`Received a ${mediaType} object with no timestamp or timescale`);
     }
     return convertTimestamp(
-      locData.timestamp,
-      locData.timescale,
+      parsed.timestamp,
+      parsed.timescale,
       this.config!.moqTracks[mediaType].timebase,
     );
   }
@@ -286,5 +350,7 @@ export class MoqReceiver {
   handleStop(): void {
     this.moq?.close();
     this.moq = null;
+    this.depackagers = {};
+    this.waitingForHeader.clear();
   }
 }

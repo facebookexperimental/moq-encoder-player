@@ -124,6 +124,23 @@ export interface NewGroupOptions {
   priority: number;
 }
 
+/**
+ * What one finished wire unit cost: a subgroup stream (its whole group) under
+ * the subgroup mapping, or a single datagram object under the datagram one.
+ * Counted from the bytes actually written, so it excludes anything the send
+ * queue, the open-stream cap or a drop simulator skipped.
+ */
+export interface SubgroupBytes {
+  groupId: number;
+  objects: number;
+  // Object payload bytes, i.e. what the caller handed to sendObject.
+  payloadBytes: number;
+  // Everything MoQ wrote around those payloads: the subgroup header, the
+  // per-object headers (object id delta, payload length), the object properties
+  // and the end-of-group marker.
+  signalingBytes: number;
+}
+
 export interface TrackInfo {
   namespace: string[];
   name: string;
@@ -136,6 +153,9 @@ export interface TrackInfo {
   numOpenStreams: number;
   currentGroup: number;
   currentObject: number;
+  // Byte accounting of the last wire unit that finished, or undefined until one
+  // has. See SubgroupBytes.
+  lastSubgroup: SubgroupBytes | undefined;
 }
 
 export interface MoqInitOptions {
@@ -331,6 +351,11 @@ export class Track {
   // Set when a new group was dropped by the open-stream cap, so the rest of that
   // group's objects (deltas) are dropped too until the next group is accepted.
   private skipDeltasUntilNewGroup = false;
+
+  // Byte accounting of the wire units still being written, keyed by group id,
+  // and of the last one that finished. See SubgroupBytes.
+  private groupBytes = new Map<number, SubgroupBytes>();
+  private lastSubgroupBytes: SubgroupBytes | undefined = undefined;
 
   // Optional simulated packet loss on the send path (A/V-sync / loss-recovery
   // testing). null = disabled. The drop unit follows the mapping: one datagram
@@ -534,7 +559,30 @@ export class Track {
       numOpenStreams: this.openStreamCount,
       currentGroup: this.currentGroupSeq,
       currentObject: this.currentObjectSeq,
+      lastSubgroup: this.lastSubgroupBytes,
     };
+  }
+
+  // Byte accounting for the wire unit carrying this group, created on first use.
+  private bytesFor(groupId: number): SubgroupBytes {
+    let bytes = this.groupBytes.get(groupId);
+    if (bytes === undefined) {
+      bytes = { groupId, objects: 0, payloadBytes: 0, signalingBytes: 0 };
+      this.groupBytes.set(groupId, bytes);
+    }
+    return bytes;
+  }
+
+  // The wire unit is done (its stream was closed, or the datagram was sent):
+  // publish its byte accounting and stop tracking it.
+  private finishBytes(groupId: number, extraSignalingBytes = 0): void {
+    const bytes = this.groupBytes.get(groupId);
+    if (bytes === undefined) {
+      return;
+    }
+    bytes.signalingBytes += extraSignalingBytes;
+    this.groupBytes.delete(groupId);
+    this.lastSubgroupBytes = bytes;
   }
 
   /** Stop the track: drop the queue, close streams, send PUBLISH_DONE. */
@@ -563,6 +611,7 @@ export class Track {
       }
     }
     this.openStreams.clear();
+    this.groupBytes.clear();
     this.openStreamCount = 0;
 
     // draft-18: PUBLISH_DONE goes back on this request's own bidi stream (no
@@ -642,6 +691,8 @@ export class Track {
     const streams = this.openStreams;
     this.openStreams = new Map();
     this.groupLastObj.clear();
+    // Those groups end here, without an end-of-group marker.
+    this.groupBytes.clear();
     this.skipDeltasUntilNewGroup = false;
     for (const writer of streams.values()) {
       try {
@@ -811,7 +862,7 @@ export class Track {
     if (this.moqMapping === MoqMapping.ObjectPerDatagram) {
       const writer = this.moq._wt().datagrams.writable.getWriter();
       try {
-        await moqSendObjectPerDatagramToWriter(
+        const written = await moqSendObjectPerDatagramToWriter(
           writer,
           this.trackAlias,
           obj.groupId,
@@ -821,6 +872,13 @@ export class Track {
           obj.extensionHeaders,
           true,
         );
+        // One datagram is a complete wire unit on its own.
+        const payloadBytes = obj.data?.byteLength ?? 0;
+        const bytes = this.bytesFor(obj.groupId);
+        bytes.objects++;
+        bytes.payloadBytes += payloadBytes;
+        bytes.signalingBytes += written - payloadBytes;
+        this.finishBytes(obj.groupId);
       } finally {
         writer.releaseLock();
       }
@@ -839,7 +897,7 @@ export class Track {
       if (groupId !== obj.groupId) {
         this.openStreams.delete(groupId);
         this.groupLastObj.delete(groupId);
-        this.closeStream(writer);
+        this.closeStream(writer, groupId);
       }
     }
 
@@ -854,12 +912,27 @@ export class Track {
       writer = uniStream.getWriter();
       this.openStreams.set(obj.groupId, writer);
       this.openStreamCount++;
-      await moqSendSubgroupHeader(writer, this.trackAlias, obj.groupId, obj.priority);
+      this.bytesFor(obj.groupId).signalingBytes += await moqSendSubgroupHeader(
+        writer,
+        this.trackAlias,
+        obj.groupId,
+        obj.priority,
+      );
     }
 
     // Object id delta is always 0: one stream per group, ids tracked locally.
     try {
-      await moqSendObjectSubgroupToWriter(writer, 0, obj.data, obj.extensionHeaders);
+      const written = await moqSendObjectSubgroupToWriter(
+        writer,
+        0,
+        obj.data,
+        obj.extensionHeaders,
+      );
+      const payloadBytes = obj.data?.byteLength ?? 0;
+      const bytes = this.bytesFor(obj.groupId);
+      bytes.objects++;
+      bytes.payloadBytes += payloadBytes;
+      bytes.signalingBytes += written - payloadBytes;
     } catch (err) {
       // The stream was stopped/reset (e.g. the relay sent STOP_SENDING when the
       // subscriber left). Abandon it so we don't keep writing to a dead stream;
@@ -876,10 +949,13 @@ export class Track {
   // Close a rolled-off subgroup stream in the background: send end-of-group +
   // FIN (Object ID Delta 0), then drop it from openStreamCount once the close
   // settles. Best-effort — the relay may have already reset the stream.
-  private closeStream(writer: WritableStreamDefaultWriter<Uint8Array>): void {
+  private closeStream(writer: WritableStreamDefaultWriter<Uint8Array>, groupId: number): void {
     void moqSendObjectEndOfGroupToWriter(writer, 0, [], true)
+      .then((written) => this.finishBytes(groupId, written))
       .catch(() => {
-        // Stream was likely stopped/reset by the peer; just forget it.
+        // Stream was likely stopped/reset by the peer; the group is over either
+        // way, so publish what did reach the wire.
+        this.finishBytes(groupId);
       })
       .finally(() => {
         this.openStreamCount = Math.max(0, this.openStreamCount - 1);

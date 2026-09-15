@@ -378,3 +378,97 @@ describe('Moq.init ALPN negotiation', () => {
     ]);
   });
 });
+
+describe('Track byte accounting', () => {
+  // Like fakeMoq, but every unidirectional stream gets its own writer, so the
+  // bytes of one subgroup stream can be measured on their own.
+  function fakeMoqPerStream() {
+    const streams: number[][] = [];
+    const datagrams: number[] = [];
+    const makeWriter = (sink: number[]) => ({
+      write: (b: any) => {
+        sink.push(b.byteLength);
+        return Promise.resolve();
+      },
+      close: () => Promise.resolve(),
+      releaseLock: () => {},
+      ready: Promise.resolve(),
+    });
+    const wt = {
+      datagrams: { writable: { getWriter: () => makeWriter(datagrams) } },
+      createUnidirectionalStream: async () => {
+        const sink: number[] = [];
+        streams.push(sink);
+        return { getWriter: () => makeWriter(sink) };
+      },
+    };
+    const moq: any = {
+      _wt: () => wt,
+      _controlWriter: () => ({ getWriter: () => makeWriter([]) }),
+      _markObjectSent: () => {},
+    };
+    return { moq, streams, datagrams };
+  }
+
+  const total = (bytes: number[]) => bytes.reduce((acc, n) => acc + n, 0);
+
+  it('accounts a whole subgroup stream: payload + signaling = bytes on the wire', async () => {
+    const { moq, streams } = fakeMoqPerStream();
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+
+    track.sendObject(new Uint8Array(10), { priority: BASE_PRI });
+    await flush();
+    track.sendObject(new Uint8Array(20));
+    track.sendObject(new Uint8Array(30));
+    await flush();
+    expect(track.getInfo().lastSubgroup).toBeUndefined(); // still open
+
+    // Rolling to a new group closes the first stream, which completes it.
+    track.sendObject(new Uint8Array(5), { priority: BASE_PRI });
+    await flush();
+    await flush();
+
+    const subgroup = track.getInfo().lastSubgroup!;
+    expect(subgroup).toMatchObject({ groupId: 0, objects: 3, payloadBytes: 60 });
+    // Everything that stream carried: subgroup header, 3 object headers and the
+    // end-of-group marker on top of the 60 payload bytes.
+    expect(subgroup.payloadBytes + subgroup.signalingBytes).toBe(total(streams[0]));
+    expect(subgroup.signalingBytes).toBeGreaterThan(0);
+  });
+
+  it('counts object properties as signaling overhead', async () => {
+    const bare = fakeMoqPerStream();
+    const withProps = fakeMoqPerStream();
+    const properties = [{ name: 0x10, val: 1_234_567 }];
+
+    const run = async (fake: ReturnType<typeof fakeMoqPerStream>, props: any[]) => {
+      const track = makeTrack(fake.moq, MoqMapping.SubgroupPerGroup);
+      track._setForwarding(true);
+      track.sendObject(new Uint8Array(10), { priority: BASE_PRI }, props);
+      await flush();
+      track.sendObject(new Uint8Array(10), { priority: BASE_PRI }, props);
+      await flush();
+      await flush();
+      return track.getInfo().lastSubgroup!;
+    };
+
+    const plain = await run(bare, []);
+    const tagged = await run(withProps, properties);
+    expect(tagged.payloadBytes).toBe(plain.payloadBytes);
+    expect(tagged.signalingBytes).toBeGreaterThan(plain.signalingBytes);
+  });
+
+  it('treats each datagram as its own finished unit', async () => {
+    const { moq, datagrams } = fakeMoqPerStream();
+    const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
+    track._setForwarding(true);
+
+    track.sendObject(new Uint8Array(40), { priority: BASE_PRI });
+    await flush();
+
+    const subgroup = track.getInfo().lastSubgroup!;
+    expect(subgroup).toMatchObject({ groupId: 0, objects: 1, payloadBytes: 40 });
+    expect(subgroup.payloadBytes + subgroup.signalingBytes).toBe(total(datagrams));
+  });
+});

@@ -18,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 export * from './utils/utils.js';
 export * from './utils/ts_queue.js';
 export * from './utils/jitter_buffer.js';
+export * from './utils/media_dumper.js';
 
 // Media (H.264 / AVCC) helpers
 export * from './utils/media/avcc_parser.js';
@@ -31,8 +32,15 @@ export * from './moq/buffer_utils.js';
 export * from './moq/moqt.js';
 export * from './moq/moq.js';
 
-// Low Overhead Media Container packager
+// Media packagers: the common publisher interface plus the two formats,
+// Low Overhead Media Container (LOC) and CMAF
+export * from './packager/media_packager.js';
 export * from './packager/loc_packager.js';
+export * from './packager/cmaf/box_writer.js';
+export * from './packager/cmaf/box_reader.js';
+export * from './packager/cmaf/cmaf_init_segment.js';
+export * from './packager/cmaf/cmaf_packager.js';
+export * from './packager/cmaf/cmaf_depackager.js';
 
 // Render buffers
 export * from './render/video_render_buffer.js';

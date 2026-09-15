@@ -997,41 +997,44 @@ function moqCreateObjectPerDatagramBytes(
   return concatBuffer(msg);
 }
 
-export function moqSendSubgroupHeader(
+// These four return the number of bytes they put on the wire, so a caller can
+// account for the MoQ signaling overhead exactly (see Track's byte accounting)
+// instead of re-deriving varint sizes.
+
+export async function moqSendSubgroupHeader(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   trackAlias: number,
   groupSeq: number,
   publisherPriority: number,
-): Promise<void> {
-  return moqSendToWriter(
-    writer,
-    moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority),
-  );
+): Promise<number> {
+  const bytes = moqCreateSubgroupHeaderBytes(trackAlias, groupSeq, publisherPriority);
+  await moqSendToWriter(writer, bytes);
+  return bytes.byteLength;
 }
 
-export function moqSendObjectSubgroupToWriter(
+export async function moqSendObjectSubgroupToWriter(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   objSeqDelta: number,
   data: BufferSource | undefined,
   extensionHeaders: KvPair[],
-): Promise<void> {
-  return moqSendToWriter(writer, moqCreateObjectSubgroupBytes(objSeqDelta, data, extensionHeaders));
+): Promise<number> {
+  const bytes = moqCreateObjectSubgroupBytes(objSeqDelta, data, extensionHeaders);
+  await moqSendToWriter(writer, bytes);
+  return bytes.byteLength;
 }
 
-export function moqSendObjectEndOfGroupToWriter(
+export async function moqSendObjectEndOfGroupToWriter(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   objSeqDelta: number,
   extensionHeaders: KvPair[],
   closeStream?: boolean,
-): Promise<void> {
-  return moqSendToWriter(
-    writer,
-    moqCreateObjectEndOfGroupBytes(objSeqDelta, extensionHeaders),
-    closeStream,
-  );
+): Promise<number> {
+  const bytes = moqCreateObjectEndOfGroupBytes(objSeqDelta, extensionHeaders);
+  await moqSendToWriter(writer, bytes, closeStream);
+  return bytes.byteLength;
 }
 
-export function moqSendObjectPerDatagramToWriter(
+export async function moqSendObjectPerDatagramToWriter(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   trackAlias: number,
   groupSeq: number,
@@ -1040,19 +1043,18 @@ export function moqSendObjectPerDatagramToWriter(
   data: BufferSource | undefined,
   extensionHeaders: KvPair[],
   isEndOfGroup: boolean,
-): Promise<void> {
-  return moqSendToWriter(
-    writer,
-    moqCreateObjectPerDatagramBytes(
-      trackAlias,
-      groupSeq,
-      objSeq,
-      publisherPriority,
-      data,
-      extensionHeaders,
-      isEndOfGroup,
-    ),
+): Promise<number> {
+  const bytes = moqCreateObjectPerDatagramBytes(
+    trackAlias,
+    groupSeq,
+    objSeq,
+    publisherPriority,
+    data,
+    extensionHeaders,
+    isEndOfGroup,
   );
+  await moqSendToWriter(writer, bytes);
+  return bytes.byteLength;
 }
 
 export async function moqParseObjectHeader(
