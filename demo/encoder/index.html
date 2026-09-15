@@ -427,56 +427,37 @@ LICENSE file in the root directory of this source tree.
     let VERBOSE = false;
     let IS_LOCALHOST = false;
 
-    // Per-stream capture-time anchors
+    // AudioData and VideoFrame timestamps do not necessarily use the same origin.
+    // Rebase each stream through the wall clock captured alongside its first frame.
+    // The session origin is fixed before either capture worker starts, so a worker
+    // that starts late (for example while its script is fetched remotely) keeps that
+    // offset instead of making the older stream appear delayed during playback.
     const ptsCompensationData = {
         firstTsUs: {
             video: undefined,
             audio: undefined,
         },
-        lastTsUs: {
+        firstCaptureClkms: {
             video: undefined,
             audio: undefined,
         },
-        compensateTsUs: undefined
+        originClkms: undefined,
     };
 
-    // Anchor the capture PTS
-    function ensureCaptureAnchorVideo(tsUs) {
-        let ret = false;
-        if ((ptsCompensationData.firstTsUs.video != undefined) && (ptsCompensationData.firstTsUs.audio != undefined)) {
-            return ret;
+    function ensureCaptureAnchor(type, tsUs, captureClkms) {
+        if (ptsCompensationData.firstTsUs[type] === undefined) {
+            ptsCompensationData.firstTsUs[type] = tsUs;
+            ptsCompensationData.firstCaptureClkms[type] = captureClkms;
+            return true;
         }
-        if (ptsCompensationData.firstTsUs.video === undefined) {
-            ptsCompensationData.firstTsUs.video = tsUs
-            ret = true;
-        }
-        ptsCompensationData.lastTsUs.video = tsUs
-        if (ptsCompensationData.firstTsUs.audio != undefined) {
-            ptsCompensationData.compensateTsUs = ptsCompensationData.lastTsUs.video
-        }
-        return ret;
+        return false;
     }
-    function ensureCaptureAnchorAudio(tsUs) {
-        let ret = false;
-        if ((ptsCompensationData.firstTsUs.video != undefined) && (ptsCompensationData.firstTsUs.audio != undefined)) {
-            return ret;
-        }
-        if (ptsCompensationData.firstTsUs.audio === undefined) {
-            ptsCompensationData.firstTsUs.audio = tsUs
-            ret = true;
-        }
-        ptsCompensationData.lastTsUs.audio = tsUs
-        if (ptsCompensationData.firstTsUs.video != undefined) {
-            ptsCompensationData.compensateTsUs = ptsCompensationData.lastTsUs.audio
-        }
-        return ret;
-    }
+
     // A/V-aligned presentation timestamp (microseconds, ~0 origin).
     function compensatedTsFor(type, tsUs) {
-        if (ptsCompensationData.compensateTsUs === undefined) {
-            return 0
-        }
-        return (tsUs - ptsCompensationData.firstTsUs[type]) + ptsCompensationData.compensateTsUs;
+        const elapsedMediaUs = tsUs - ptsCompensationData.firstTsUs[type];
+        const streamStartUs = (ptsCompensationData.firstCaptureClkms[type] - ptsCompensationData.originClkms) * 1000;
+        return elapsedMediaUs + streamStartUs;
     }
 
     function resetCompensateTs() {
@@ -484,11 +465,11 @@ LICENSE file in the root directory of this source tree.
             video: undefined,
             audio: undefined,
         };
-        ptsCompensationData.lastTsUs = {
+        ptsCompensationData.firstCaptureClkms = {
             video: undefined,
             audio: undefined,
         };
-        ptsCompensationData.compensateTsUs = undefined;
+        ptsCompensationData.originClkms = Date.now();
     }
 
     // Video encoder config
@@ -1696,7 +1677,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.data;
             // Anchor the video capture clock on its first frame.
-            const firstVideoFrame = ensureCaptureAnchorVideo(vFrame.timestamp)
+            const firstVideoFrame = ensureCaptureAnchor("video", vFrame.timestamp, e.data.clkms)
             if (firstVideoFrame) {
                 refreshFirstTsUI();
             }
@@ -1706,7 +1687,7 @@ LICENSE file in the root directory of this source tree.
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
-            const firstAudioFrame = ensureCaptureAnchorAudio(aFrame.timestamp)
+            const firstAudioFrame = ensureCaptureAnchor("audio", aFrame.timestamp, e.data.clkms)
             if (firstAudioFrame) {
                 refreshFirstTsUI();
             }
@@ -1746,7 +1727,7 @@ LICENSE file in the root directory of this source tree.
             const compensatedTs = compensatedTsFor("audio", chunk.timestamp);
 
             updateEncodedAudioTSUI(chunk.timestamp, compensatedTs);
-            // TODO: Provide encoding video latency
+            // TODO: Provide encoding Audio latency
             // updateEncodingAudioLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, codec});
@@ -1826,11 +1807,9 @@ LICENSE file in the root directory of this source tree.
         list.appendChild(entry);
     }
 
-    // Repaint both "first TS" rows once both streams are anchored: the origin drops
-    // when the second anchor turns out to be older than the first one we saw, which
-    // changes the compensated value already shown for the stream that anchored first.
+    // Repaint both "first TS" rows once both streams are anchored.
     function refreshFirstTsUI() {
-        if (ptsCompensationData.compensateTsUs != undefined) {
+        if (ptsCompensationData.firstTsUs.video != undefined && ptsCompensationData.firstTsUs.audio != undefined) {
             updateFirstTsUIbyType("video", ptsCompensationData.firstTsUs.video, compensatedTsFor("video", ptsCompensationData.firstTsUs.video));
             updateFirstTsUIbyType("audio", ptsCompensationData.firstTsUs.audio, compensatedTsFor("audio", ptsCompensationData.firstTsUs.audio));
         }
