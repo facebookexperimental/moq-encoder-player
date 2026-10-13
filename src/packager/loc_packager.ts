@@ -7,6 +7,9 @@ LICENSE file in the root directory of this source tree.
 
 // Follows "draft-ietf-moq-loc-04": https://datatracker.ietf.org/doc/draft-ietf-moq-loc/
 //
+// No LOC Private Properties are sent, but the (empty) Private Properties block
+// still prefixes every audio / video payload, as the draft requires.
+//
 // This is draft 04 PLUS the Codecstring property (LOC_PROP_CODECSTRING, 0x11),
 // which draft 04 does not register. That addition is required here, not
 // optional: LOC puts no media type on the wire and this project has no catalog,
@@ -15,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 
 import { buffRead, readUntilEof } from '../moq/buffer_utils.js';
 import { moqCreateKvPair, type KvPair } from '../moq/moqt.js';
+import { varIntToNumbeFromBuffer } from '../moq/varint.js';
 import type { MediaPackager, MediaDepackager } from './media_packager.js';
 
 export const LOC_PACKAGER_VERSION = '04+codecstringPR';
@@ -35,6 +39,14 @@ export const LOC_PROP_CODECSTRING = 0x11;
 const FRAME_MARKING_START = 0x80;
 const FRAME_MARKING_END = 0x40;
 const FRAME_MARKING_INDEPENDENT = 0x20;
+
+// LOC Private Properties (LOC §2.2, §3.1.3): the MoQ Object Payload is the
+// Private Properties block followed by the LOC Payload. The block is always
+// present, even when empty, so a receiver can find where the media starts. Its
+// type is the Secure Objects Private properties type (0x0A) and its value is
+// length-prefixed. We send no private properties, so it is always 0x0A 0x00.
+export const LOC_PRIVATE_PROPERTIES_TYPE = 0x0a;
+const LOC_EMPTY_PRIVATE_PROPERTIES = new Uint8Array([LOC_PRIVATE_PROPERTIES_TYPE, 0x00]);
 
 export type LOCMediaType = 'audio' | 'video' | 'data';
 
@@ -115,15 +127,16 @@ export class LOCPackager implements MediaPackager, MediaDepackager {
     this.parseProperties(properties);
 
     // Read payload with length
+    let payload: any;
     if (typeof payloadLength !== 'undefined') {
       const ret = await buffRead(readerStream, payloadLength);
-      this.data = ret.buff;
+      payload = ret.buff;
       this.eof = ret.eof;
     } else {
-      const buff = await readUntilEof(readerStream, this.READ_BLOCK_SIZE);
-      this.data = buff;
+      payload = await readUntilEof(readerStream, this.READ_BLOCK_SIZE);
       this.eof = true;
     }
+    this.data = this.mediaType === 'data' ? payload : skipPrivateProperties(payload);
   }
 
   // Properties this implementation does not know are ignored: LOC allows other
@@ -163,7 +176,15 @@ export class LOCPackager implements MediaPackager, MediaDepackager {
   }
 
   PayloadToBytes() {
-    return this.data;
+    // A data track is not LOC: its payload goes out untouched.
+    if (this.mediaType === 'data') {
+      return this.data;
+    }
+    const payload = new Uint8Array(LOC_EMPTY_PRIVATE_PROPERTIES.byteLength + this.data.byteLength);
+    payload.set(LOC_EMPTY_PRIVATE_PROPERTIES, 0);
+    const media = this.data instanceof Uint8Array ? this.data : new Uint8Array(this.data);
+    payload.set(media, LOC_EMPTY_PRIVATE_PROPERTIES.byteLength);
+    return payload;
   }
 
   Properties(): KvPair[] {
@@ -217,6 +238,36 @@ export class LOCPackager implements MediaPackager, MediaDepackager {
   IsDelta() {
     return this.isDelta;
   }
+}
+
+// Returns the LOC Payload that follows the Private Properties block at the start
+// of `payload`. Private properties are not used here, so their contents are
+// skipped rather than parsed.
+function skipPrivateProperties(payload: ArrayBuffer | Uint8Array): Uint8Array {
+  const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  // varIntToNumbeFromBuffer reads from the start of an ArrayBuffer, so hand it
+  // one that begins where the payload does.
+  const buff =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : bytes.slice().buffer;
+  if (buff.byteLength === 0) {
+    throw new Error('LOC payload is missing its private properties block');
+  }
+  const type = varIntToNumbeFromBuffer(buff, 0);
+  if (type.num !== LOC_PRIVATE_PROPERTIES_TYPE) {
+    throw new Error(
+      `LOC payload must start with private properties (type 0x${LOC_PRIVATE_PROPERTIES_TYPE.toString(16)}), got type 0x${type.num?.toString(16)}`,
+    );
+  }
+  const length = varIntToNumbeFromBuffer(buff, type.byteLength);
+  const start = type.byteLength + length.byteLength + (length.num ?? 0);
+  if (start > buff.byteLength) {
+    throw new Error(
+      `LOC private properties length (${length.num}) exceeds the payload (${buff.byteLength} bytes)`,
+    );
+  }
+  return new Uint8Array(buff, start);
 }
 
 export function LOCgetTrackName(trackPrefix: string, isAudio: boolean) {

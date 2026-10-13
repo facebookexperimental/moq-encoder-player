@@ -213,6 +213,63 @@ function createByobReadable(bytes: Uint8Array) {
   }) as any;
 }
 
+describe('LOC private properties', () => {
+  const media = new Uint8Array([1, 2, 3, 4, 5]);
+
+  async function parsePayload(mediaType: LOCMediaType, payload: Uint8Array, withLength: boolean) {
+    const received = new LOCPackager(mediaType);
+    await received.ParseData(
+      createByobReadable(payload),
+      [],
+      withLength ? payload.byteLength : undefined,
+    );
+    return received;
+  }
+
+  it.each(['video', 'audio'] as LOCMediaType[])(
+    'prefixes the %s payload with an empty private properties block',
+    (mediaType) => {
+      const packet = new LOCPackager(mediaType);
+      packet.SetData(0, 1_000_000, 'codec', undefined, media, false);
+      expect(Array.from(packet.PayloadToBytes())).toEqual([0x0a, 0x00, ...media]);
+    },
+  );
+
+  it('leaves a data payload untouched', () => {
+    const packet = new LOCPackager('data');
+    packet.SetData(undefined, undefined, undefined, undefined, media, false);
+    expect(packet.PayloadToBytes()).toBe(media);
+  });
+
+  it.each([true, false])('strips the block on receive (known length: %s)', async (withLength) => {
+    const packet = new LOCPackager('video');
+    packet.SetData(0, 1_000_000, 'codec', undefined, media, false);
+    const received = await parsePayload('video', packet.PayloadToBytes(), withLength);
+    expect(Array.from(received.GetData().data)).toEqual(Array.from(media));
+  });
+
+  it('skips private properties it receives', async () => {
+    const payload = new Uint8Array([0x0a, 0x03, 0x0c, 0x01, 0x7f, ...media]);
+    const received = await parsePayload('audio', payload, true);
+    expect(Array.from(received.GetData().data)).toEqual(Array.from(media));
+  });
+
+  it('does not strip anything from a data payload', async () => {
+    const received = await parsePayload('data', media, true);
+    expect(Array.from(new Uint8Array(received.GetData().data))).toEqual(Array.from(media));
+  });
+
+  it('rejects a media payload without the block', async () => {
+    await expect(parsePayload('video', media, true)).rejects.toThrow(/private properties/);
+  });
+
+  it('rejects a private properties length past the end of the payload', async () => {
+    await expect(parsePayload('video', new Uint8Array([0x0a, 0x05, 0x01]), true)).rejects.toThrow(
+      /exceeds the payload/,
+    );
+  });
+});
+
 describe('LOCgetTrackName', () => {
   it('suffixes the track prefix per media type', () => {
     expect(LOCgetTrackName('room1/', true)).toBe('room1/audio0');
