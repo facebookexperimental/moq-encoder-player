@@ -89,6 +89,7 @@ import {
   wireHoldConfigIsActive,
   type WireHoldConfig,
 } from './network_simulator.js';
+import { ReadStreamClosed } from './buffer_utils.js';
 
 const LOG_PREFIX = '[MOQ]';
 
@@ -1775,6 +1776,9 @@ export class Moq {
     let isEOF = false;
     let numObjRead = 0;
     let endOfGroupSignaled = false;
+    // False when the stream was cut short (reset, session lost) rather than
+    // FIN'd: then the last object read is NOT the end of its group.
+    let finishedCleanly = true;
     // Reconstruct the per-object id from arrival order: the subgroup wire format
     // carries an object-id delta of 0 for every object (see writeObject), so the
     // parsed objSeq is unusable. QUIC delivers a subgroup stream in order and the
@@ -1813,6 +1817,9 @@ export class Moq {
           (err instanceof WebTransportError && err.message.includes('The session is closed'))
         ) {
           isEOF = true;
+          // A FIN surfaces as our own ReadStreamClosed; anything else is a reset
+          // or a lost session (e.g. the relay died mid-group).
+          finishedCleanly = err instanceof ReadStreamClosed;
         } else {
           throw err;
         }
@@ -1824,8 +1831,10 @@ export class Moq {
     // single object is delivered, before the publisher's trailing marker rolls
     // out on the next group) -- the finished stream still means the group is
     // complete at the last object read. Signal it so the receiver does not treat
-    // the next group's first object as a discontinuity.
-    if (!endOfGroupSignaled && objIndex > 0) {
+    // the next group's first object as a discontinuity. A stream cut short says
+    // nothing about where the group ends (another relay may still deliver the
+    // rest of it), so it must not signal one.
+    if (!endOfGroupSignaled && finishedCleanly && objIndex > 0) {
       sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
     }
   }
