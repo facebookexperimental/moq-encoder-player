@@ -125,6 +125,16 @@ export interface NewGroupOptions {
 }
 
 /**
+ * Caller-assigned (group, object) ids for `Track.sendObject`. Lets several
+ * tracks (e.g. the same track published to a main and a backup relay) put the
+ * very same object ids on the wire, whatever each one drops.
+ */
+export interface ObjectIds {
+  groupId: number;
+  objId: number;
+}
+
+/**
  * What one finished wire unit cost: a subgroup stream (its whole group) under
  * the subgroup mapping, or a single datagram object under the datagram one.
  * Counted from the bytes actually written, so it excludes anything the send
@@ -416,12 +426,18 @@ export class Track {
    * the pending send queue is already at `maxQueuedObjects`, or (subgroup
    * mapping) when starting a new group would exceed `maxOpenStreams` — in which
    * case the whole group is dropped until a later group finds room.
+   *
+   * `ids` overrides the track's own sequencing. The track can then not invent a
+   * group start, so instead of opening a fresh group (first object, resume after
+   * Forward State 0) it drops objects until the caller starts a new group, and it
+   * drops the rest of any group whose first object it did not accept.
    */
   sendObject(
     data: BufferSource | undefined,
     newGroupOptions?: NewGroupOptions,
     extensionHeaders: KvPair[] = [],
     callback?: (obj: ObjData) => void,
+    ids?: ObjectIds,
   ): ObjData {
     if (this.closed) {
       return new ObjData(this, -1, -1, 'dropped', this.currentGroupPriority);
@@ -446,7 +462,17 @@ export class Track {
     // pause were reset (by us) and/or STOP_SENDING'd by the relay, so we must
     // open new subgroup streams and must not reuse Object IDs within an
     // already-sent group (which would make the track malformed).
-    if (this.resumeNeedsNewGroup) {
+    if (ids !== undefined) {
+      if (newGroup) {
+        this.resumeNeedsNewGroup = false;
+      } else if (
+        !this.firstObjectSent ||
+        this.resumeNeedsNewGroup ||
+        ids.groupId !== this.currentGroupSeq
+      ) {
+        return new ObjData(this, ids.groupId, ids.objId, 'dropped', this.currentGroupPriority);
+      }
+    } else if (this.resumeNeedsNewGroup) {
       newGroup = true;
       this.resumeNeedsNewGroup = false;
     }
@@ -483,7 +509,8 @@ export class Track {
     if (newGroupOptions !== undefined) {
       this.currentGroupPriority = newGroupOptions.priority;
     }
-    const { groupId, objId } = this.advanceSequence(newGroup);
+    const { groupId, objId } =
+      ids !== undefined ? this.adoptSequence(ids) : this.advanceSequence(newGroup);
     const obj = new ObjData(
       this,
       groupId,
@@ -751,6 +778,14 @@ export class Track {
     const objId = this.currentObjectSeq;
     this.currentObjectSeq++;
     return { groupId, objId };
+  }
+
+  // Take caller-assigned ids, keeping the counters consistent with them.
+  private adoptSequence(ids: ObjectIds): ObjectIds {
+    this.firstObjectSent = true;
+    this.currentGroupSeq = ids.groupId;
+    this.currentObjectSeq = ids.objId + 1;
+    return { groupId: ids.groupId, objId: ids.objId };
   }
 
   // Drain the queue sequentially (preserves stream write ordering).

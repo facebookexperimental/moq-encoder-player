@@ -43,6 +43,10 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">MOQT WT Relay:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>
+                <label>Use backup relay: <input type="checkbox" id="useBackupRelay"></label>
+                <label id="wtBackupDestData" hidden>MOQT WT backup relay:<input id="wtBackupServerUrl" type="text"
+                        value="https://localhost:4435/moq" size="64"></label>
+                <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
@@ -199,31 +203,48 @@ LICENSE file in the root directory of this source tree.
                 <legend>Drop</legend>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceDropVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
-                    <button id="btnForceDropVideo" type="button" disabled>Video</button>
+                    <button id="btnForceDropVideo" type="button" disabled>Main Video</button>
+                    <button id="btnForceDropVideoBackup" type="button" disabled>Backup Video</button>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceDropAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
-                    <button id="btnForceDropAudio" type="button" disabled>Audio</button>
+                    <button id="btnForceDropAudio" type="button" disabled>Main Audio</button>
+                    <button id="btnForceDropAudioBackup" type="button" disabled>Backup Audio</button>
                 </div>
             </fieldset>
             <fieldset class="settings-box" style="display:flex; flex-direction:column; gap:6px; align-items:stretch">
                 <legend>Hold</legend>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceHoldVideoBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
-                    <button id="btnForceHoldVideo" type="button" disabled>Video</button>
+                    <button id="btnForceHoldVideo" type="button" disabled>Main Video</button>
+                    <button id="btnForceHoldVideoBackup" type="button" disabled>Backup Video</button>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center">
                     <input id="forceHoldAudioBurst" type="number" min="1" max="100000" step="1" value="1" size="6">
-                    <button id="btnForceHoldAudio" type="button" disabled>Audio</button>
+                    <button id="btnForceHoldAudio" type="button" disabled>Main Audio</button>
+                    <button id="btnForceHoldAudioBackup" type="button" disabled>Backup Audio</button>
                 </div>
             </fieldset>
         </div>
     </div>
 
-    <!-- Send queue / open streams timeline (last 60s) -->
+    <!-- Send queue / open streams timeline (last 60s), one per relay -->
     <div class="boxed">
-        <h2>Send queue / open streams timeline (last 60s)</h2>
+        <h2>Main: Send queue / open streams timeline (last 60s)</h2>
         <canvas id="inflightTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio queued</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video queued</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #d62728;vertical-align:middle"></span> Audio open streams</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #1f77b4;vertical-align:middle"></span> Video open streams</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#d62728;opacity:0.45;vertical-align:middle"></span> Audio packet loss</label>
+            <label><span style="display:inline-block;width:6px;height:14px;background:#1f77b4;opacity:0.45;vertical-align:middle"></span> Video packet loss</label>
+        </div>
+    </div>
+
+    <div class="boxed">
+        <h2>Backup: Send queue / open streams timeline (last 60s)</h2>
+        <canvas id="inflightTimelineBackup" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Audio queued</label>
             <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Video queued</label>
@@ -239,8 +260,10 @@ LICENSE file in the root directory of this source tree.
         <h2><span id="overheadTitleAudio">Audio</span> overhead (last 60s)</h2>
         <canvas id="overheadTimelineAudio" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
-            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Overhead % of payload</label>
-            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #d62728;vertical-align:middle"></span> Overhead bytes</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Main: Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #d62728;vertical-align:middle"></span> Main: Overhead bytes</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#9467bd;vertical-align:middle"></span> Backup: Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #9467bd;vertical-align:middle"></span> Backup: Overhead bytes</label>
         </div>
     </div>
 
@@ -248,8 +271,10 @@ LICENSE file in the root directory of this source tree.
         <h2><span id="overheadTitleVideo">Video</span> overhead (last 60s)</h2>
         <canvas id="overheadTimelineVideo" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
-            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Overhead % of payload</label>
-            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #1f77b4;vertical-align:middle"></span> Overhead bytes</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Main: Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #1f77b4;vertical-align:middle"></span> Main: Overhead bytes</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#2ca02c;vertical-align:middle"></span> Backup: Overhead % of payload</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #2ca02c;vertical-align:middle"></span> Backup: Overhead bytes</label>
             <div class="clear"></div>
             <label>One point per subgroup sent. Overhead = packager (CMSF boxes / CMAF Header, none for LOC) + MoQ signaling (subgroup header, object headers, properties, end of group). % = overhead / payload, so it goes over 100% when the overhead is bigger than the media itself</label>
         </div>
@@ -257,15 +282,17 @@ LICENSE file in the root directory of this source tree.
 
     <!-- Stats (tabbed, defaults to "Dropped data") -->
     <div class="tabs">
-        <button type="button" class="tab-btn active" data-tab="tabDropped">Dropped data</button>
+        <button type="button" class="tab-btn active" data-tab="tabDropped">Main: Dropped data</button>
+        <button type="button" class="tab-btn" data-tab="tabDroppedBackup">Backup: Dropped data</button>
         <button type="button" class="tab-btn" data-tab="tabCapture">Capture</button>
         <button type="button" class="tab-btn" data-tab="tabEncoder">Encoder output</button>
-        <button type="button" class="tab-btn" data-tab="tabMuxer">Muxer sender</button>
+        <button type="button" class="tab-btn" data-tab="tabMuxer">Main: Muxer sender</button>
+        <button type="button" class="tab-btn" data-tab="tabMuxerBackup">Backup: Muxer sender</button>
         <button type="button" class="tab-btn" data-tab="tabOverhead">Data overhead</button>
     </div>
     <div class="tab-panels">
         <div id="tabDropped" class="boxed tab-panel active">
-            <h2>Dropped data (frames / chunks):</h2>
+            <h2>Main: Dropped data (frames / chunks):</h2>
             <div class="styleform">
                 <form>
                     <label>Total dropped audio chunks: <input id="totalAudioChunksDropped" type="text" value=""
@@ -278,6 +305,21 @@ LICENSE file in the root directory of this source tree.
             </div>
             <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
             <ol id="droppedFrames"></ol>
+        </div>
+        <div id="tabDroppedBackup" class="boxed tab-panel">
+            <h2>Backup: Dropped data (frames / chunks):</h2>
+            <div class="styleform">
+                <form>
+                    <label>Total dropped audio chunks: <input id="totalAudioChunksDroppedBackup" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                    <label>Total dropped video chunks: <input id="totalVideoChunksDroppedBackup" type="text" value=""
+                            readonly></label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+            <label for="chkLogDroppedFramesBackup">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFramesBackup"></label>
+            <ol id="droppedFramesBackup"></ol>
         </div>
         <div id="tabCapture" class="boxed tab-panel">
             <h2>Capture(uncompressed domain)</h2>
@@ -319,7 +361,7 @@ LICENSE file in the root directory of this source tree.
             </div>
         </div>
         <div id="tabMuxer" class="boxed tab-panel">
-            <h2>Muxer sender</h2>
+            <h2>Main: Muxer sender</h2>
             <div>
                 <h3>Send queue / open streams</h3>
                 <div class="styleform">
@@ -334,6 +376,28 @@ LICENSE file in the root directory of this source tree.
                                 readonly></label>
                         <div class="clear"></div>
                         <label>Open video streams:<input id="uploadStatsVideoStreams" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div id="tabMuxerBackup" class="boxed tab-panel">
+            <h2>Backup: Muxer sender</h2>
+            <div>
+                <h3>Send queue / open streams</h3>
+                <div class="styleform">
+                    <form>
+                        <label>Queued audio objects:<input id="uploadStatsAudioQueuedBackup" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Queued video objects:<input id="uploadStatsVideoQueuedBackup" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Open audio streams:<input id="uploadStatsAudioStreamsBackup" type="text" value=""
+                                readonly></label>
+                        <div class="clear"></div>
+                        <label>Open video streams:<input id="uploadStatsVideoStreamsBackup" type="text" value=""
                                 readonly></label>
                         <div class="clear"></div>
                     </form>
@@ -504,7 +568,7 @@ LICENSE file in the root directory of this source tree.
     const DUMP_MAX_OBJECTS = 3000;
 
     // To keep some stats
-    let dropChunksTotals = {};
+    let dropChunksTotals = { main: {}, backup: {} };
     let statsHelper = {};
 
     function returnMax(varName, val) {
@@ -523,6 +587,8 @@ LICENSE file in the root directory of this source tree.
 
     const muxerSenderConfig = {
         urlHostPort: '',
+        // '' = no backup relay
+        backupUrlHostPort: '',
         urlPath: '',
 
         keepAlivesEveryMs: 5000,
@@ -575,11 +641,26 @@ LICENSE file in the root directory of this source tree.
     const TIMELINE_WINDOW_MS = 60000; // 60s shown on X axis
     const TIMELINE_AUDIO_COLOR = '#d62728';
     const TIMELINE_VIDEO_COLOR = '#1f77b4';
-    // { tMs, audioQueued, videoQueued, audioStreams, videoStreams } relative to session start
-    let timelineSamples = [];
-    let timelineDrops = [];   // { tMs, mediaType, cum } one entry per dropped packet
-    let dropCum = { audio: 0, video: 0 }; // running session totals of dropped packets
+    // The overhead charts plot both relays: main in the track color, backup in these
+    const OVERHEAD_BACKUP_AUDIO_COLOR = '#9467bd';
+    const OVERHEAD_BACKUP_VIDEO_COLOR = '#2ca02c';
+    // One timeline per relay connection, each drawn on its own canvas
+    const RELAYS = ['main', 'backup'];
+    const TIMELINE_CANVAS_IDS = { main: 'inflightTimeline', backup: 'inflightTimelineBackup' };
+    function newRelayTimeline() {
+        return {
+            samples: [], // { tMs, audioQueued, videoQueued, audioStreams, videoStreams } relative to session start
+            drops: [], // { tMs, mediaType, cum } one entry per dropped packet
+            dropCum: { audio: 0, video: 0 }, // running session totals of dropped packets
+        };
+    }
+    let timelines = { main: newRelayTimeline(), backup: newRelayTimeline() };
     let timelineStartMs = -1; // Date.now() when start was pressed
+
+    // The backup relay's UI elements share the main ones' ids plus "Backup".
+    function relayElementId(id, relay) {
+        return relay === 'backup' ? `${id}Backup` : id;
+    }
     let timelineAnimFrame = null;
 
     // Every axis follows the data currently on screen, with 10% of headroom so
@@ -591,10 +672,8 @@ LICENSE file in the root directory of this source tree.
 
     function startTimeline() {
         // Clear and restart on every Start press
-        timelineSamples = [];
-        timelineDrops = [];
-        overheadSamples = { audio: [], video: [] };
-        dropCum = { audio: 0, video: 0 };
+        timelines = { main: newRelayTimeline(), backup: newRelayTimeline() };
+        overheadSamples = newOverheadSamples();
         timelineStartMs = Date.now();
         if (timelineAnimFrame === null) {
             timelineAnimFrame = requestAnimationFrame(drawTimeline);
@@ -608,30 +687,31 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function addTimelineSample(audioQueued, videoQueued, audioStreams, videoStreams) {
-        if (timelineStartMs < 0) {
+    function addTimelineSample(relay, audioQueued, videoQueued, audioStreams, videoStreams) {
+        if (timelineStartMs < 0 || !(relay in timelines)) {
             return;
         }
-        timelineSamples.push({
+        timelines[relay].samples.push({
             tMs: Date.now() - timelineStartMs,
             audioQueued, videoQueued, audioStreams, videoStreams,
         });
     }
 
-    function addTimelineDrop(mediaType) {
-        if (timelineStartMs < 0) {
+    function addTimelineDrop(relay, mediaType) {
+        if (timelineStartMs < 0 || !(relay in timelines)) {
             return;
         }
         if (mediaType !== 'audio' && mediaType !== 'video') {
             return;
         }
-        dropCum[mediaType]++;
-        timelineDrops.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: dropCum[mediaType] });
+        const timeline = timelines[relay];
+        timeline.dropCum[mediaType]++;
+        timeline.drops.push({ tMs: Date.now() - timelineStartMs, mediaType, cum: timeline.dropCum[mediaType] });
     }
 
-    function drawTimelineDrops(ctx, w, h, nowMs, rightYMax) {
-        for (let i = 0; i < timelineDrops.length; i++) {
-            const d = timelineDrops[i];
+    function drawTimelineDrops(ctx, w, h, nowMs, rightYMax, drops) {
+        for (let i = 0; i < drops.length; i++) {
+            const d = drops[i];
             // Right edge = now, anything older moves toward the left edge
             const x = w * (1 - (nowMs - d.tMs) / TIMELINE_WINDOW_MS);
             // Height encodes the cumulative packet loss for this media type, scaled to the right axis
@@ -644,14 +724,14 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function drawTimelineSeries(ctx, w, h, nowMs, key, yMax, color, dashed) {
+    function drawTimelineSeries(ctx, w, h, nowMs, samples, key, yMax, color, dashed) {
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.setLineDash(dashed ? [5, 4] : []);
         ctx.beginPath();
         let started = false;
-        for (let i = 0; i < timelineSamples.length; i++) {
-            const s = timelineSamples[i];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
             // Right edge = now, anything older moves toward the left edge
             const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
             const y = h - (s[key] / yMax) * h;
@@ -667,8 +747,19 @@ LICENSE file in the root directory of this source tree.
     }
 
     function drawTimeline() {
-        const canvas = document.getElementById('inflightTimeline');
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+        for (const relay of RELAYS) {
+            drawRelayTimeline(relay, nowMs);
+        }
+        drawOverheadTimeline(nowMs);
+
+        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+    }
+
+    function drawRelayTimeline(relay, nowMs) {
+        const canvas = document.getElementById(TIMELINE_CANVAS_IDS[relay]);
         const ctx = canvas.getContext('2d');
+        const { samples, drops, dropCum } = timelines[relay];
 
         // Match the canvas backing store to its displayed size for crisp lines
         const cssW = canvas.clientWidth;
@@ -682,21 +773,19 @@ LICENSE file in the root directory of this source tree.
 
         ctx.clearRect(0, 0, w, h);
 
-        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
-
         // Drop samples that scrolled off the left edge
         const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
-        while (timelineSamples.length > 0 && timelineSamples[0].tMs < oldestVisible) {
-            timelineSamples.shift();
+        while (samples.length > 0 && samples[0].tMs < oldestVisible) {
+            samples.shift();
         }
-        while (timelineDrops.length > 0 && timelineDrops[0].tMs < oldestVisible) {
-            timelineDrops.shift();
+        while (drops.length > 0 && drops[0].tMs < oldestVisible) {
+            drops.shift();
         }
 
         // Both axes follow what is on screen: queued objects / open streams on the
         // left, cumulative packet loss on the right.
         let leftMax = 0;
-        for (const s of timelineSamples) {
+        for (const s of samples) {
             leftMax = Math.max(leftMax, s.audioQueued, s.videoQueued, s.audioStreams, s.videoStreams);
         }
         const timelineYMax = axisMax(leftMax);
@@ -737,17 +826,13 @@ LICENSE file in the root directory of this source tree.
         ctx.fillText('loss ' + Math.round(rightYMax), w - 2, 2);
 
         // Packet-loss bars (one per dropped packet, height = cumulative loss for its media type)
-        drawTimelineDrops(ctx, w, h, nowMs, rightYMax);
+        drawTimelineDrops(ctx, w, h, nowMs, rightYMax, drops);
 
         // Queued objects (solid) and open streams (dashed) per media type
-        drawTimelineSeries(ctx, w, h, nowMs, 'audioQueued', timelineYMax, TIMELINE_AUDIO_COLOR, false);
-        drawTimelineSeries(ctx, w, h, nowMs, 'videoQueued', timelineYMax, TIMELINE_VIDEO_COLOR, false);
-        drawTimelineSeries(ctx, w, h, nowMs, 'audioStreams', timelineYMax, TIMELINE_AUDIO_COLOR, true);
-        drawTimelineSeries(ctx, w, h, nowMs, 'videoStreams', timelineYMax, TIMELINE_VIDEO_COLOR, true);
-
-        drawOverheadTimeline(nowMs);
-
-        timelineAnimFrame = requestAnimationFrame(drawTimeline);
+        drawTimelineSeries(ctx, w, h, nowMs, samples, 'audioQueued', timelineYMax, TIMELINE_AUDIO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, samples, 'videoQueued', timelineYMax, TIMELINE_VIDEO_COLOR, false);
+        drawTimelineSeries(ctx, w, h, nowMs, samples, 'audioStreams', timelineYMax, TIMELINE_AUDIO_COLOR, true);
+        drawTimelineSeries(ctx, w, h, nowMs, samples, 'videoStreams', timelineYMax, TIMELINE_VIDEO_COLOR, true);
     }
 
     // ---------------------------------------------------------------------
@@ -757,10 +842,13 @@ LICENSE file in the root directory of this source tree.
     // ---------------------------------------------------------------------
 
     // { tMs, percent, overheadBytes } per media type, relative to session start
-    let overheadSamples = { audio: [], video: [] };
+    function newOverheadSamples() {
+        return { main: { audio: [], video: [] }, backup: { audio: [], video: [] } };
+    }
+    let overheadSamples = newOverheadSamples();
 
-    function addOverheadSample(mediaType, payloadBytes, overheadBytes) {
-        const series = overheadSamples[mediaType];
+    function addOverheadSample(relay, mediaType, payloadBytes, overheadBytes) {
+        const series = overheadSamples[relay]?.[mediaType];
         if (series === undefined || timelineStartMs < 0) {
             return;
         }
@@ -802,11 +890,11 @@ LICENSE file in the root directory of this source tree.
     }
 
     function drawOverheadTimeline(nowMs) {
-        drawTrackOverheadTimeline(nowMs, 'audio', 'overheadTimelineAudio', TIMELINE_AUDIO_COLOR);
-        drawTrackOverheadTimeline(nowMs, 'video', 'overheadTimelineVideo', TIMELINE_VIDEO_COLOR);
+        drawTrackOverheadTimeline(nowMs, 'audio', 'overheadTimelineAudio', { main: TIMELINE_AUDIO_COLOR, backup: OVERHEAD_BACKUP_AUDIO_COLOR });
+        drawTrackOverheadTimeline(nowMs, 'video', 'overheadTimelineVideo', { main: TIMELINE_VIDEO_COLOR, backup: OVERHEAD_BACKUP_VIDEO_COLOR });
     }
 
-    function drawTrackOverheadTimeline(nowMs, mediaType, canvasId, color) {
+    function drawTrackOverheadTimeline(nowMs, mediaType, canvasId, colors) {
         const canvas = document.getElementById(canvasId);
         const ctx = canvas.getContext('2d');
 
@@ -821,18 +909,22 @@ LICENSE file in the root directory of this source tree.
         ctx.clearRect(0, 0, w, h);
 
         // Drop samples that scrolled off the left edge
-        const samples = overheadSamples[mediaType];
         const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
-        while (samples.length > 0 && samples[0].tMs < oldestVisible) {
-            samples.shift();
+        for (const relay of RELAYS) {
+            const samples = overheadSamples[relay][mediaType];
+            while (samples.length > 0 && samples[0].tMs < oldestVisible) {
+                samples.shift();
+            }
         }
 
-        // Both axes follow what is on screen; the share has no 100% ceiling.
+        // Both axes follow what is on screen (both relays); the share has no 100% ceiling.
         let maxPercent = 0;
         let maxOverheadBytes = 0;
-        for (const s of samples) {
-            maxPercent = Math.max(maxPercent, s.percent);
-            maxOverheadBytes = Math.max(maxOverheadBytes, s.overheadBytes);
+        for (const relay of RELAYS) {
+            for (const s of overheadSamples[relay][mediaType]) {
+                maxPercent = Math.max(maxPercent, s.percent);
+                maxOverheadBytes = Math.max(maxOverheadBytes, s.overheadBytes);
+            }
         }
         const leftYMax = axisMax(maxPercent);
         const rightYMax = axisMax(maxOverheadBytes);
@@ -867,8 +959,11 @@ LICENSE file in the root directory of this source tree.
         ctx.textBaseline = 'top';
         ctx.fillText(Math.round(rightYMax) + ' bytes', w - 2, 2);
 
-        drawOverheadSeries(ctx, w, h, nowMs, samples, 'percent', leftYMax, color, false);
-        drawOverheadSeries(ctx, w, h, nowMs, samples, 'overheadBytes', rightYMax, color, true);
+        for (const relay of RELAYS) {
+            const samples = overheadSamples[relay][mediaType];
+            drawOverheadSeries(ctx, w, h, nowMs, samples, 'percent', leftYMax, colors[relay], false);
+            drawOverheadSeries(ctx, w, h, nowMs, samples, 'overheadBytes', rightYMax, colors[relay], true);
+        }
     }
 
     // Read & parse QS data
@@ -919,10 +1014,15 @@ LICENSE file in the root directory of this source tree.
     }
 
     function clearUI() {
-        document.getElementById('uploadStatsAudioQueued').value = "0";
-        document.getElementById('uploadStatsVideoQueued').value = "0";
-        document.getElementById('uploadStatsAudioStreams').value = "0";
-        document.getElementById('uploadStatsVideoStreams').value = "0";
+        for (const relay of RELAYS) {
+            for (const id of ['uploadStatsAudioQueued', 'uploadStatsVideoQueued', 'uploadStatsAudioStreams', 'uploadStatsVideoStreams']) {
+                document.getElementById(relayElementId(id, relay)).value = "0";
+            }
+            for (const id of ['totalAudioChunksDropped', 'totalVideoChunksDropped']) {
+                document.getElementById(relayElementId(id, relay)).value = "";
+            }
+            document.getElementById(relayElementId('droppedFrames', relay)).innerHTML = '';
+        }
 
         document.getElementById('subgroupAudioPayload').value = "";
         document.getElementById('subgroupAudioOverhead').value = "";
@@ -939,11 +1039,10 @@ LICENSE file in the root directory of this source tree.
         document.getElementById('firstCompAts').value = "";
         document.getElementById('VACompdiff').value = "";
 
-        document.getElementById('droppedFrames').innerHTML = '';
         document.getElementById('dumpStatus').value = "-";
 
         statsHelper = {};
-        dropChunksTotals = {};
+        dropChunksTotals = { main: {}, backup: {} };
     }
 
     // To update track names
@@ -1327,27 +1426,27 @@ LICENSE file in the root directory of this source tree.
         return Math.min(100000, Math.max(1, raw));
     }
 
-    // Force a one-off drop burst on the live sender for one media type. The burst
-    // length comes from the numeric input to the left of the button.
-    function forceDropBurst(mediaType) {
+    // Force a one-off drop (or hold: stall then clump) burst on one relay of the
+    // live sender, for one media type. The burst length comes from the numeric
+    // input to the left of the buttons (shared by main and backup).
+    function forceBurst(action, relay, mediaType) {
         if (muxerSenderWorker == null) {
             return;
         }
         const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
-        const burst = readForceBurst(`forceDrop${cap}Burst`);
-        muxerSenderWorker.postMessage({ type: "forceDropBurst", mediaType, burst });
+        const burst = readForceBurst(`force${action}${cap}Burst`);
+        muxerSenderWorker.postMessage({ type: `force${action}Burst`, relay, mediaType, burst });
     }
 
-    // Force a one-off hold (stall then clump) on the live sender for one media
-    // type. The burst length comes from the numeric input to the left of the
-    // button, mirroring forceDropBurst.
-    function forceHoldBurst(mediaType) {
-        if (muxerSenderWorker == null) {
-            return;
+    // The force drop/hold buttons only make sense while live, and the backup ones
+    // only when publishing to a backup relay.
+    function setForceButtonsEnabled(mainEnabled, backupEnabled) {
+        for (const action of ['Drop', 'Hold']) {
+            for (const cap of ['Video', 'Audio']) {
+                document.getElementById(`btnForce${action}${cap}`).disabled = !mainEnabled;
+                document.getElementById(`btnForce${action}${cap}Backup`).disabled = !backupEnabled;
+            }
         }
-        const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
-        const burst = readForceBurst(`forceHold${cap}Burst`);
-        muxerSenderWorker.postMessage({ type: "forceHoldBurst", mediaType, burst });
     }
 
     // Both dumps report into the same line, so keep the previous one visible.
@@ -1632,11 +1731,7 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("videoEncodingOptions").disabled = false
             document.getElementById("videoSources").disabled = false
             document.getElementById("audioSources").disabled = isSelectedVideoSourceScreen();
-            // Force drop/hold buttons only make sense while live.
-            document.getElementById("btnForceDropVideo").disabled = true
-            document.getElementById("btnForceDropAudio").disabled = true
-            document.getElementById("btnForceHoldVideo").disabled = true
-            document.getElementById("btnForceHoldAudio").disabled = true
+            setForceButtonsEnabled(false, false);
             // Restore controls whose enabled state is conditional on another input.
             UIUseToken(document.getElementById('useAuthToken').checked);
             updateMoqMappingUI();
@@ -1648,10 +1743,7 @@ LICENSE file in the root directory of this source tree.
             setAllOptionsDisabled(true);
             document.getElementById("btnStart").disabled = true
             document.getElementById("btnStop").disabled = false
-            document.getElementById("btnForceDropVideo").disabled = false
-            document.getElementById("btnForceDropAudio").disabled = false
-            document.getElementById("btnForceHoldVideo").disabled = false
-            document.getElementById("btnForceHoldAudio").disabled = false
+            setForceButtonsEnabled(true, document.getElementById('useBackupRelay').checked);
         } else if (mode == "processingUpdate") {
             // Processing preview update
             document.getElementById("btnStart").disabled = true
@@ -1659,10 +1751,7 @@ LICENSE file in the root directory of this source tree.
             document.getElementById("videoEncodingOptions").disabled = true
             document.getElementById("videoSources").disabled = true
             document.getElementById("audioSources").disabled = true
-            document.getElementById("btnForceDropVideo").disabled = true
-            document.getElementById("btnForceDropAudio").disabled = true
-            document.getElementById("btnForceHoldVideo").disabled = true
-            document.getElementById("btnForceHoldAudio").disabled = true
+            setForceButtonsEnabled(false, false);
         } else {
             console.error(`enableUI unknown mode ${mode}`);
         }
@@ -1734,7 +1823,7 @@ LICENSE file in the root directory of this source tree.
             updateDroppedFrame(e.data.data);
             // Paint a packet-loss bar on the timeline (chunks only, seqId >= 0)
             if (e.data.data && e.data.data.seqId >= 0) {
-                addTimelineDrop(e.data.data.mediaType);
+                addTimelineDrop(e.data.data.relay ?? 'main', e.data.data.mediaType);
             }
 
             // CHUNKS
@@ -1765,11 +1854,11 @@ LICENSE file in the root directory of this source tree.
             muxerSenderWorker.postMessage({ type: "chunk", mediaType: "audio", compensatedTs, seqId: seqId, chunk: chunk, metadata: metadata, timebase, codec});
             // CHUNKS STATS
         } else if (e.data.type === "sendstats") {
-            updateUploadStats(e.data.queuedReq, e.data.openStreamsReq);
+            updateUploadStats(e.data.relay ?? 'main', e.data.queuedReq, e.data.openStreamsReq);
 
             // PER-SUBGROUP BYTE ACCOUNTING (payload vs packager + MoQ overhead)
         } else if (e.data.type === "subgroupbytes") {
-            updateSubgroupBytes(e.data);
+            updateSubgroupBytes(e.data.relay ?? 'main', e.data);
 
             // DEBUG DUMP TO A LOCAL FILE (see window.dumpMedia)
         } else if (e.data.type === "mediadump") {
@@ -1781,19 +1870,27 @@ LICENSE file in the root directory of this source tree.
         }
     }
 
-    function updateUploadStats(queuedReq, openStreamsReq) {
-        document.getElementById('uploadStatsAudioQueued').value = `${queuedReq["audio"]} (${returnMax('queuedAudioReqNum', queuedReq["audio"])})`;
-        document.getElementById('uploadStatsVideoQueued').value = `${queuedReq["video"]} (${returnMax('queuedVideoReqNum', queuedReq["video"])})`;
-        document.getElementById('uploadStatsAudioStreams').value = `${openStreamsReq["audio"]} (${returnMax('streamsAudioReqNum', openStreamsReq["audio"])})`;
-        document.getElementById('uploadStatsVideoStreams').value = `${openStreamsReq["video"]} (${returnMax('streamsVideoReqNum', openStreamsReq["video"])})`;
+    function updateUploadStats(relay, queuedReq, openStreamsReq) {
+        if (!(relay in timelines)) {
+            return;
+        }
+        document.getElementById(relayElementId('uploadStatsAudioQueued', relay)).value = `${queuedReq["audio"]} (${returnMax(`${relay}QueuedAudioReqNum`, queuedReq["audio"])})`;
+        document.getElementById(relayElementId('uploadStatsVideoQueued', relay)).value = `${queuedReq["video"]} (${returnMax(`${relay}QueuedVideoReqNum`, queuedReq["video"])})`;
+        document.getElementById(relayElementId('uploadStatsAudioStreams', relay)).value = `${openStreamsReq["audio"]} (${returnMax(`${relay}StreamsAudioReqNum`, openStreamsReq["audio"])})`;
+        document.getElementById(relayElementId('uploadStatsVideoStreams', relay)).value = `${openStreamsReq["video"]} (${returnMax(`${relay}StreamsVideoReqNum`, openStreamsReq["video"])})`;
 
-        addTimelineSample(queuedReq["audio"], queuedReq["video"], openStreamsReq["audio"], openStreamsReq["video"]);
+        addTimelineSample(relay, queuedReq["audio"], queuedReq["video"], openStreamsReq["audio"], openStreamsReq["video"]);
     }
 
     // One finished subgroup: show what it cost and plot it.
-    function updateSubgroupBytes(data) {
+    // The "Data overhead" tab shows the main relay; the charts plot both.
+    function updateSubgroupBytes(relay, data) {
         const mediaType = data.mediaType;
         if (mediaType !== 'audio' && mediaType !== 'video') {
+            return;
+        }
+        addOverheadSample(relay, mediaType, data.payloadBytes, data.overheadBytes);
+        if (relay !== 'main') {
             return;
         }
         const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
@@ -1801,7 +1898,6 @@ LICENSE file in the root directory of this source tree.
         document.getElementById(`subgroup${cap}Overhead`).value = data.overheadBytes;
         document.getElementById(`subgroup${cap}OverheadPerct`).value =
             data.payloadBytes > 0 ? overheadPercent(data.payloadBytes, data.overheadBytes).toFixed(1) : "";
-        addOverheadSample(mediaType, data.payloadBytes, data.overheadBytes);
     }
 
     function updateDroppedFrame(droppedFrameData) {
@@ -1810,27 +1906,32 @@ LICENSE file in the root directory of this source tree.
         const seqId = droppedFrameData.seqId;
         const msg = droppedFrameData.msg;
         const mediaType = droppedFrameData.mediaType;
+        const relay = droppedFrameData.relay ?? 'main';
+        if (!(relay in dropChunksTotals)) {
+            return;
+        }
 
         // Always keep the running totals up to date, regardless of UI logging
         if (seqId >= 0) {
             // Is a chunk
-            if (!(mediaType in dropChunksTotals)) {
-                dropChunksTotals[mediaType] = 1;
+            const totals = dropChunksTotals[relay];
+            if (!(mediaType in totals)) {
+                totals[mediaType] = 1;
             } else {
-                dropChunksTotals[mediaType]++;
+                totals[mediaType]++;
             }
             if (mediaType == "video") {
-                document.getElementById('totalVideoChunksDropped').value = dropChunksTotals[mediaType]
+                document.getElementById(relayElementId('totalVideoChunksDropped', relay)).value = totals[mediaType]
             } else if (mediaType == "audio") {
-                document.getElementById('totalAudioChunksDropped').value = dropChunksTotals[mediaType]
+                document.getElementById(relayElementId('totalAudioChunksDropped', relay)).value = totals[mediaType]
             }
         }
 
         // Per-item list logging can be CPU intense, so gate it behind the checkbox
-        if (!document.getElementById('chkLogDroppedFrames').checked) {
+        if (!document.getElementById(relayElementId('chkLogDroppedFrames', relay)).checked) {
             return
         }
-        const list = document.getElementById('droppedFrames');
+        const list = document.getElementById(relayElementId('droppedFrames', relay));
 
         const str = new Date(clkms).toISOString() + " (" + seqId + ")(" + ts + ") " + msg;
 
@@ -1964,6 +2065,7 @@ LICENSE file in the root directory of this source tree.
 
         // Get url data
         muxerSenderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+        muxerSenderConfig.backupUrlHostPort = document.getElementById('useBackupRelay').checked ? document.getElementById('wtBackupServerUrl').value : '';
 
         //Get max Inflight requests & auth info
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
@@ -2026,6 +2128,9 @@ LICENSE file in the root directory of this source tree.
 
     document.getElementById('audioCodecOptions').addEventListener("change", (event) => {onAudioCodecChanged(event.target.options[event.target.selectedIndex].data);});
     document.getElementById('useAuthToken').addEventListener("change", (event) => { UIUseToken(event.target.checked) });
+    document.getElementById('useBackupRelay').addEventListener("change", (event) => {
+        document.getElementById('wtBackupDestData').hidden = !event.target.checked;
+    });
 
     document.getElementById('videoDropMode').addEventListener("change", () => { updateDropModeUI("video"); });
     document.getElementById('audioDropMode').addEventListener("change", () => { updateDropModeUI("audio"); });
@@ -2035,10 +2140,15 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('videoHoldMode').addEventListener("change", () => { updateHoldModeUI("video"); });
     document.getElementById('audioHoldMode').addEventListener("change", () => { updateHoldModeUI("audio"); });
 
-    document.getElementById('btnForceDropVideo').addEventListener("click", () => { forceDropBurst("video"); });
-    document.getElementById('btnForceDropAudio').addEventListener("click", () => { forceDropBurst("audio"); });
-    document.getElementById('btnForceHoldVideo').addEventListener("click", () => { forceHoldBurst("video"); });
-    document.getElementById('btnForceHoldAudio').addEventListener("click", () => { forceHoldBurst("audio"); });
+    for (const action of ['Drop', 'Hold']) {
+        for (const relay of RELAYS) {
+            for (const mediaType of ['video', 'audio']) {
+                const cap = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+                document.getElementById(relayElementId(`btnForce${action}${cap}`, relay))
+                    .addEventListener("click", () => { forceBurst(action, relay, mediaType); });
+            }
+        }
+    }
 
     // The latency-overlay checkbox stays enabled during live; toggling it mid-session
     // updates the encoder's injection dynamically (start() also reads it at launch).

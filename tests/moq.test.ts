@@ -101,6 +101,65 @@ describe('Track sequencing', () => {
     expect(o2.getInfo()).toMatchObject({ groupId: 0, objId: 1 });
     expect(o3.getInfo()).toMatchObject({ groupId: 1, objId: 0 });
   });
+
+  it('uses caller-assigned ids, waiting for a group start it can follow', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    // Joined mid-group: nothing to follow until the caller starts a group.
+    expect(send(4, 3).getInfo().status).toBe('dropped');
+    expect(send(5, 0, true).getInfo()).toMatchObject({ groupId: 5, objId: 0, status: 'queued' });
+    expect(send(5, 1).getInfo()).toMatchObject({ groupId: 5, objId: 1, status: 'queued' });
+  });
+
+  it('caller-assigned ids: resuming forwarding waits for the next group start', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    expect(send(0, 0, true).getInfo().status).toBe('queued');
+    track._setForwarding(false);
+    track._setForwarding(true);
+    // The track can not invent a new group: the rest of group 0 is dropped.
+    expect(send(0, 1).getInfo().status).toBe('dropped');
+    expect(send(1, 0, true).getInfo()).toMatchObject({ groupId: 1, objId: 0, status: 'queued' });
+  });
+
+  it('caller-assigned ids: drops the rest of a group whose start was refused', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 1);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    send(0, 0, true); // drains, stalls opening the stream
+    send(0, 1); // fills the 1-object queue
+    expect(send(1, 0, true).getInfo().status).toBe('dropped'); // queue full
+    expect(send(1, 1).getInfo().status).toBe('dropped'); // its group never started
+  });
 });
 
 describe('Track object delivery (datagram)', () => {
