@@ -27,6 +27,10 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>
+                <label>Use backup relay: <input type="checkbox" id="useBackupRelay"></label>
+                <label id="wtBackupDestData" hidden>Backup WT server: <input id="wtBackupServerUrl" type="text"
+                        value="https://localhost:4435/moq" size="64"></label>
+                <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
                 <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label>
@@ -91,6 +95,20 @@ LICENSE file in the root directory of this source tree.
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
     </div>
 
+    <!-- Received group IDs timeline (last 60s), per relay connection -->
+    <div class="boxed">
+        <h2>Received group IDs (lastID - currentID) (last 60s)</h2>
+        <canvas id="groupIdTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
+        <div class="styleform">
+            <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Main: audio</label>
+            <label><span style="display:inline-block;width:18px;height:3px;background:#1f77b4;vertical-align:middle"></span> Main: video</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #9467bd;vertical-align:middle"></span> Backup: audio</label>
+            <label><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #2ca02c;vertical-align:middle"></span> Backup: video</label>
+            <div class="clear"></div>
+            <label>One point every time a connection receives a new group ID: that group ID minus the previous one received on the same connection and track. 1 = in order, &gt;1 = groups skipped, &lt;=0 = out of order</label>
+        </div>
+    </div>
+
     <!-- Latency and gaps timeline (last 60s) -->
     <div class="boxed">
         <h2>Latency and gaps (last 60s)</h2>
@@ -122,6 +140,7 @@ LICENSE file in the root directory of this source tree.
         <button type="button" class="tab-btn" data-tab="tabDecoders">Decoders</button>
         <button type="button" class="tab-btn" data-tab="tabRenderers">Renderers</button>
         <button type="button" class="tab-btn" data-tab="tabDropped">Dropped data</button>
+        <button type="button" class="tab-btn" data-tab="tabMainBackup">Main - backup</button>
     </div>
     <div class="tab-panels">
         <div id="tabLatency" class="boxed tab-panel active">
@@ -232,6 +251,23 @@ LICENSE file in the root directory of this source tree.
             <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
             <ol id="droppedFrames"></ol>
         </div>
+        <div id="tabMainBackup" class="boxed tab-panel">
+            <h2>Main - backup</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current received video MOQ groupID (main/backup (diff)):</label><input id="mainBackupVideoGroupId" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Latest received video MOQ groupID (ms ago main/backup):</label><input id="mainBackupVideoGroupIdAgo" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Current received audio MOQ groupID (main/backup (diff)):</label><input id="mainBackupAudioGroupId" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Latest received audio MOQ groupID (ms ago main/backup):</label><input id="mainBackupAudioGroupIdAgo" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>"ms ago" is the time since that connection received its current group ID for the first time</label>
+                    <div class="clear"></div>
+                </form>
+            </div>
+        </div>
     </div>
 </body>
 <script>
@@ -288,6 +324,8 @@ LICENSE file in the root directory of this source tree.
 
     const downloaderConfig = {
         urlHostPort: '',
+        // '' = no backup relay
+        backupUrlHostPort: '',
         urlPath: '',
 
         certificateHash: null,
@@ -422,12 +460,33 @@ LICENSE file in the root directory of this source tree.
     const PLAYBACK_SPEED_MIN = 0.5;         // right axis range: 0.5 .. 2
     const PLAYBACK_SPEED_MAX = 2;
 
+    // Received group IDs timeline: per relay connection and track, one sample each
+    // time a connection receives a new group ID = that ID minus the previous one
+    // received on the same connection and track.
+    const GROUP_ID_SERIES = [
+        { relay: 'main', mediaType: 'audio', color: TIMELINE_AUDIO_COLOR, dashed: false },
+        { relay: 'main', mediaType: 'video', color: TIMELINE_VIDEO_COLOR, dashed: false },
+        { relay: 'backup', mediaType: 'audio', color: '#9467bd', dashed: true },
+        { relay: 'backup', mediaType: 'video', color: '#2ca02c', dashed: true },
+    ];
+    function newGroupIdTracks() {
+        const tracks = {};
+        for (const { relay, mediaType } of GROUP_ID_SERIES) {
+            tracks[relay] = tracks[relay] ?? {};
+            // samples: { tMs, delta }; lastGroupIdAtMs: Date.now() when lastGroupId was first received
+            tracks[relay][mediaType] = { lastGroupId: undefined, lastGroupIdAtMs: undefined, samples: [] };
+        }
+        return tracks;
+    }
+    let groupIdTracks = newGroupIdTracks();
+
     function startTimeline() {
         // Clear and restart on every Start press
         timelineSamples = [];
         timelineGaps = [];
         gapCum = { audio: 0, video: 0 };
         latencySamples = [];
+        groupIdTracks = newGroupIdTracks();
         lastVideoLatencyMs = -1;
         lastPlaybackSpeed = -1;
         // Reset the epoch-overlay extractor state and its status readout.
@@ -437,7 +496,7 @@ LICENSE file in the root directory of this source tree.
         extractorStatusEl.style.color = '';
         timelineStartMs = Date.now();
         if (timelineTimer === null) {
-            timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); }, TIMELINE_UPDATE_EVERY_MS);
+            timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); drawGroupIdTimeline(); updateMainBackupUI(); }, TIMELINE_UPDATE_EVERY_MS);
         }
     }
 
@@ -671,6 +730,139 @@ LICENSE file in the root directory of this source tree.
         drawTimelineGaps(ctx, w, h, nowMs, rightYMax);
 
         drawSeries(ctx, w, h, nowMs, latencySamples, 'video', TIMELINE_VIDEO_COLOR, yMax);
+    }
+
+    // Record a group ID received on one relay connection / track. The first one
+    // has nothing to compare against, so it only becomes the reference.
+    function addReceivedGroupId(relay, mediaType, groupId) {
+        const track = groupIdTracks[relay]?.[mediaType];
+        if (track === undefined || timelineStartMs < 0 || groupId == null || groupId === track.lastGroupId) {
+            return;
+        }
+        if (track.lastGroupId !== undefined) {
+            track.samples.push({ tMs: Date.now() - timelineStartMs, delta: groupId - track.lastGroupId });
+        }
+        track.lastGroupId = groupId;
+        track.lastGroupIdAtMs = Date.now();
+    }
+
+    // "Main - backup" tab: current group ID per connection (and their difference),
+    // and how long ago each connection received it.
+    function updateMainBackupUI() {
+        const nowMs = Date.now();
+        for (const mediaType of ['video', 'audio']) {
+            const main = groupIdTracks.main[mediaType];
+            const backup = groupIdTracks.backup[mediaType];
+            const idStr = (t) => t.lastGroupId === undefined ? '-' : String(t.lastGroupId);
+            const diff = main.lastGroupId !== undefined && backup.lastGroupId !== undefined
+                ? String(main.lastGroupId - backup.lastGroupId) : '-';
+            const agoStr = (t) => t.lastGroupIdAtMs === undefined ? '-' : String(nowMs - t.lastGroupIdAtMs);
+            const cap = mediaType === 'video' ? 'Video' : 'Audio';
+            document.getElementById(`mainBackup${cap}GroupId`).value = `${idStr(main)}/${idStr(backup)} (${diff})`;
+            document.getElementById(`mainBackup${cap}GroupIdAgo`).value = `${agoStr(main)} / ${agoStr(backup)}`;
+        }
+    }
+
+    function drawGroupIdTimeline() {
+        const canvas = document.getElementById('groupIdTimeline');
+        const ctx = canvas.getContext('2d');
+
+        // Match the canvas backing store to its displayed size for crisp lines
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        if (canvas.width !== cssW || canvas.height !== cssH) {
+            canvas.width = cssW;
+            canvas.height = cssH;
+        }
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const nowMs = timelineStartMs < 0 ? 0 : (Date.now() - timelineStartMs);
+
+        // Drop samples that scrolled off the left edge, and find the visible range
+        const oldestVisible = nowMs - TIMELINE_WINDOW_MS;
+        let minDelta = Infinity;
+        let maxDelta = -Infinity;
+        for (const { relay, mediaType } of GROUP_ID_SERIES) {
+            const samples = groupIdTracks[relay][mediaType].samples;
+            while (samples.length > 0 && samples[0].tMs < oldestVisible) {
+                samples.shift();
+            }
+            for (const s of samples) {
+                minDelta = Math.min(minDelta, s.delta);
+                maxDelta = Math.max(maxDelta, s.delta);
+            }
+        }
+
+        // Grid: horizontal lines every 25% and vertical lines every 5s
+        ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let f = 0; f <= 1.0001; f += 0.25) {
+            const y = h - f * h;
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+        }
+        for (let sec = 0; sec <= TIMELINE_WINDOW_MS / 1000; sec += 5) {
+            const x = w * (1 - (sec * 1000) / TIMELINE_WINDOW_MS);
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(128,128,128,0.9)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('now', w - 2, h - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('-60s', 2, h - 12);
+
+        // Nothing received (or only first IDs) in the window: nothing to plot
+        if (minDelta > maxDelta) {
+            return;
+        }
+
+        // Y axis follows the visible min / max; a flat line is centered
+        let yMin = minDelta;
+        let yMax = maxDelta;
+        if (yMin === yMax) {
+            yMin -= 1;
+            yMax += 1;
+        }
+        // A little margin so lines on the extremes are not clipped by the edges
+        const margin = (yMax - yMin) * 0.05;
+        const yLow = yMin - margin;
+        const yHigh = yMax + margin;
+        const yOf = (v) => h - ((v - yLow) / (yHigh - yLow)) * h;
+
+        ctx.textBaseline = 'top';
+        ctx.fillText(String(maxDelta), 2, 2);
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(String(minDelta), 2, h - 22);
+
+        for (const { relay, mediaType, color, dashed } of GROUP_ID_SERIES) {
+            const samples = groupIdTracks[relay][mediaType].samples;
+            if (samples.length === 0) {
+                continue;
+            }
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.setLineDash(dashed ? [5, 4] : []);
+            ctx.beginPath();
+            samples.forEach((s, i) => {
+                // Right edge = now, anything older moves toward the left edge
+                const x = w * (1 - (nowMs - s.tMs) / TIMELINE_WINDOW_MS);
+                if (i === 0) {
+                    ctx.moveTo(x, yOf(s.delta));
+                } else {
+                    ctx.lineTo(x, yOf(s.delta));
+                }
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
     }
 
     // Read & parse QS data
@@ -962,6 +1154,7 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
+        downloaderConfig.backupUrlHostPort = document.getElementById('useBackupRelay').checked ? document.getElementById('wtBackupServerUrl').value : '';
 
         // Packaging the publisher is expected to use: "loc" or "cmaf" (CMSF)
         downloaderConfig.packagerFormat = document.getElementById('mediaPackager').value;
@@ -1252,7 +1445,10 @@ LICENSE file in the root directory of this source tree.
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
             const extraData = {metadata: e.data.metadata, codec: e.data.codec}
+            addReceivedGroupId(e.data.relay ?? 'main', 'video', groupId);
 
+            // Both relays deliver the same objects: the jitter buffer drops the
+            // second copy of each (groupId, objId).
             if (wtVideoJitterBuffer != null) {
                 // Pull-through jitter buffer: releases the contiguous run now, or
                 // holds a gap for up to bufferSizeMs. May release several at once.
@@ -1264,7 +1460,10 @@ LICENSE file in the root directory of this source tree.
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
             const extraData = {metadata: e.data.metadata, codec: e.data.codec}
+            addReceivedGroupId(e.data.relay ?? 'main', 'audio', groupId);
 
+            // Both relays deliver the same objects: the jitter buffer drops the
+            // second copy of each (groupId, objId).
             if (wtAudioJitterBuffer != null) {
                 // Pull-through jitter buffer: releases the contiguous run now, or
                 // holds a gap for up to bufferSizeMs. May release several at once.
@@ -1509,6 +1708,9 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnPlaybackCompensationUpdate').addEventListener("click", () => {updatePlaybackCompensation();});
     document.getElementById('enableSpeedCompensation').addEventListener("change", () => {onToggleSpeedCompensation();});
     document.getElementById('mediaPackager').addEventListener("change", () => {updateMediaPackagerUI();});
+    document.getElementById('useBackupRelay').addEventListener("change", (event) => {
+        document.getElementById('wtBackupDestData').hidden = !event.target.checked;
+    });
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
     // producing. Release any frames the renderer is holding so the VideoDecoder is not

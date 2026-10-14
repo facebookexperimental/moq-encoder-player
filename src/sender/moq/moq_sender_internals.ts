@@ -5,9 +5,8 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Moq, MoqState, Track, MoqMapping } from '../../moq/moq.js';
+import type { ObjectIds } from '../../moq/moq.js';
 import {
-  MOQ_CURRENT_VERSION,
   MOQ_MAPPING_OBJECT_PER_DATAGRAM,
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
 } from '../../moq/moqt.js';
@@ -24,6 +23,7 @@ import {
   MEDIA_DUMP_DEFAULT_MAX_OBJECTS,
   type MediaDumpConfig,
 } from '../../utils/media_dumper.js';
+import { RelayConnection, postDropped, type RelayLabel } from './relay_connection.js';
 
 const WORKER_PREFIX = '[MOQ-SENDER]';
 
@@ -49,6 +49,8 @@ export interface TrackData {
 // Configuration passed in the `init` message (formerly `muxerSenderConfig`).
 export interface MuxerSenderConfig {
   urlHostPort: string;
+  // Optional second relay that receives the very same objects. '' = disabled.
+  backupUrlHostPort: string;
   isSendingStats: boolean;
   moqTracks: Record<string, TrackData>;
   keepAlivesEveryMs: number;
@@ -78,31 +80,27 @@ interface ChunkMessage {
 }
 
 /**
- * MoQ publisher Web Worker.
- * MoQ publisher Web Worker. Translates main-thread messages into calls on the
- * high-level MoQ API (src/moq/moq.ts) and packages encoded media with the
- * configured packager (LOC or CMAF, see src/packager/media_packager.ts). All
- * MoQ protocol work (session, control loop, subscriptions, object scheduling)
- * lives in the `Moq`/`Track` classes.
+ * MoQ publisher Web Worker. Packages encoded media with the configured packager
+ * (LOC or CMAF, see src/packager/media_packager.ts) and assigns the MoQ
+ * (group, object) ids once, then hands every object to each relay connection
+ * (main and, optionally, backup; see RelayConnection). All MoQ protocol work
+ * (session, control loop, subscriptions, object scheduling) lives in the
+ * `Moq`/`Track` classes.
  */
 export class MoqSender {
   private config: MuxerSenderConfig | null = null;
   private verbose = false;
 
-  private moq: Moq | null = null;
-  // Published tracks keyed by mediaType ('audio' | 'video' | 'data').
-  private tracks: Record<string, Track> = {};
+  // Main relay first, then the optional backup.
+  private connections: RelayConnection[] = [];
   // One packager per media type, kept for the lifetime of the session: the CMAF
   // packager is stateful (sequence numbers, initialization header).
   private packagers: Record<string, MediaPackager> = {};
   // Optional capture of the packaged objects to a local file (debug aid).
   private dumper: MediaDumper | null = null;
-  // Encoded media bytes written per group, keyed by media type then group id.
-  // The packaging overhead of a group is what the track counted as payload minus
-  // this (see emitSubgroupBytes).
-  private groupMediaBytes: Record<string, Map<number, number>> = {};
-  // Last group already reported per media type, so each subgroup is reported once.
-  private reportedGroup: Record<string, number> = {};
+  // Last (group, object) ids assigned per media type. Assigned here, for every
+  // chunk, so all relays get identical ids whatever each one drops.
+  private sequences: Record<string, ObjectIds> = {};
 
   // -------------------------------------------------------------------------
   // Worker message dispatch
@@ -155,6 +153,7 @@ export class MoqSender {
     const cfg = raw ?? {};
     const config: MuxerSenderConfig = {
       urlHostPort: typeof cfg.urlHostPort === 'string' ? cfg.urlHostPort : '',
+      backupUrlHostPort: typeof cfg.backupUrlHostPort === 'string' ? cfg.backupUrlHostPort : '',
       isSendingStats: cfg.isSendingStats ?? true,
       moqTracks: cfg.moqTracks ?? {},
       keepAlivesEveryMs: cfg.keepAlivesEveryMs ?? 0,
@@ -199,9 +198,13 @@ export class MoqSender {
     return undefined;
   }
 
-  /** Open the session, publish the tracks and start keep-alive. */
+  /**
+   * Open one session per relay (main and optional backup) and publish the
+   * tracks on each. The connections start concurrently and independently: one
+   * that hangs or fails never holds back the other.
+   */
   async handleInit(data: any): Promise<void> {
-    if (this.moq !== null) {
+    if (this.connections.length > 0) {
       console.error(`${WORKER_PREFIX} Received init while a session already exists`);
       return;
     }
@@ -212,107 +215,16 @@ export class MoqSender {
     // Packaging is set up before the transport: chunks are packaged (and
     // captured by the debug dump, if armed) whether or not a session is ever
     // established, so a CMAF file can be produced without a relay.
-    this.tracks = {};
     this.packagers = {};
+    this.sequences = {};
     this.startConfiguredDump();
 
-    // Open the transport and perform the MoQ SETUP handshake. The keep-alive
-    // loop (if enabled) is managed by the Moq session itself.
-    this.moq = new Moq();
-    this.moq.init(this.config.urlHostPort, {
-      serverCertificateHash: this.config.certificateHash,
-      alpnVersion: MOQ_CURRENT_VERSION,
-    });
-    console.log(`${WORKER_PREFIX} WT initiating to ${this.config.urlHostPort}`);
-    await this.moq.setup(
-      this.config.keepAlivesEveryMs > 0 ? { everyMs: this.config.keepAlivesEveryMs } : undefined,
-    );
-    console.log(`${WORKER_PREFIX} MOQ session established`);
-
-    if (this.config.usePublishNamespace) {
-      // Single PUBLISH_NAMESPACE per namespace; tracks are served lazily when a
-      // subscriber SUBSCRIBEs (see offerTrack below).
-      await this.publishNamespaceTracks();
-    } else {
-      // One PUBLISH per track (proactive publication).
-      for (const [mediaType, trackData] of Object.entries(this.config.moqTracks)) {
-        this.tracks[mediaType] = await this.publishTrack(mediaType, trackData);
-        console.log(
-          `${WORKER_PREFIX} Published track ${mediaType} (${trackData.namespace}/${trackData.name})`,
-        );
-      }
+    this.connections = [new RelayConnection('main', this.config.urlHostPort)];
+    if (this.config.backupUrlHostPort !== '') {
+      this.connections.push(new RelayConnection('backup', this.config.backupUrlHostPort));
     }
-
-    console.log(`${WORKER_PREFIX} MOQ Initialized, waiting for subscriptions`);
-  }
-
-  private async publishTrack(mediaType: string, trackData: TrackData): Promise<Track> {
-    const track = await this.moq!.addTrack(
-      trackData.namespace,
-      trackData.name,
-      trackData.maxInFlightRequests ?? Number.MAX_SAFE_INTEGER,
-      trackData.maxOpenStreams ?? Number.MAX_SAFE_INTEGER,
-      trackData.authInfo,
-      trackData.moqMapping as MoqMapping,
-    );
-    this.applyWireImpairments(mediaType, track, trackData);
-    return track;
-  }
-
-  // Attach the optional simulated-impairment policies (testing) to a freshly
-  // created track: simulated loss (drop) routed to the dropped-stats UI, and
-  // simulated slowness (hold).
-  private applyWireImpairments(mediaType: string, track: Track, trackData: TrackData): void {
-    track.setWireDropConfig(trackData.dropConfig ?? null);
-    track.setWireHoldConfig(trackData.holdConfig ?? null);
-    track.onWireDrop = (obj) => {
-      const info = obj.getInfo();
-      this.emitDropped(
-        info.objId,
-        undefined,
-        `simulated wire drop (${info.groupId}/${info.objId})`,
-        mediaType,
-      );
-    };
-  }
-
-  // Announce each unique namespace once with PUBLISH_NAMESPACE, then register a
-  // track offer per media type. The Track for a media type is created (and stored
-  // in this.tracks) only once a peer subscribes to it; until then handleChunk
-  // drops chunks for that media type.
-  private async publishNamespaceTracks(): Promise<void> {
-    // Register offers first so a SUBSCRIBE that races the announce still matches.
-    for (const [mediaType, trackData] of Object.entries(this.config!.moqTracks)) {
-      this.moq!.offerTrack({
-        namespace: trackData.namespace,
-        name: trackData.name,
-        maxQueuedObjects: trackData.maxInFlightRequests ?? Number.MAX_SAFE_INTEGER,
-        maxOpenStreams: trackData.maxOpenStreams ?? Number.MAX_SAFE_INTEGER,
-        moqMapping: trackData.moqMapping as MoqMapping,
-        authInfo: trackData.authInfo,
-        onSubscribed: (track) => {
-          this.tracks[mediaType] = track;
-          this.applyWireImpairments(mediaType, track, trackData);
-          console.log(`${WORKER_PREFIX} Serving ${mediaType} track (subscriber joined)`);
-        },
-        onUnsubscribed: () => {
-          delete this.tracks[mediaType];
-          console.log(`${WORKER_PREFIX} Stopped serving ${mediaType} track (subscriber left)`);
-        },
-      });
-    }
-
-    // Announce each distinct namespace a single time.
-    const announced = new Set<string>();
-    for (const trackData of Object.values(this.config!.moqTracks)) {
-      const nsKey = trackData.namespace.join('/');
-      if (announced.has(nsKey)) {
-        continue;
-      }
-      announced.add(nsKey);
-      await this.moq!.publishNamespace(trackData.namespace, trackData.authInfo);
-      console.log(`${WORKER_PREFIX} Published namespace [${nsKey}]`);
-    }
+    const config = this.config;
+    await Promise.all(this.connections.map((conn) => conn.start(config)));
   }
 
   // Audio is sent at higher priority than video (lower value = higher pri).
@@ -326,81 +238,94 @@ export class MoqSender {
   // chunk (media)
   // -------------------------------------------------------------------------
 
-  // Why this chunk cannot be published right now, or undefined when it can.
-  private sendBlockedReason(mediaType: string): string | undefined {
-    if (this.moq === null || this.moq.state !== MoqState.Running) {
-      return 'transport is NOT open yet';
-    }
-    // In PUBLISH_NAMESPACE mode a track exists only once a subscriber has
-    // subscribed; drop until then instead of erroring.
-    const track = this.tracks[mediaType];
-    if (track === undefined) {
-      return 'track not subscribed yet';
-    }
-    if (track.getInfo().numSubscribers <= 0) {
-      return 'no subscribers';
-    }
-    return undefined;
-  }
-
-  /** Package one encoded media chunk and hand it to its track. */
+  /** Package one encoded media chunk and hand it to every relay connection. */
   handleChunk(data: ChunkMessage): void {
-    const blockedReason = this.sendBlockedReason(data.mediaType);
+    const chunkData = this.normalizeChunk(data);
+    const newGroup = startsNewGroup(chunkData);
+    // Ids advance for every chunk, sent or not, so they are the same on all relays.
+    const ids = this.nextObjectIds(data.mediaType, newGroup);
+    const ts = data.chunk?.timestamp;
+
+    const blocked = this.connections.map((conn) => conn.sendBlockedReason(data.mediaType));
+    const canSend = blocked.some((reason) => reason === undefined);
     // The debug capture does not depend on the transport: while it is armed the
     // chunk is packaged (and written to the dump) even with no session and no
     // subscriber, so a CMAF file can be produced without a relay.
     const capturing = this.dumper?.isArmed(data.mediaType) === true;
-    if (blockedReason !== undefined && !capturing) {
-      this.emitDropped(data.seqId, data.chunk?.timestamp, blockedReason, data.mediaType);
-      return;
+    if (!canSend) {
+      this.emitBlocked(blocked, chunkData.seqId, ts, data.mediaType);
+      if (!capturing) {
+        return;
+      }
     }
 
-    const chunkData = this.normalizeChunk(data);
-    const newGroup = startsNewGroup(chunkData);
+    // Packaged once: every relay gets the very same bytes and properties.
     const packet = this.packetizeChunk(chunkData, newGroup);
-    const seqId = chunkData.seqId;
     const payload = packet.PayloadToBytes();
     this.dumper?.capture(data.mediaType, payload, newGroup, chunkTimestampMs(data));
-
-    if (blockedReason !== undefined) {
+    if (!canSend) {
       // Captured, but there is nowhere to publish it.
-      this.emitDropped(seqId, data.chunk?.timestamp, blockedReason, data.mediaType);
       return;
     }
-    const track = this.tracks[data.mediaType];
+    const properties = packet.Properties();
 
     // Priority only applies when starting a new group.
     const newGroupOptions = newGroup
       ? { priority: this.priorityForMediaType(data.mediaType) }
       : undefined;
     // Media bytes as the encoder produced them: everything the packager added on
-    // top is overhead (see emitSubgroupBytes).
+    // top is overhead (see RelayConnection.emitSubgroupBytes).
     const mediaBytes = chunkData.chunk?.byteLength ?? 0;
-    const obj = track.sendObject(payload, newGroupOptions, packet.Properties(), (sent) => {
-      // Only objects that reached the wire are accounted for, so the numbers
-      // match what the track counted.
-      const info = sent.getInfo();
-      this.accountSentObject(data.mediaType, info.groupId, mediaBytes);
-      if (this.verbose) {
-        console.debug(
-          `${WORKER_PREFIX} SENT ${data.mediaType} seqId ${seqId} (${info.groupId}/${info.objId})`,
-        );
+    this.connections.forEach((conn, i) => {
+      if (blocked[i] !== undefined) {
+        conn.emitDropped(chunkData.seqId, ts, blocked[i]!, data.mediaType);
+        return;
       }
+      conn.sendObject(
+        data.mediaType,
+        payload,
+        ids,
+        newGroupOptions,
+        properties,
+        mediaBytes,
+        chunkData.seqId,
+        ts,
+        this.verbose,
+      );
     });
 
-    if (obj.getInfo().status === 'dropped') {
-      this.emitDropped(
-        seqId,
-        chunkData.chunk?.timestamp,
-        'too many inflight requests',
-        data.mediaType,
-      );
-    }
-
     if (this.config?.isSendingStats) {
-      this.emitStats();
-      this.emitSubgroupBytes();
+      for (const conn of this.connections) {
+        conn.emitStats();
+        conn.emitSubgroupBytes();
+      }
     }
+  }
+
+  // Report a chunk that no connection can take, once per connection (or once
+  // when there is no session at all).
+  private emitBlocked(
+    blocked: (string | undefined)[],
+    seqId: number,
+    ts: number | undefined,
+    mediaType: string,
+  ): void {
+    if (this.connections.length === 0) {
+      postDropped('main', seqId, ts, 'transport is NOT open yet', mediaType);
+      return;
+    }
+    this.connections.forEach((conn, i) => conn.emitDropped(seqId, ts, blocked[i]!, mediaType));
+  }
+
+  // The (group, object) ids of the next chunk of a media type. Before the first
+  // group starts the group id is -1, which no track accepts.
+  private nextObjectIds(mediaType: string, newGroup: boolean): ObjectIds {
+    const prev = this.sequences[mediaType] ?? { groupId: -1, objId: -1 };
+    const ids = newGroup
+      ? { groupId: prev.groupId + 1, objId: 0 }
+      : { groupId: prev.groupId, objId: prev.objId + 1 };
+    this.sequences[mediaType] = ids;
+    return ids;
   }
 
   // Normalize the raw chunk message into the shape the packager path expects.
@@ -483,24 +408,19 @@ export class MoqSender {
   // forceDropBurst (manual simulated loss)
   // -------------------------------------------------------------------------
 
-  /** Force-drop the next burst of wire units for one media type, on demand. */
+  /** Force-drop the next burst of wire units for one media type, on one relay. */
   private handleForceDropBurst(data: any): void {
-    const track = this.tracks[data?.mediaType];
-    if (track === undefined) {
-      // Not publishing / no subscriber yet: nothing to drop.
-      return;
-    }
-    track.forceDropBurst(data?.burst ?? 1);
+    this.connectionFor(data?.relay)?.forceDropBurst(data?.mediaType, data?.burst ?? 1);
   }
 
-  /** Force-hold (stall then clump) the next burst for one media type, on demand. */
+  /** Force-hold (stall then clump) the next burst for one media type, on one relay. */
   private handleForceHoldBurst(data: any): void {
-    const track = this.tracks[data?.mediaType];
-    if (track === undefined) {
-      // Not publishing / no subscriber yet: nothing to hold.
-      return;
-    }
-    track.forceHoldBurst(data?.burst ?? 1);
+    this.connectionFor(data?.relay)?.forceHoldBurst(data?.mediaType, data?.burst ?? 1);
+  }
+
+  // The connection to a relay ('main' when unspecified), if it exists.
+  private connectionFor(relay: RelayLabel | undefined): RelayConnection | undefined {
+    return this.connections.find((conn) => conn.label === (relay ?? 'main'));
   }
 
   // -------------------------------------------------------------------------
@@ -537,100 +457,17 @@ export class MoqSender {
   // stop
   // -------------------------------------------------------------------------
 
-  /** Stop publishing and close the session. */
+  /** Stop publishing and close every relay session. */
   handleStop(): void {
     // Save whatever the debug capture collected before tearing the session down.
     this.dumper?.flushAll();
     this.dumper = null;
-    this.moq?.close();
-    this.moq = null;
-    this.tracks = {};
+    for (const conn of this.connections) {
+      conn.close();
+    }
+    this.connections = [];
     this.packagers = {};
-    this.groupMediaBytes = {};
-    this.reportedGroup = {};
-  }
-
-  // -------------------------------------------------------------------------
-  // Messages to the main thread (data only — logging goes to the console)
-  // -------------------------------------------------------------------------
-
-  private emitDropped(
-    seqId: number | undefined,
-    ts: number | undefined,
-    msg: string,
-    mediaType: string,
-  ): void {
-    self.postMessage({
-      type: 'dropped',
-      data: { clkms: Date.now(), seqId, mediaType, ts, msg: `Dropped chunk because ${msg}` },
-    });
-  }
-
-  private emitStats(): void {
-    // Two distinct signals: queuedReq = objects waiting in the send queue (the
-    // backpressure cap), openStreamsReq = open QUIC subgroup streams (the meaning
-    // the v14 "inflight" stat had; ~1 for subgroup, 0 for datagram).
-    const queuedReq: Record<string, number> = {};
-    const openStreamsReq: Record<string, number> = {};
-    for (const [mediaType, track] of Object.entries(this.tracks)) {
-      const info = track.getInfo();
-      queuedReq[mediaType] = info.numQueued;
-      openStreamsReq[mediaType] = info.numOpenStreams;
-    }
-    self.postMessage({ type: 'sendstats', clkms: Date.now(), queuedReq, openStreamsReq });
-  }
-
-  // Remember the encoded media bytes of an object that reached the wire, against
-  // the group it went out in.
-  private accountSentObject(mediaType: string, groupId: number, mediaBytes: number): void {
-    let groups = this.groupMediaBytes[mediaType];
-    if (groups === undefined) {
-      groups = new Map();
-      this.groupMediaBytes[mediaType] = groups;
-    }
-    groups.set(groupId, (groups.get(groupId) ?? 0) + mediaBytes);
-  }
-
-  /**
-   * Report what the last finished subgroup cost, per track, once each.
-   *
-   * payload  = the encoded media bytes the encoder produced
-   * overhead = everything added on top of them to put that subgroup on the wire:
-   *            the packager (CMSF boxes and the periodic CMAF Header; LOC adds
-   *            nothing to the payload) plus the MoQ signaling the track counted
-   *            (subgroup header, per-object headers, object properties,
-   *            end-of-group marker).
-   */
-  private emitSubgroupBytes(): void {
-    for (const [mediaType, track] of Object.entries(this.tracks)) {
-      const subgroup = track.getInfo().lastSubgroup;
-      if (subgroup === undefined || subgroup.groupId === this.reportedGroup[mediaType]) {
-        continue;
-      }
-      this.reportedGroup[mediaType] = subgroup.groupId;
-
-      const groups = this.groupMediaBytes[mediaType];
-      const payloadBytes = groups?.get(subgroup.groupId) ?? subgroup.payloadBytes;
-      // Groups older than the one being reported are done (or were dropped):
-      // their media bytes will never be claimed.
-      if (groups !== undefined) {
-        for (const groupId of groups.keys()) {
-          if (groupId <= subgroup.groupId) {
-            groups.delete(groupId);
-          }
-        }
-      }
-      const packagingBytes = subgroup.payloadBytes - payloadBytes;
-      self.postMessage({
-        type: 'subgroupbytes',
-        clkms: Date.now(),
-        mediaType,
-        groupId: subgroup.groupId,
-        objects: subgroup.objects,
-        payloadBytes,
-        overheadBytes: packagingBytes + subgroup.signalingBytes,
-      });
-    }
+    this.sequences = {};
   }
 }
 

@@ -8,6 +8,15 @@ LICENSE file in the root directory of this source tree.
 import { MoqSender, type TrackData } from '../src/sender/moq/moq_sender_internals.js';
 import { CMAFDepackager } from '../src/packager/cmaf/cmaf_depackager.js';
 import { MoqState } from '../src/moq/moq.js';
+import { RelayConnection, type RelayLabel } from '../src/sender/moq/relay_connection.js';
+
+// A relay connection with a running session and the given tracks, no transport.
+function connectionWith(label: RelayLabel, tracks: Record<string, any>): RelayConnection {
+  const conn = new RelayConnection(label, `https://${label}:4433`);
+  conn.moq = { state: MoqState.Running, close: () => {} } as any;
+  conn.tracks = tracks;
+  return conn;
+}
 
 // parseSenderConfig and checkTrackData are private methods; access them through
 // a cast so the pure config logic can still be unit tested in isolation.
@@ -394,8 +403,7 @@ describe('subgroup byte accounting', () => {
       },
       packagerFormat,
     });
-    s.moq = { state: MoqState.Running };
-    s.tracks = { audio: track };
+    s.connections = [connectionWith('main', { audio: track })];
     return s;
   }
 
@@ -485,5 +493,185 @@ describe('subgroup byte accounting', () => {
     track.lastSubgroup = { groupId: 1, objects: 1, payloadBytes: 100, signalingBytes: 20 };
     sendAudio(sender, 1, 100);
     expect(posted.filter((m) => m.type === 'subgroupbytes')).toHaveLength(2);
+  });
+});
+
+describe('main + backup relays', () => {
+  let posted: any[] = [];
+  beforeEach(() => {
+    posted = [];
+    (globalThis as any).self = { postMessage: (msg: any) => posted.push(msg) };
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // A Track stand-in recording everything it is handed. `refuse` makes it drop
+  // every object, like a stuck relay whose send queue is full.
+  function recordingTrack(refuse = false) {
+    const calls: { payload: Uint8Array; newGroup: boolean; props: any; ids: any }[] = [];
+    return {
+      calls,
+      getInfo: () => ({ numSubscribers: 1, numQueued: 0, numOpenStreams: 0 }),
+      sendObject: (payload: Uint8Array, opts: any, props: any, _cb: any, ids: any) => {
+        calls.push({ payload, newGroup: opts !== undefined, props, ids });
+        return { getInfo: () => ({ ...ids, status: refuse ? 'dropped' : 'queued' }) };
+      },
+    };
+  }
+
+  function senderWith(connections: RelayConnection[]) {
+    const s = new MoqSender() as any;
+    s.config = parseSenderConfig({
+      urlHostPort: 'https://main:4433',
+      backupUrlHostPort: 'https://backup:4433',
+      moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } },
+      packagerFormat: 'cmaf',
+    });
+    s.connections = connections;
+    return s;
+  }
+
+  const AVC_CONFIG = new Uint8Array([1, 0x42, 0x00, 0x1e, 0xff, 0xe1, 0, 1, 0x67]);
+  function sendVideo(sender: any, types: string[], firstSeqId = 0) {
+    types.forEach((type, i) => {
+      const seqId = firstSeqId + i;
+      sender.handleChunk({
+        mediaType: 'video',
+        chunk: {
+          byteLength: 3,
+          timestamp: seqId * 33_333,
+          duration: 33_333,
+          type,
+          copyTo: (buf: Uint8Array) => buf.set([seqId, 2, 3]),
+        },
+        seqId,
+        compensatedTs: seqId * 33_333,
+        metadata: type === 'key' ? AVC_CONFIG : undefined,
+        timebase: 1_000_000,
+        codec: 'avc1.42001e',
+        codedWidth: 320,
+        codedHeight: 180,
+      });
+    });
+  }
+
+  it('parses the backup relay url, disabled by default', () => {
+    const base = {
+      urlHostPort: 'https://main:4433',
+      moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 'secret' } },
+    };
+    expect(parseSenderConfig(base).backupUrlHostPort).toBe('');
+    expect(
+      parseSenderConfig({ ...base, backupUrlHostPort: 'https://backup:4435' }).backupUrlHostPort,
+    ).toBe('https://backup:4435');
+  });
+
+  it('sends the very same objects (bytes, properties, ids) to both relays', () => {
+    const main = recordingTrack();
+    const backup = recordingTrack();
+    const sender = senderWith([
+      connectionWith('main', { video: main }),
+      connectionWith('backup', { video: backup }),
+    ]);
+    sendVideo(sender, ['key', 'delta', 'delta', 'key', 'delta']);
+
+    expect(main.calls.map((c) => c.ids)).toEqual([
+      { groupId: 0, objId: 0 },
+      { groupId: 0, objId: 1 },
+      { groupId: 0, objId: 2 },
+      { groupId: 1, objId: 0 },
+      { groupId: 1, objId: 1 },
+    ]);
+    expect(backup.calls).toHaveLength(main.calls.length);
+    backup.calls.forEach((c, i) => {
+      expect(c.payload).toBe(main.calls[i].payload); // packaged once
+      expect(c.props).toBe(main.calls[i].props);
+      expect(c.ids).toEqual(main.calls[i].ids);
+      expect(c.newGroup).toBe(main.calls[i].newGroup);
+    });
+  });
+
+  it('keeps the ids aligned when one relay can not send for a while', () => {
+    const main = recordingTrack();
+    const backup = recordingTrack();
+    const backupConn = connectionWith('backup', {});
+    const sender = senderWith([connectionWith('main', { video: main }), backupConn]);
+
+    sendVideo(sender, ['key', 'delta']); // backup not subscribed yet
+    backupConn.tracks = { video: backup as any };
+    sendVideo(sender, ['delta', 'key'], 2);
+
+    expect(backup.calls.map((c) => c.ids)).toEqual([
+      { groupId: 0, objId: 2 },
+      { groupId: 1, objId: 0 },
+    ]);
+    expect(main.calls.slice(2).map((c) => c.ids)).toEqual(backup.calls.map((c) => c.ids));
+    const backupDrops = posted.filter((m) => m.type === 'dropped' && m.data.relay === 'backup');
+    expect(backupDrops).toHaveLength(2);
+    expect(backupDrops[0].data.msg).toMatch(/not subscribed/);
+  });
+
+  it('a stuck relay only drops (and reports) on its own side', () => {
+    const main = recordingTrack();
+    const stuck = recordingTrack(true);
+    const sender = senderWith([
+      connectionWith('main', { video: main }),
+      connectionWith('backup', { video: stuck }),
+    ]);
+    sendVideo(sender, ['key', 'delta', 'delta']);
+
+    expect(main.calls).toHaveLength(3);
+    const drops = posted.filter((m) => m.type === 'dropped');
+    expect(drops).toHaveLength(3);
+    expect(drops.every((m) => m.data.relay === 'backup')).toBe(true);
+    const stats = posted.filter((m) => m.type === 'sendstats');
+    expect(stats.map((m) => m.relay)).toEqual([
+      'main',
+      'backup',
+      'main',
+      'backup',
+      'main',
+      'backup',
+    ]);
+  });
+
+  it('stops every relay', () => {
+    const closed: string[] = [];
+    const main = connectionWith('main', {});
+    const backup = connectionWith('backup', {});
+    main.moq = { close: () => closed.push('main') } as any;
+    backup.moq = { close: () => closed.push('backup') } as any;
+    const sender = senderWith([main, backup]);
+    sender.handleStop();
+    expect(closed).toEqual(['main', 'backup']);
+    expect(sender.connections).toEqual([]);
+  });
+});
+
+describe('per-relay network issue injection', () => {
+  function connWithBursts(label: RelayLabel) {
+    const calls: string[] = [];
+    const track = {
+      forceDropBurst: (n: number) => calls.push(`drop ${n}`),
+      forceHoldBurst: (n: number) => calls.push(`hold ${n}`),
+    };
+    return { conn: connectionWith(label, { video: track }), calls };
+  }
+
+  it('only affects the relay the action names (main by default)', () => {
+    const main = connWithBursts('main');
+    const backup = connWithBursts('backup');
+    const s = new MoqSender() as any;
+    s.connections = [main.conn, backup.conn];
+
+    s.handleForceDropBurst({ relay: 'backup', mediaType: 'video', burst: 3 });
+    s.handleForceHoldBurst({ relay: 'main', mediaType: 'video', burst: 2 });
+    s.handleForceDropBurst({ mediaType: 'video', burst: 1 });
+
+    expect(main.calls).toEqual(['hold 2', 'drop 1']);
+    expect(backup.calls).toEqual(['drop 3']);
   });
 });

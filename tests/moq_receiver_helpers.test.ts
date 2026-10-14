@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import { MoqReceiver, type TrackData } from '../src/receiver/moq/moq_receiver_internals.js';
 import { CMAFPackager } from '../src/packager/cmaf/cmaf_packager.js';
+import { ReceiverConnection, type RelayLabel } from '../src/receiver/moq/receiver_connection.js';
 
 // parseReceiverConfig and checkTrackData are private methods; access them through
 // a cast so the pure config logic can still be unit tested in isolation.
@@ -116,14 +117,13 @@ describe('CMSF reception', () => {
     } as any);
   }
 
-  function cmsfReceiver(): any {
-    const r = new MoqReceiver() as any;
-    r.config = r.parseReceiverConfig({
+  function cmsfReceiver(label: RelayLabel = 'main'): any {
+    const config = parseReceiverConfig({
       urlHostPort: 'https://relay:4433',
       moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 's', timebase: 1000 } },
       packagerFormat: 'cmaf',
     });
-    return r;
+    return new ReceiverConnection(label, 'https://relay:4433', config);
   }
 
   // How the receiver is called for one object. A subgroup stream states the
@@ -191,5 +191,52 @@ describe('CMSF reception', () => {
     // ... and playback starts on the next object that carries one.
     await receiveObject(receiver, videoObject(packager, 1_000_000, false), true, 1, 0);
     expect(posted.filter((m) => m.type === 'videochunk')).toHaveLength(1);
+  });
+
+  it('tags every posted object with its relay', async () => {
+    const backup = cmsfReceiver('backup');
+    const packager = new CMAFPackager('video');
+    await receiveObject(backup, videoObject(packager, 0, false), true, 3, 0);
+    const chunks = posted.filter((m) => m.type === 'videochunk');
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({ relay: 'backup', groupId: 3, objectId: 0 });
+  });
+
+  it('keeps the CMAF Header state per relay: one relay joining late does not affect the other', async () => {
+    const main = cmsfReceiver('main');
+    const backup = cmsfReceiver('backup');
+    const packager = new CMAFPackager('video');
+    const key = videoObject(packager, 0, false);
+    const delta = videoObject(packager, 33_333, true);
+
+    await receiveObject(main, key.slice(), true, 0, 0);
+    await receiveObject(main, delta.slice(), true, 0, 1);
+    // Backup joined mid-group: it never saw the header, so it can not decode yet.
+    await receiveObject(backup, delta.slice(), true, 0, 1);
+
+    const chunks = posted.filter((m) => m.type === 'videochunk');
+    expect(chunks.map((m) => m.relay)).toEqual(['main', 'main']);
+  });
+});
+
+describe('main + backup relays', () => {
+  it('parses the backup relay url, disabled by default', () => {
+    const base = {
+      urlHostPort: 'https://main:4433',
+      moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 's', timebase: 1000 } },
+    };
+    expect(parseReceiverConfig(base).backupUrlHostPort).toBe('');
+    expect(
+      parseReceiverConfig({ ...base, backupUrlHostPort: 'https://backup:4435' }).backupUrlHostPort,
+    ).toBe('https://backup:4435');
+  });
+
+  it('stops every relay', () => {
+    const r = new MoqReceiver() as any;
+    const closed: string[] = [];
+    r.connections = [{ close: () => closed.push('main') }, { close: () => closed.push('backup') }];
+    r.handleStop();
+    expect(closed).toEqual(['main', 'backup']);
+    expect(r.connections).toEqual([]);
   });
 });

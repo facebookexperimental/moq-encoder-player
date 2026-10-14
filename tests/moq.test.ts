@@ -6,7 +6,13 @@ LICENSE file in the root directory of this source tree.
 */
 
 import { Track, Subscription, MoqMapping, Moq } from '../src/moq/moq.js';
-import { MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT, MOQ_CURRENT_VERSION } from '../src/moq/moqt.js';
+import {
+  MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
+  MOQ_CURRENT_VERSION,
+  moqSendSubgroupHeader,
+  moqSendObjectSubgroupToWriter,
+} from '../src/moq/moqt.js';
+import { concatBuffer } from '../src/moq/buffer_utils.js';
 
 const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -100,6 +106,65 @@ describe('Track sequencing', () => {
     expect(o1.getInfo()).toMatchObject({ groupId: 0, objId: 0 });
     expect(o2.getInfo()).toMatchObject({ groupId: 0, objId: 1 });
     expect(o3.getInfo()).toMatchObject({ groupId: 1, objId: 0 });
+  });
+
+  it('uses caller-assigned ids, waiting for a group start it can follow', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    // Joined mid-group: nothing to follow until the caller starts a group.
+    expect(send(4, 3).getInfo().status).toBe('dropped');
+    expect(send(5, 0, true).getInfo()).toMatchObject({ groupId: 5, objId: 0, status: 'queued' });
+    expect(send(5, 1).getInfo()).toMatchObject({ groupId: 5, objId: 1, status: 'queued' });
+  });
+
+  it('caller-assigned ids: resuming forwarding waits for the next group start', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    expect(send(0, 0, true).getInfo().status).toBe('queued');
+    track._setForwarding(false);
+    track._setForwarding(true);
+    // The track can not invent a new group: the rest of group 0 is dropped.
+    expect(send(0, 1).getInfo().status).toBe('dropped');
+    expect(send(1, 0, true).getInfo()).toMatchObject({ groupId: 1, objId: 0, status: 'queued' });
+  });
+
+  it('caller-assigned ids: drops the rest of a group whose start was refused', () => {
+    const { moq } = fakeMoq({ hangStream: true });
+    const track = makeTrack(moq, MoqMapping.SubgroupPerGroup, 1);
+    track._setForwarding(true);
+    const send = (groupId: number, objId: number, newGroup = false) =>
+      track.sendObject(
+        new Uint8Array([1]),
+        newGroup ? { priority: BASE_PRI } : undefined,
+        [],
+        undefined,
+        { groupId, objId },
+      );
+
+    send(0, 0, true); // drains, stalls opening the stream
+    send(0, 1); // fills the 1-object queue
+    expect(send(1, 0, true).getInfo().status).toBe('dropped'); // queue full
+    expect(send(1, 1).getInfo().status).toBe('dropped'); // its group never started
   });
 });
 
@@ -332,6 +397,86 @@ describe('Track forward-state gating', () => {
     await flush();
     expect(resumed.getInfo().status).toBe('sent');
     expect(resumed.getInfo().groupId).toBe(1);
+  });
+});
+
+describe('Moq subgroup reception: end of group', () => {
+  const TRACK_ALIAS = 9;
+  const GROUP = 7;
+
+  // The bytes of a subgroup stream for group GROUP carrying `numObjects`
+  // objects, with no explicit end-of-group marker.
+  async function subgroupBytes(numObjects: number): Promise<Uint8Array> {
+    const chunks: Uint8Array[] = [];
+    const writer: any = {
+      write: (b: Uint8Array) => {
+        chunks.push(b);
+        return Promise.resolve();
+      },
+    };
+    await moqSendSubgroupHeader(writer, TRACK_ALIAS, GROUP, BASE_PRI);
+    for (let i = 0; i < numObjects; i++) {
+      await moqSendObjectSubgroupToWriter(writer, 0, new Uint8Array([i, i, i]), []);
+    }
+    return concatBuffer(chunks);
+  }
+
+  // A byte stream that delivers `bytes`, then ends with a FIN or a reset.
+  function uniStream(bytes: Uint8Array, end: 'fin' | 'reset'): ReadableStream<Uint8Array> {
+    let delivered = false;
+    return new ReadableStream({
+      type: 'bytes',
+      pull(controller: any) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(bytes.slice());
+        } else if (end === 'fin') {
+          controller.close();
+          controller.byobRequest?.respond(0);
+        } else {
+          controller.error(new Error('stream reset'));
+        }
+      },
+    } as any);
+  }
+
+  async function receive(end: 'fin' | 'reset') {
+    const objects: string[] = [];
+    const endsOfGroup: string[] = [];
+    const moq = new Moq() as any;
+    const sub = new Subscription(
+      moq,
+      ['vc'],
+      'v0',
+      4,
+      TRACK_ALIAS,
+      undefined,
+      async (reader, _props, length, groupId, objectId) => {
+        // Consume the payload, as the real depackagers do.
+        const r = reader.getReader({ mode: 'byob' });
+        await r.read(new Uint8Array(length!));
+        r.releaseLock();
+        objects.push(`${groupId}/${objectId}`);
+        return false;
+      },
+      fakeBidiStream(),
+      (groupId, lastObjId) => endsOfGroup.push(`${groupId}/${lastObjId}`),
+    );
+    moq.subscriptionsByAlias.set(TRACK_ALIAS, sub);
+    await moq.handleIncomingUniStream(uniStream(await subgroupBytes(2), end));
+    return { objects, endsOfGroup };
+  }
+
+  it('a stream that FINs without a marker ends its group at the last object read', async () => {
+    const { objects, endsOfGroup } = await receive('fin');
+    expect(objects).toEqual(['7/0', '7/1']);
+    expect(endsOfGroup).toEqual(['7/1']);
+  });
+
+  it('a stream cut short (relay died, reset) does NOT end its group', async () => {
+    const { objects, endsOfGroup } = await receive('reset');
+    expect(objects).toEqual(['7/0', '7/1']);
+    expect(endsOfGroup).toEqual([]);
   });
 });
 

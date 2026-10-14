@@ -89,6 +89,7 @@ import {
   wireHoldConfigIsActive,
   type WireHoldConfig,
 } from './network_simulator.js';
+import { ReadStreamClosed } from './buffer_utils.js';
 
 const LOG_PREFIX = '[MOQ]';
 
@@ -122,6 +123,16 @@ export interface ObjInfo {
 /** Options for starting a new group, passed to `Track.sendObject`. */
 export interface NewGroupOptions {
   priority: number;
+}
+
+/**
+ * Caller-assigned (group, object) ids for `Track.sendObject`. Lets several
+ * tracks (e.g. the same track published to a main and a backup relay) put the
+ * very same object ids on the wire, whatever each one drops.
+ */
+export interface ObjectIds {
+  groupId: number;
+  objId: number;
 }
 
 /**
@@ -416,12 +427,18 @@ export class Track {
    * the pending send queue is already at `maxQueuedObjects`, or (subgroup
    * mapping) when starting a new group would exceed `maxOpenStreams` — in which
    * case the whole group is dropped until a later group finds room.
+   *
+   * `ids` overrides the track's own sequencing. The track can then not invent a
+   * group start, so instead of opening a fresh group (first object, resume after
+   * Forward State 0) it drops objects until the caller starts a new group, and it
+   * drops the rest of any group whose first object it did not accept.
    */
   sendObject(
     data: BufferSource | undefined,
     newGroupOptions?: NewGroupOptions,
     extensionHeaders: KvPair[] = [],
     callback?: (obj: ObjData) => void,
+    ids?: ObjectIds,
   ): ObjData {
     if (this.closed) {
       return new ObjData(this, -1, -1, 'dropped', this.currentGroupPriority);
@@ -446,7 +463,17 @@ export class Track {
     // pause were reset (by us) and/or STOP_SENDING'd by the relay, so we must
     // open new subgroup streams and must not reuse Object IDs within an
     // already-sent group (which would make the track malformed).
-    if (this.resumeNeedsNewGroup) {
+    if (ids !== undefined) {
+      if (newGroup) {
+        this.resumeNeedsNewGroup = false;
+      } else if (
+        !this.firstObjectSent ||
+        this.resumeNeedsNewGroup ||
+        ids.groupId !== this.currentGroupSeq
+      ) {
+        return new ObjData(this, ids.groupId, ids.objId, 'dropped', this.currentGroupPriority);
+      }
+    } else if (this.resumeNeedsNewGroup) {
       newGroup = true;
       this.resumeNeedsNewGroup = false;
     }
@@ -483,7 +510,8 @@ export class Track {
     if (newGroupOptions !== undefined) {
       this.currentGroupPriority = newGroupOptions.priority;
     }
-    const { groupId, objId } = this.advanceSequence(newGroup);
+    const { groupId, objId } =
+      ids !== undefined ? this.adoptSequence(ids) : this.advanceSequence(newGroup);
     const obj = new ObjData(
       this,
       groupId,
@@ -751,6 +779,14 @@ export class Track {
     const objId = this.currentObjectSeq;
     this.currentObjectSeq++;
     return { groupId, objId };
+  }
+
+  // Take caller-assigned ids, keeping the counters consistent with them.
+  private adoptSequence(ids: ObjectIds): ObjectIds {
+    this.firstObjectSent = true;
+    this.currentGroupSeq = ids.groupId;
+    this.currentObjectSeq = ids.objId + 1;
+    return { groupId: ids.groupId, objId: ids.objId };
   }
 
   // Drain the queue sequentially (preserves stream write ordering).
@@ -1740,6 +1776,9 @@ export class Moq {
     let isEOF = false;
     let numObjRead = 0;
     let endOfGroupSignaled = false;
+    // False when the stream was cut short (reset, session lost) rather than
+    // FIN'd: then the last object read is NOT the end of its group.
+    let finishedCleanly = true;
     // Reconstruct the per-object id from arrival order: the subgroup wire format
     // carries an object-id delta of 0 for every object (see writeObject), so the
     // parsed objSeq is unusable. QUIC delivers a subgroup stream in order and the
@@ -1778,6 +1817,9 @@ export class Moq {
           (err instanceof WebTransportError && err.message.includes('The session is closed'))
         ) {
           isEOF = true;
+          // A FIN surfaces as our own ReadStreamClosed; anything else is a reset
+          // or a lost session (e.g. the relay died mid-group).
+          finishedCleanly = err instanceof ReadStreamClosed;
         } else {
           throw err;
         }
@@ -1789,8 +1831,10 @@ export class Moq {
     // single object is delivered, before the publisher's trailing marker rolls
     // out on the next group) -- the finished stream still means the group is
     // complete at the last object read. Signal it so the receiver does not treat
-    // the next group's first object as a discontinuity.
-    if (!endOfGroupSignaled && objIndex > 0) {
+    // the next group's first object as a discontinuity. A stream cut short says
+    // nothing about where the group ends (another relay may still deliver the
+    // rest of it), so it must not signal one.
+    if (!endOfGroupSignaled && finishedCleanly && objIndex > 0) {
       sub._signalEndOfGroup(header.groupSeq, objIndex - 1);
     }
   }
