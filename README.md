@@ -35,8 +35,10 @@ moq-encoder-player/
 │   ├── moq/                #   moq.ts (high-level Moq/Track/Subscription client),
 │   │                       #   moqt.ts (wire protocol), varint.ts, byte_utils.ts, buffer_utils.ts,
 │   │                       #   network_simulator.ts (send-path drop/hold impairments), README.md
-│   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher)
-│   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber)
+│   ├── sender/             #   moq_sender.ts (worker shell) + moq/moq_sender_internals.ts   (MOQT publisher),
+│   │                       #   moq/relay_connection.ts (one publishing session per relay: main / backup)
+│   ├── receiver/           #   moq_demuxer_downloader.ts (worker shell) + moq/moq_receiver_internals.ts (MOQT subscriber),
+│   │                       #   moq/receiver_connection.ts (one subscribing session per relay: main / backup)
 │   ├── packager/           #   media_packager.ts (common interface + factory),
 │   │   │                   #   loc_packager.ts                   (LOC media packager)
 │   │   └── cmaf/           #   cmaf_packager.ts / cmaf_depackager.ts, cmaf_init_segment.ts,
@@ -127,6 +129,23 @@ That addition is required, not optional: LOC puts no media type on the wire (a c
 
 It follows [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) (CMAF packaging for MoQ, written against the individual draft the working group adopted, `draft-wilaw-moq-cmafpackaging-01`) with the box syntax of CMAF (ISO/IEC 23000-19) and ISOBMFF: each MoQ object payload is a self-describing ISOBMFF media fragment and no MoQ Object Properties are sent at all. See [src/packager/cmaf/](#srcpackagercmaf-cmsf--cmaf-packager) for the mapping and the two documented deviations from the draft.
 
+## Redundancy (main + backup relays)
+
+Both the encoder and the player can use **two relays at the same time**: a main one and an optional backup one. Enable it with the **"Use backup relay"** checkbox (encoder: "MOQT WT backup relay", player: "Backup WT server"; both default to `https://localhost:4435/moq`). It has to be enabled on both ends to get any benefit, and both relays must carry the same namespace / track names.
+
+![Redundancy block diagram](./pics/redundancy-block-diagram.svg)
+Fig2: Redundancy block diagram
+
+- **The publisher sends byte-identical objects to both relays.** Capture, encoding and packaging run once; the packaged payload, its properties and its MoQ `(groupId, objectId)` are handed to each relay connection. The ids are assigned by the sender itself (not by each MoQ `Track`), for every chunk, so they stay the same on both relays whatever each one drops (see `ObjectIds` in [`src/moq/README.md`](./src/moq/README.md)). A relay that joins or resumes mid-group gets nothing until the next group starts, because a track can not invent a group start with caller-assigned ids.
+- **The connections are fully independent**, on both ends: one WebTransport / MoQ session each, opened concurrently, with their own tracks, send queues, stats and (on the player) their own depackagers. A relay that is slow, stuck or dead only fills and drops from its own queues and never delays the other one. A connection that fails is logged and the other one carries on.
+- **The player de-duplicates in its jitter buffers.** Objects from both connections go into the same per-track jitter buffer, which keeps the first copy of each `(groupId, objectId)` and silently drops the second one (it is guaranteed to be identical). As a side effect, an object lost on one path is filled in by the other one.
+- Group / object ids are therefore **not** guaranteed to start at 0 on a relay, nor to be contiguous across a pause: they advance with the stream, whether a relay is publishing or not.
+
+What the UIs show per relay:
+
+- **Encoder:** "Main:" and "Backup:" _Send queue / open streams timeline_ graphs, "Main:/Backup: Dropped data" and "Main:/Backup: Muxer sender" tabs, both relays in the per-track overhead graphs (main in the track color, backup in purple / green), and "Main …" / "Backup …" buttons in _Inject network issues_ (backup ones are only enabled while publishing with a backup relay). Every `dropped`, `sendstats` and `subgroupbytes` message from the sender worker carries a `relay` field (`'main'` / `'backup'`).
+- **Player:** a _Received group IDs (lastID - currentID) (last 60s)_ graph that plots, per connection and track, each new group ID received minus the previous one (1 = in order, >1 = groups skipped, <=0 = out of order), and a **"Main - backup"** tab with the current group ID of each connection (and their difference) and how long ago each one received it. Every chunk / `endofgroup` message from the receiver worker carries the `relay` field.
+
 ## Encoder
 
 The encoder implements MOQT publisher role. It is based on [Webcodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), and [AudioContext](https://developer.mozilla.org/en-US/docs/Web/API/AudioContext), see the block diagram in fig3
@@ -179,6 +198,9 @@ Muxer config:
 ```javascript
 const muxerSenderConfig = {
         urlHostPort: '',
+        // Optional backup relay that receives the very same objects ('' = disabled),
+        // see Redundancy
+        backupUrlHostPort: '',
         urlPath: '',
 
         keepAlivesEveryMs: 5000,
@@ -361,16 +383,16 @@ Other details:
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) that implements the MOQT publisher role and sends video and audio packets (see `loc_packager.ts` / `cmaf/cmaf_packager.ts`) to the server / relay following MOQT and the selected packaging format.
 
-`moq_sender.ts` is a thin worker shell; the publisher logic lives in `MoqSender` (`src/sender/moq/moq_sender_internals.ts`), which drives the shared, media-free `Moq` client in [`src/moq/moq.ts`](./src/moq/moq.ts) (fully documented in [`src/moq/README.md`](./src/moq/README.md)).
+`moq_sender.ts` is a thin worker shell; the publisher logic lives in `MoqSender` (`src/sender/moq/moq_sender_internals.ts`). It packages each chunk once, assigns its MoQ `(groupId, objectId)` and hands it to one `RelayConnection` (`src/sender/moq/relay_connection.ts`) per relay: main and, when `backupUrlHostPort` is set, backup (see [Redundancy](#redundancy-main--backup-relays)). Each connection drives its own instance of the shared, media-free `Moq` client in [`src/moq/moq.ts`](./src/moq/moq.ts) (fully documented in [`src/moq/README.md`](./src/moq/README.md)).
 
-- Opens a WebTransport session against the relay (MOQT version negotiated via ALPN)
+- Opens a WebTransport session against each relay, concurrently and independently (MOQT version negotiated via ALPN)
 - Announces its track(s): either one `PUBLISH` per track, or a single `PUBLISH_NAMESPACE` per namespace serving tracks lazily on subscribe (`usePublishNamespace`)
 - Receives audio and video chunks from `a_encoder.ts` and `v_encoder.ts` and publishes each as a MoQ object via `track.sendObject(...)`
 - Packages them with LOC or CMAF depending on `packagerFormat` (the demo sends `"cmaf"`; an unset field falls back to `"loc"`). One packager instance is kept per media type for the whole session, because the CMAF one is stateful (`moof` sequence numbers, initialization header)
 - **Object → QUIC wire mapping is configurable per track** (`moqMapping`): `SubgroupPerGroup` opens one unidirectional QUIC stream per group (a video keyframe starts a new group/stream), while `ObjectPerDatagram` sends one datagram per object
 - Send priority uses the MoQ publisher priority carried on each group; audio is published at a higher priority than video (lower numeric value = higher priority)
 - It keeps the per-track send queue below `maxInFlightRequests` and the concurrent open subgroup streams below `maxOpenStreams` (objects / whole groups are dropped once the respective cap is reached). Two stats are reported per track: `numQueued` (objects waiting in the send queue) and `numOpenStreams` (open QUIC subgroup streams)
-- Optional send-path impairments (`src/moq/network_simulator.ts`) can drop or hold bursts of wire units to test A/V sync and loss recovery; both are exposed from the encoder UI
+- Optional send-path impairments (`src/moq/network_simulator.ts`) can drop or hold bursts of wire units to test A/V sync and loss recovery; both are exposed from the encoder UI. The periodic ones (Advanced settings) apply to every relay, the manual "Inject network issues" buttons to the relay they name
 
 ## Player
 
@@ -395,10 +417,12 @@ To keep the audio and video in-sync the following strategy is applied:
 
 [WebWorker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API) entry point. It is a thin shell that forwards worker messages to the `MoqReceiver` class in `src/receiver/moq/moq_receiver_internals.ts`, mirroring the publisher layout (`src/sender/`).
 
+`MoqReceiver` opens one `ReceiverConnection` (`src/receiver/moq/receiver_connection.ts`) per relay: main and, when `backupUrlHostPort` is set, backup (see [Redundancy](#redundancy-main--backup-relays)). Each connection runs the whole pipeline below on its own and tags every message it posts with its `relay`.
+
 The MOQT subscriber logic is split in two layers:
 
 - `src/moq/moq.ts` — the high-level, media-free `Moq` client (shared with the publisher). It owns the WebTransport session, the control loop, the SUBSCRIBE handshake (`Moq.subscribe` → `Subscription`), and the incoming stream / datagram receive loops. Received object payloads are routed to the matching `Subscription` by track alias.
-- `src/receiver/moq/moq_receiver_internals.ts` — `MoqReceiver` translates worker messages into `Moq` calls and parses the received payloads with the depackager the `packagerFormat` config asks for (`loc_packager.ts` or `cmaf/cmaf_depackager.ts`, see [Packager](#packager)) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline. One depackager instance is kept per track for the whole subscription, because the CMSF one is stateful (it remembers the CMAF Header).
+- `src/receiver/moq/receiver_connection.ts` — `ReceiverConnection` translates the subscription into `Moq` calls and parses the received payloads with the depackager the `packagerFormat` config asks for (`loc_packager.ts` or `cmaf/cmaf_depackager.ts`, see [Packager](#packager)) into `EncodedVideoChunk` / `EncodedAudioChunk` for the rest of the player pipeline. One depackager instance is kept per track **and per connection** for the whole subscription, because the CMSF one is stateful (it remembers the CMAF Header), so two relays can not share one.
 
 It implements MOQT and extracts video and audio packets from the server / relay following MOQT and the selected packaging format:
 
@@ -415,7 +439,7 @@ With CMSF the track description (timescale, codec, decoder configuration) travel
 
 #### Data overhead
 
-The encoder measures what it costs to put each subgroup on the wire and reports it per track: the instant figures (payload bytes, overhead bytes and overhead %) live in the **"Data overhead" tab**, and a **"&lt;track name&gt; overhead (last 60s)" chart per track** plots the trend (overhead % on the left axis, overhead bytes on the right). The percentage is relative to the payload (`overhead / payload`), so it goes over 100% when the overhead is bigger than the media itself — which is the normal case for small audio frames.
+The encoder measures what it costs to put each subgroup on the wire and reports it per track: the instant figures (payload bytes, overhead bytes and overhead %) live in the **"Data overhead" tab** (main relay), and a **"&lt;track name&gt; overhead (last 60s)" chart per track** plots the trend (overhead % on the left axis, overhead bytes on the right) for every relay, main in the track color and backup in purple (audio) / green (video). The percentage is relative to the payload (`overhead / payload`), so it goes over 100% when the overhead is bigger than the media itself — which is the normal case for small audio frames.
 
 - **Payload** = the encoded media bytes the encoder produced
 - **Overhead** = the packager (CMSF boxes and the periodic CMAF Header; LOC only adds its 2 byte empty private properties block) + the MoQ signaling the track counted (subgroup header, per-object headers, object properties, end-of-group marker)
@@ -434,6 +458,8 @@ Since we do not have any guarantee that QUIC streams are delivered in order we n
 - It also keeps track of the last delivered `(groupId, objId)` detecting:
   - Gaps / discontinuities
   - Total QUIC Stream lost (not arrived in time)
+- It de-duplicates: an object whose `(groupId, objId)` is already buffered, or was recently released (the last 2048 keys are remembered), is dropped silently and counted in `numTotalDuplicates`. That is what merges the two copies of every object when a backup relay is used (see [Redundancy](#redundancy-main--backup-relays)); only genuinely late objects (behind the cursor and never seen) are reported through the dropped callback
+- End-of-group matters at group boundaries: the first object of the next group is only contiguous once the previous group is known to have ended. For subgroup streams the receiver only infers end-of-group from a stream that finished cleanly (FIN), never from one that was cut short (reset / lost session), otherwise a relay dying mid-group would make the other relay's rest of that group look like a gap
 
 ### src/decode/audio_decoder.ts
 
@@ -577,6 +603,13 @@ Note: this script adds cross-origin-isolation headers. The player no longer requ
 ENJOY YOUR POCing!!! :-)
 
 You should see same UI that is shown in testing section above
+
+### Testing redundancy (main + backup relays)
+
+- Run a second moxygen relay on port `4435` (same key / certificate), next to the one on `4433`
+- Encoder: check "Use backup relay" (defaults to `https://localhost:4435/moq`), then "Start"
+- Player: check "Use backup relay" (same default), copy the track name, then "Start"
+- Kill either relay: playback should go on with no gap from the other one. The player's _Received group IDs_ graph and "Main - backup" tab show the dead connection stop, and the encoder's "Main:/Backup:" graphs and tabs show its queue fill and drop
 
 ## TODO
 - Check token in all messages, not just when encoder receives SUBSCRIBE

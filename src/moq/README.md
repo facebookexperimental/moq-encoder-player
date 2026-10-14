@@ -143,7 +143,8 @@ sequenceDiagram
 > it to 1 when a subscriber appears (and back to 0 when the last one leaves).
 > While Forward State is 0, `track.sendObject()` returns objects with status
 > `dropped` and nothing is sent — so you don't waste uplink when nobody is
-> watching. When it flips back to 1, the track resumes on a **fresh group**.
+> watching. When it flips back to 1, the track resumes on a **fresh group** (with
+> caller-assigned [`ObjectIds`](#objectids), on the caller's next group start).
 
 ### Publish via an announced namespace
 
@@ -316,6 +317,7 @@ sendObject(
   newGroupOptions?: NewGroupOptions,
   extensionHeaders?: KvPair[],
   callback?: (obj: ObjData) => void,
+  ids?: ObjectIds,
 ): ObjData
 ```
 Queue one object for delivery and return an [`ObjData`](#objdata) handle
@@ -324,12 +326,22 @@ immediately (delivery is async). Pass [`NewGroupOptions`](#newgroupoptions) to
 to append to the current group. `extensionHeaders` are MoQ object extension
 headers (e.g. LOC metadata). `callback` fires once the object is written.
 
+`ids` ([`ObjectIds`](#objectids)) overrides the track's own sequencing, so
+several tracks can put the very same `(groupId, objId)` on the wire (the
+encoder uses it to publish identical objects to a main and a backup relay).
+The track can then not invent a group start, so instead of opening a fresh
+group (first object, resume after Forward State 0) it drops objects until the
+caller starts a new group, and it drops the rest of any group whose first
+object it did not accept.
+
 The returned object's `status` is **`dropped`** (nothing sent) when:
 - the track is `closed`,
 - the subscription is **not being forwarded** (Forward State 0 / no subscriber),
 - the pending send queue is already at `maxQueuedObjects`,
 - starting a new group would exceed `maxOpenStreams` (subgroup mapping) — the
-  whole group is then dropped until a later group finds room.
+  whole group is then dropped until a later group finds room,
+- with `ids`: the object does not belong to a group whose start this track
+  accepted (see above).
 
 ```ts
 getInfo(): TrackInfo
@@ -438,6 +450,14 @@ version negotiation). Browsers that don't support it ignore the option.
 interface NewGroupOptions { priority: number } // 0 = highest priority, 255 = lowest
 ```
 
+#### `ObjectIds`
+```ts
+interface ObjectIds { groupId: number; objId: number }
+```
+Caller-assigned ids for `Track.sendObject`. The caller owns the sequencing: a
+new group gets the next `groupId` and `objId` 0, every other object the next
+`objId` of the current group.
+
 #### `KeepAliveOptions`
 ```ts
 interface KeepAliveOptions {
@@ -487,6 +507,12 @@ group is complete. For **subgroup streams** end-of-group is a status object that
 trails the group's last payload object, so it is delivered out of band here (it
 cannot ride on the last object). **Datagrams** carry end-of-group inline instead,
 surfaced via `ObjectCallback`'s `isLastInGroup`.
+
+A subgroup stream that ends **without** that status object still signals
+end-of-group at its last object when it finished cleanly (FIN), which is the
+common case for one object per group. A stream that was cut short (stream reset,
+session lost, e.g. the relay died mid-group) signals nothing: it says nothing
+about where the group ends, and another relay may still deliver the rest of it.
 
 #### `TrackInfo` / `SubscriptionInfo` / `ObjInfo`
 ```ts
@@ -610,6 +636,10 @@ track.sendObject(new TextEncoder().encode('hello'), { priority: 128 });
   `RESET_STREAM`) are handled internally.
 - **Subscriber routing** is by `trackAlias` (from `SUBSCRIBE_OK`), so subscribe
   before objects arrive — `subscribe()` starts the receive loops for you.
+- **Several sessions** (e.g. a main and a backup relay) are just several `Moq`
+  instances: they share no state, so one that stalls never blocks another. To
+  publish identical objects on all of them, assign the ids yourself (`ids` in
+  `sendObject`); a subscriber can then de-duplicate on `(groupId, objectId)`.
 
 For the on-the-wire encoding (control messages, datagram/subgroup framing,
 key-value pairs, varints) see [`moqt.ts`](./moqt.ts) and [`varint.ts`](./varint.ts).
