@@ -12,6 +12,22 @@ LICENSE file in the root directory of this source tree.
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="../shared/demo.css">
+    <style>
+        /* "Video from / Audio from" relay badges under the video */
+        .relay-badge {
+            display: inline-block;
+            width: 5.5em;
+            text-align: center;
+            padding: 1px 0;
+            border: 1px solid #4c566a;
+            border-radius: 4px;
+            font-weight: 600;
+            color: #000000;
+            background: #eceff4;
+        }
+        .relay-badge.main { background: #b9f6b9; }
+        .relay-badge.backup { background: #b9dcf6; }
+    </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
 
@@ -93,6 +109,9 @@ LICENSE file in the root directory of this source tree.
     <!-- Player -->
     <div class="boxed">
         <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
+        <div class="styleform">
+            <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span> Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+        </div>
     </div>
 
     <!-- Received group IDs timeline (last 60s), per relay connection -->
@@ -1132,6 +1151,8 @@ LICENSE file in the root directory of this source tree.
         createVideoRendererBuffer();
 
         createJitterBuffers();
+        updatePlayedFromRelayUI('video', undefined);
+        updatePlayedFromRelayUI('audio', undefined);
 
         createWorkers();
 
@@ -1215,6 +1236,8 @@ LICENSE file in the root directory of this source tree.
         animFrame = null;
 
         clearJitterBuffers();
+        updatePlayedFromRelayUI('video', undefined);
+        updatePlayedFromRelayUI('audio', undefined);
         clearVideoRendererBuffer();
     }
 
@@ -1308,6 +1331,18 @@ LICENSE file in the root directory of this source tree.
     // objects both from AddItem (new object) and MarkEndOfGroup (a retroactive
     // end-of-group can unblock a group boundary that was waiting), so both feed
     // through here.
+    // Which relay connection the media being played came from: the copy of each
+    // object that reached the jitter buffer first (the other one is de-duplicated).
+    function updatePlayedFromRelayUI(mediaType, relay) {
+        const el = document.getElementById(mediaType === 'video' ? 'videoFromRelay' : 'audioFromRelay');
+        const text = relay === undefined ? '-' : (relay === 'backup' ? 'Backup' : 'Main');
+        if (el.textContent !== text) {
+            el.textContent = text;
+            el.classList.toggle('main', relay === 'main');
+            el.classList.toggle('backup', relay === 'backup');
+        }
+    }
+
     function processReleasedVideo(releasedVideo) {
         if (wtVideoJitterBuffer == null) {
             return;
@@ -1324,6 +1359,7 @@ LICENSE file in the root directory of this source tree.
             } else {
                 timingInfo.muxer.currentVideoTs = orderedVideoData.chunk.timestamp;
                 updateChunkTSUI('video', timingInfo.muxer.currentVideoTs);
+                updatePlayedFromRelayUI('video', orderedVideoData.extraData.relay);
                 videoDecoderWorker.postMessage({ type: "videochunk", groupId: orderedVideoData.groupId, objId: orderedVideoData.objId, chunk: orderedVideoData.chunk, metadata: orderedVideoData.extraData.metadata, codec: orderedVideoData.extraData.codec, isDisco: orderedVideoData.isDisco, timebase: downloaderConfig.moqTracks.video.timebase, verbose: VERBOSE});
             }
         }
@@ -1347,6 +1383,7 @@ LICENSE file in the root directory of this source tree.
             } else {
                 timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
                 updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
+                updatePlayedFromRelayUI('audio', orderedAudioData.extraData.relay);
                 audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, codec: orderedAudioData.extraData.codec, isDisco: orderedAudioData.isDisco, timebase: downloaderConfig.moqTracks.audio.timebase});
             }
         }
@@ -1444,7 +1481,7 @@ LICENSE file in the root directory of this source tree.
             // Order/dejitter on the MoQ transport-native (groupId, objectId).
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
-            const extraData = {metadata: e.data.metadata, codec: e.data.codec}
+            const extraData = {metadata: e.data.metadata, codec: e.data.codec, relay: e.data.relay ?? 'main'}
             addReceivedGroupId(e.data.relay ?? 'main', 'video', groupId);
 
             // Both relays deliver the same objects: the jitter buffer drops the
@@ -1459,7 +1496,7 @@ LICENSE file in the root directory of this source tree.
             // Order/dejitter on the MoQ transport-native (groupId, objectId).
             const groupId = e.data.groupId;
             const objId = e.data.objectId;
-            const extraData = {metadata: e.data.metadata, codec: e.data.codec}
+            const extraData = {metadata: e.data.metadata, codec: e.data.codec, relay: e.data.relay ?? 'main'}
             addReceivedGroupId(e.data.relay ?? 'main', 'audio', groupId);
 
             // Both relays deliver the same objects: the jitter buffer drops the
