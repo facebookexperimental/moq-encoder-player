@@ -42,7 +42,7 @@ export interface BurstConfig {
 }
 
 // True when the config actually does something (mode !== none).
-export function burstConfigIsActive(cfg: BurstConfig | null | undefined): boolean {
+function burstConfigIsActive(cfg: BurstConfig | null | undefined): boolean {
   return cfg != null && normalizeMode(cfg.mode) !== BurstMode.None;
 }
 

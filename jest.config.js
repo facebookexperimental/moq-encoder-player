@@ -25,8 +25,8 @@ module.exports = {
           esModuleInterop: true,
           noImplicitAny: false,
           strictNullChecks: false,
-          // Tests need the Jest (and Node) ambient globals.
-          types: ['jest', 'node'],
+          // Tests need the Jest ambient globals.
+          types: ['jest'],
         },
       },
     ],

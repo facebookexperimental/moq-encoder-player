@@ -8,7 +8,6 @@ LICENSE file in the root directory of this source tree.
 const js = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const prettier = require('eslint-config-prettier');
-const globals = require('globals');
 
 module.exports = tseslint.config(
   {
@@ -23,11 +22,6 @@ module.exports = tseslint.config(
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: {
-        ...globals.browser,
-        ...globals.worker,
-        ...globals.node,
-      },
     },
     rules: {
       // This is a gradual TypeScript migration of an existing JavaScript code
