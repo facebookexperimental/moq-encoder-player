@@ -433,10 +433,10 @@ describe('subgroup byte accounting', () => {
     const sender = senderWithTrack('loc', track);
 
     sendAudio(sender, 2, 100);
-    // LOC leaves the payload alone, so the whole overhead is MoQ signaling.
-    expect(track.sent.map((p: Uint8Array) => p.byteLength)).toEqual([100, 100]);
+    // LOC only prepends its 2 byte empty private properties block.
+    expect(track.sent.map((p: Uint8Array) => p.byteLength)).toEqual([102, 102]);
 
-    track.lastSubgroup = { groupId: 0, objects: 2, payloadBytes: 200, signalingBytes: 37 };
+    track.lastSubgroup = { groupId: 0, objects: 2, payloadBytes: 204, signalingBytes: 37 };
     track.groupId = 1; // the next chunk belongs to the next group
     sendAudio(sender, 1, 100); // any later chunk flushes the stats
 
@@ -446,7 +446,7 @@ describe('subgroup byte accounting', () => {
       groupId: 0,
       objects: 2,
       payloadBytes: 200,
-      overheadBytes: 37,
+      overheadBytes: 41,
     });
   });
 

@@ -303,7 +303,7 @@ Note: `opus.frameDuration` and `opus.application: 'lowdelay'` setting helps keep
 
 - Implements [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 + `Codecstring`** (the `Codecstring` property is a required addition here, not an optional extra — see [Packager](#packager))
 
-The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVideoChunk` / `EncodedAudioChunk`, with no extra framing. The metadata describing it travels as MoQ Object Properties:
+The MoQ Object Payload is the LOC Private Properties block followed by the LOC Payload (the "internal data" of an `EncodedVideoChunk` / `EncodedAudioChunk`). No private properties are used, but the draft requires the block anyway, so every audio / video payload starts with an empty one: `0x0A 0x00` (type, zero length). The player skips that block, whatever it contains, before handing the media to the decoder. The metadata describing the payload travels as MoQ Object Properties (LOC Public Properties):
 
 | Property | ID | Video key | Video delta | Audio | Data |
 | --- | --- | --- | --- | --- | --- |
@@ -320,7 +320,7 @@ The MoQ Object Payload is the LOC Payload: the "internal data" of an `EncodedVid
 - `VIDEO_CONFIG` / `AUDIO_CONFIG` carry the WebCodecs decoder `description` (an AVCDecoderConfigurationRecord, an OpusHead, or an AAC AudioSpecificConfig). The player recovers the audio sample rate and channel count from it — see `src/utils/media/audio_decoder_config_parser.ts`
 - For video the codec is described twice: by `CODECSTRING` and, implicitly, by the profile / constraint flags / level inside `VIDEO_CONFIG`. The player configures from `CODECSTRING` and logs a warning if the two disagree
 - LOC has no media type on the wire (that is a catalog's job), so the publisher and the player both take it from their own per-track config
-- LOC covers audio and video only. The `data` track used by the `simple.html` demos is an opaque payload with no properties
+- LOC covers audio and video only. The `data` track used by the `simple.html` demos is an opaque payload with no properties and no private properties block
 
 ### src/packager/cmaf/ (CMSF / CMAF packager)
 
@@ -418,7 +418,7 @@ With CMSF the track description (timescale, codec, decoder configuration) travel
 The encoder measures what it costs to put each subgroup on the wire and reports it per track: the instant figures (payload bytes, overhead bytes and overhead %) live in the **"Data overhead" tab**, and a **"&lt;track name&gt; overhead (last 60s)" chart per track** plots the trend (overhead % on the left axis, overhead bytes on the right). The percentage is relative to the payload (`overhead / payload`), so it goes over 100% when the overhead is bigger than the media itself — which is the normal case for small audio frames.
 
 - **Payload** = the encoded media bytes the encoder produced
-- **Overhead** = the packager (CMSF boxes and the periodic CMAF Header; LOC adds nothing to the payload) + the MoQ signaling the track counted (subgroup header, per-object headers, object properties, end-of-group marker)
+- **Overhead** = the packager (CMSF boxes and the periodic CMAF Header; LOC only adds its 2 byte empty private properties block) + the MoQ signaling the track counted (subgroup header, per-object headers, object properties, end-of-group marker)
 
 Both come from the bytes actually written — `Track` accumulates them per wire unit from the byte counts the `moqSend*` helpers return (see `SubgroupBytes` in [`src/moq/moq.ts`](./src/moq/moq.ts)) — so objects the send queue, the open-stream cap or a drop simulator skipped are not counted.
 
