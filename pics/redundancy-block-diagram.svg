@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 380" font-family="'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c566a"/>
+    </marker>
+  </defs>
+  <style>
+    text { fill: #2e3440; }
+    .box { fill: #ffffff; stroke: #4c566a; stroke-width: 2; }
+    .relay { fill: #f4f6f8; stroke: #4c566a; stroke-width: 2; }
+    .io { fill: #eceff4; stroke: #4c566a; stroke-width: 2; }
+    .title { font-size: 18px; font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; text-anchor: middle; fill: #4c566a; }
+    .edge { font-size: 12px; font-weight: 600; fill: #bf616a; text-anchor: middle; }
+    .flow { stroke: #4c566a; stroke-width: 2; fill: none; }
+  </style>
+
+  <!-- encoder -->
+  <rect class="box" x="60" y="125" width="210" height="110" rx="10"/>
+  <text class="title" x="165" y="162">Encoder</text>
+  <text class="sub" x="165" y="186">capture / encode / package once</text>
+  <text class="sub" x="165" y="206">assigns (groupId, objectId)</text>
+
+  <!-- encoder -> relays -->
+  <path class="flow" d="M270,160 L515,90" marker-end="url(#arrow)"/>
+  <text class="edge" x="370" y="100">WebTransport (QUIC)</text>
+  <path class="flow" d="M270,200 L515,270" marker-end="url(#arrow)"/>
+  <text class="edge" x="370" y="276">WebTransport (QUIC)</text>
+  <text class="sub" x="440" y="186">identical objects,</text>
+  <text class="sub" x="440" y="202">independent sessions</text>
+
+  <!-- relays -->
+  <rect class="relay" x="520" y="45" width="170" height="90" rx="10"/>
+  <text class="title" x="605" y="85">moxygen</text>
+  <text class="sub" x="605" y="107">(main relay)</text>
+  <rect class="relay" x="520" y="225" width="170" height="90" rx="10"/>
+  <text class="title" x="605" y="265">moxygen</text>
+  <text class="sub" x="605" y="287">(backup relay)</text>
+
+  <!-- relays -> player -->
+  <path class="flow" d="M690,90 L935,160" marker-end="url(#arrow)"/>
+  <text class="edge" x="840" y="100">WebTransport (QUIC)</text>
+  <path class="flow" d="M690,270 L935,200" marker-end="url(#arrow)"/>
+  <text class="edge" x="840" y="276">WebTransport (QUIC)</text>
+  <text class="sub" x="770" y="186">same objects</text>
+  <text class="sub" x="770" y="202">from both</text>
+
+  <!-- player -->
+  <rect class="box" x="940" y="125" width="220" height="110" rx="10"/>
+  <text class="title" x="1050" y="162">Player</text>
+  <text class="sub" x="1050" y="186">jitter buffers de-duplicate</text>
+  <text class="sub" x="1050" y="206">on (groupId, objectId)</text>
+
+  <text class="sub" x="610" y="355" font-size="13">One stuck or dead relay never blocks the other; an object lost on one path is filled in by the other one.</text>
+</svg>
