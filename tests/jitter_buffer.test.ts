@@ -109,14 +109,15 @@ describe('JitterBuffer pull-through delivery', () => {
     expect(jb.GetStats().numTotalGaps).toBe(0);
   });
 
-  it('drops objects at or before the playback cursor', () => {
+  it('drops (and reports) late objects behind the playback cursor', () => {
     const dropped: any[] = [];
-    const jb = new JitterBuffer(200, (info) => dropped.push(info), TIMEBASE);
-    jb.AddItem(mkChunk(), 0, 0, undefined);
-    jb.AddItem(mkChunk(), 0, 1, undefined); // cursor now 0/1
-    expect(jb.AddItem(mkChunk(), 0, 0, undefined)).toEqual([]); // late
-    expect(jb.AddItem(mkChunk(), 0, 1, undefined)).toEqual([]); // duplicate of cursor
-    expect(dropped.length).toBe(2);
+    const jb = new JitterBuffer(1, (info) => dropped.push(info), TIMEBASE);
+    jb.AddItem(mkChunk(0), 0, 0, undefined);
+    jb.AddItem(mkChunk(66_666), 0, 2, undefined); // 0/1 missing, held
+    // The buffer fills past bufferSizeMs: it gives up on 0/1, cursor moves to 0/3.
+    expect(jb.AddItem(mkChunk(100_000), 0, 3, undefined).map(key)).toEqual(['0/2', '0/3']);
+    expect(jb.AddItem(mkChunk(33_333), 0, 1, undefined)).toEqual([]); // late, never seen
+    expect(dropped).toEqual([{ groupId: 0, objId: 1, firstBufferGroupId: 0, firstBufferObjId: 3 }]);
     expect(jb.GetStats().size).toBe(0);
   });
 
@@ -138,5 +139,49 @@ describe('JitterBuffer pull-through delivery', () => {
     expect(jb.GetStats().totalLengthMs).toBe(0);
     expect(jb.lastCorrectGroupId).toBeUndefined();
     expect(jb.lastWasLastInGroup).toBe(false);
+  });
+});
+
+describe('JitterBuffer de-duplication (redundant relays)', () => {
+  it('silently drops a copy of an object that was already released', () => {
+    const dropped: any[] = [];
+    const jb = new JitterBuffer(200, (info) => dropped.push(info), TIMEBASE);
+    expect(jb.AddItem(mkChunk(), 0, 0, undefined).map(key)).toEqual(['0/0']);
+    expect(jb.AddItem(mkChunk(), 0, 1, undefined).map(key)).toEqual(['0/1']);
+    // The same two objects arriving from the second relay.
+    expect(jb.AddItem(mkChunk(), 0, 0, undefined)).toEqual([]);
+    expect(jb.AddItem(mkChunk(), 0, 1, undefined)).toEqual([]);
+    expect(dropped).toEqual([]);
+    expect(jb.GetStats().numTotalDuplicates).toBe(2);
+  });
+
+  it('silently drops a copy of an object that is still buffered', () => {
+    const dropped: any[] = [];
+    const jb = new JitterBuffer(200, (info) => dropped.push(info), TIMEBASE);
+    jb.AddItem(mkChunk(), 0, 0, undefined);
+    jb.AddItem(mkChunk(), 0, 2, undefined); // held behind the missing 0/1
+    expect(jb.AddItem(mkChunk(), 0, 2, undefined)).toEqual([]);
+    expect(dropped).toEqual([]);
+    expect(jb.GetStats()).toMatchObject({ size: 1, numTotalDuplicates: 1 });
+  });
+
+  it('fills a gap from whichever relay has the object, once', () => {
+    const jb = new JitterBuffer(200, undefined, TIMEBASE);
+    // Main lost 0/1, backup lost 0/2: interleaved, the stream is complete.
+    expect(jb.AddItem(mkChunk(), 0, 0, undefined).map(key)).toEqual(['0/0']); // main
+    expect(jb.AddItem(mkChunk(), 0, 0, undefined)).toEqual([]); // backup
+    expect(jb.AddItem(mkChunk(), 0, 2, undefined)).toEqual([]); // main, held
+    expect(jb.AddItem(mkChunk(), 0, 1, undefined).map(key)).toEqual(['0/1', '0/2']); // backup
+    expect(jb.AddItem(mkChunk(), 0, 3, undefined).map(key)).toEqual(['0/3']); // main
+    expect(jb.AddItem(mkChunk(), 0, 3, undefined)).toEqual([]); // backup
+    expect(jb.GetStats()).toMatchObject({ numTotalGaps: 0, numTotalDuplicates: 2 });
+  });
+
+  it('forgets released keys on Clear', () => {
+    const jb = new JitterBuffer(200, undefined, TIMEBASE);
+    jb.AddItem(mkChunk(), 0, 0, undefined);
+    jb.Clear();
+    expect(jb.AddItem(mkChunk(), 0, 0, undefined).map(key)).toEqual(['0/0']);
+    expect(jb.GetStats().numTotalDuplicates).toBe(0);
   });
 });

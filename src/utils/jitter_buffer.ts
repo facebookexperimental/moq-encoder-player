@@ -9,6 +9,15 @@ import { AvgLastNItems } from './avg_last_n_items.js';
 
 const DEFAULT_BUFFER_SIZE_MS = 200;
 
+// How many released (groupId, objId) keys are remembered to recognise a
+// duplicate that arrives after its twin was already released (e.g. the same
+// object received from a main and a backup relay). ~20s of 10ms audio frames.
+const MAX_RELEASED_KEYS = 2048;
+
+function objKey(groupId: number, objId: number): string {
+  return `${groupId}/${objId}`;
+}
+
 // Ordering key: MoQ transport-native (groupId, objId). groupId increments per
 // group; objId increments within a group (0-based). Lexicographic comparison of
 // the pair reproduces the publisher's total send order.
@@ -25,6 +34,11 @@ function keyCmp(aGroup: number, aObj: number, bGroup: number, bObj: number): num
 // only holds objects back when the next expected object is missing, and then for
 // at most bufferSizeMs of buffered media -- after which it gives up waiting,
 // releases across the gap (flagged as a discontinuity), and resumes.
+//
+// It also de-duplicates: the same (groupId, objId) received twice (redundant
+// relays deliver byte-identical copies) is dropped silently, whether its twin is
+// still buffered or was recently released. Only genuinely late objects (behind
+// the cursor and never seen) are reported through droppedCallback.
 export class JitterBuffer {
   bufferSizeMs: number;
   timebase: number;
@@ -43,6 +57,10 @@ export class JitterBuffer {
   lastCorrectGroupId: number | undefined;
   lastCorrectObjId: number | undefined;
   lastWasLastInGroup: boolean;
+  // Duplicates dropped, and the recently released keys used to detect them.
+  numTotalDuplicates: number;
+  private releasedKeys = new Set<string>();
+  private releasedKeysOrder: string[] = [];
 
   // `timebase` is the per-track timebase (ticks per second) that this
   // track's timestamps are expressed in. It is mandatory -- there is no safe
@@ -70,6 +88,7 @@ export class JitterBuffer {
     this.lastCorrectGroupId = undefined;
     this.lastCorrectObjId = undefined;
     this.lastWasLastInGroup = false;
+    this.numTotalDuplicates = 0;
   }
 
   // Add one object and return every object that becomes releasable as a result
@@ -83,7 +102,11 @@ export class JitterBuffer {
     extraData: any,
     isLastInGroup = false,
   ): any[] {
-    // Drop anything at or before the cursor: already released, too late to use.
+    if (this.releasedKeys.has(objKey(groupId, objId))) {
+      this.numTotalDuplicates++;
+      return [];
+    }
+    // Drop anything at or before the cursor: too late to use.
     if (
       this.lastCorrectGroupId !== undefined &&
       this.lastCorrectObjId !== undefined &&
@@ -98,17 +121,12 @@ export class JitterBuffer {
       return [];
     }
 
-    // Insert in (groupId, objId) order, ignoring exact duplicates already held.
+    // Insert in (groupId, objId) order, dropping exact duplicates already held.
     let inserted = false;
     for (let n = 0; n < this.elementsList.length; n++) {
       const cmp = keyCmp(groupId, objId, this.elementsList[n].groupId, this.elementsList[n].objId);
       if (cmp === 0) {
-        this.droppedCallback?.({
-          groupId,
-          objId,
-          firstBufferGroupId: this.elementsList[n].groupId,
-          firstBufferObjId: this.elementsList[n].objId,
-        });
+        this.numTotalDuplicates++;
         return [];
       }
       if (cmp < 0) {
@@ -232,13 +250,23 @@ export class JitterBuffer {
     this.lastCorrectGroupId = r.groupId;
     this.lastCorrectObjId = r.objId;
     this.lastWasLastInGroup = r.isLastInGroup === true;
+    this.rememberReleased(objKey(r.groupId, r.objId));
     released.push(r);
+  }
+
+  private rememberReleased(key: string): void {
+    this.releasedKeys.add(key);
+    this.releasedKeysOrder.push(key);
+    if (this.releasedKeysOrder.length > MAX_RELEASED_KEYS) {
+      this.releasedKeys.delete(this.releasedKeysOrder.shift()!);
+    }
   }
 
   GetStats() {
     return {
       numTotalGaps: this.numTotalGaps,
       numTotalLostStreams: this.numTotalLostStreams,
+      numTotalDuplicates: this.numTotalDuplicates,
       totalLengthMs: this.bufferedSpanMs(),
       size: this.elementsList.length,
       currentMaSizeMs: this.bufferSizeMs,
@@ -251,6 +279,9 @@ export class JitterBuffer {
     this.lastReleasedTs = undefined;
     this.numTotalGaps = 0;
     this.numTotalLostStreams = 0;
+    this.numTotalDuplicates = 0;
+    this.releasedKeys.clear();
+    this.releasedKeysOrder = [];
     this.lastCorrectGroupId = undefined;
     this.lastCorrectObjId = undefined;
     this.lastWasLastInGroup = false;
