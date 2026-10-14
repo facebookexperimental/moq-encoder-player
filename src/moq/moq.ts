@@ -1011,7 +1011,6 @@ export class Subscription {
   readonly trackAlias: number;
   readonly authInfo: string | undefined;
 
-  private moq: Moq;
   private onObject: ObjectCallback;
   private onEndOfGroup: EndOfGroupCallback | undefined;
   // draft-18: SUBSCRIBE ran on this bidi stream; SUBSCRIBE_OK / PUBLISH_DONE and
@@ -1021,7 +1020,6 @@ export class Subscription {
   private closed = false;
 
   constructor(
-    moq: Moq,
     namespace: string[],
     name: string,
     subscribeRequestId: number,
@@ -1031,7 +1029,6 @@ export class Subscription {
     subscribeStream: WebTransportBidirectionalStream,
     onEndOfGroup?: EndOfGroupCallback,
   ) {
-    this.moq = moq;
     this.namespace = namespace;
     this.name = name;
     this.subscribeRequestId = subscribeRequestId;
@@ -1389,7 +1386,6 @@ export class Moq {
       if (resp.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
         const trackAlias = resp.data.trackAlias;
         const sub = new Subscription(
-          this,
           namespace,
           name,
           requestId,

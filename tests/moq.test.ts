@@ -296,10 +296,8 @@ describe('Track open-stream cap (maxOpenStreams)', () => {
 
 describe('Subscription', () => {
   it('reports its identity and forwards received objects to the callback', async () => {
-    const { moq } = fakeMoq();
     const received: Array<{ length?: number }> = [];
     const sub = new Subscription(
-      moq,
       ['vc'],
       'a0',
       4,
@@ -325,9 +323,8 @@ describe('Subscription', () => {
   });
 
   it('unsubscribe closes the request stream once and is idempotent', async () => {
-    const { moq } = fakeMoq();
     const stream = fakeBidiStream();
-    const sub = new Subscription(moq, ['vc'], 'a0', 4, 9, undefined, () => false, stream);
+    const sub = new Subscription(['vc'], 'a0', 4, 9, undefined, () => false, stream);
     // draft-19 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
     // writable (FIN) exactly once, even across repeated calls.
     await sub.unsubscribe();
@@ -445,7 +442,6 @@ describe('Moq subgroup reception: end of group', () => {
     const endsOfGroup: string[] = [];
     const moq = new Moq() as any;
     const sub = new Subscription(
-      moq,
       ['vc'],
       'v0',
       4,

@@ -50,8 +50,6 @@ export interface ReceiverConfig {
  * in the `Moq`/`Subscription` classes.
  */
 export class MoqReceiver {
-  private config: ReceiverConfig | null = null;
-
   // Main relay first, then the optional backup.
   private connections: ReceiverConnection[] = [];
 
@@ -146,7 +144,6 @@ export class MoqReceiver {
     }
 
     const config = this.parseReceiverConfig(data.config);
-    this.config = config;
 
     this.connections = [new ReceiverConnection('main', config.urlHostPort, config)];
     if (config.backupUrlHostPort !== '') {
