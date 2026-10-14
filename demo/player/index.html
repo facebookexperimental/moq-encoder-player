@@ -97,7 +97,7 @@ LICENSE file in the root directory of this source tree.
 
     <!-- Received group IDs timeline (last 60s), per relay connection -->
     <div class="boxed">
-        <h2>Received group IDs (lastID - currentID)</h2>
+        <h2>Received group IDs (lastID - currentID) (last 60s)</h2>
         <canvas id="groupIdTimeline" style="display:block; width:100%; height:200px; border:1px solid"></canvas>
         <div class="styleform">
             <label><span style="display:inline-block;width:18px;height:3px;background:#d62728;vertical-align:middle"></span> Main: audio</label>
@@ -140,6 +140,7 @@ LICENSE file in the root directory of this source tree.
         <button type="button" class="tab-btn" data-tab="tabDecoders">Decoders</button>
         <button type="button" class="tab-btn" data-tab="tabRenderers">Renderers</button>
         <button type="button" class="tab-btn" data-tab="tabDropped">Dropped data</button>
+        <button type="button" class="tab-btn" data-tab="tabMainBackup">Main - backup</button>
     </div>
     <div class="tab-panels">
         <div id="tabLatency" class="boxed tab-panel active">
@@ -249,6 +250,23 @@ LICENSE file in the root directory of this source tree.
             <h2>Dropped data (frames / chunks):</h2>
             <label for="chkLogDroppedFrames">Enable UI logging (could be CPU intense): <input type="checkbox" id="chkLogDroppedFrames"></label>
             <ol id="droppedFrames"></ol>
+        </div>
+        <div id="tabMainBackup" class="boxed tab-panel">
+            <h2>Main - backup</h2>
+            <div class="styleform">
+                <form>
+                    <label>Current received video MOQ groupID (main/backup (diff)):</label><input id="mainBackupVideoGroupId" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Latest received video MOQ groupID (ms ago main/backup):</label><input id="mainBackupVideoGroupIdAgo" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Current received audio MOQ groupID (main/backup (diff)):</label><input id="mainBackupAudioGroupId" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>Latest received audio MOQ groupID (ms ago main/backup):</label><input id="mainBackupAudioGroupIdAgo" type="text" value="" readonly>
+                    <div class="clear"></div>
+                    <label>"ms ago" is the time since that connection received its current group ID for the first time</label>
+                    <div class="clear"></div>
+                </form>
+            </div>
         </div>
     </div>
 </body>
@@ -455,7 +473,8 @@ LICENSE file in the root directory of this source tree.
         const tracks = {};
         for (const { relay, mediaType } of GROUP_ID_SERIES) {
             tracks[relay] = tracks[relay] ?? {};
-            tracks[relay][mediaType] = { lastGroupId: undefined, samples: [] }; // samples: { tMs, delta }
+            // samples: { tMs, delta }; lastGroupIdAtMs: Date.now() when lastGroupId was first received
+            tracks[relay][mediaType] = { lastGroupId: undefined, lastGroupIdAtMs: undefined, samples: [] };
         }
         return tracks;
     }
@@ -477,7 +496,7 @@ LICENSE file in the root directory of this source tree.
         extractorStatusEl.style.color = '';
         timelineStartMs = Date.now();
         if (timelineTimer === null) {
-            timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); drawGroupIdTimeline(); }, TIMELINE_UPDATE_EVERY_MS);
+            timelineTimer = setInterval(() => { drawTimeline(); drawLatencyTimeline(); drawGroupIdTimeline(); updateMainBackupUI(); }, TIMELINE_UPDATE_EVERY_MS);
         }
     }
 
@@ -724,6 +743,24 @@ LICENSE file in the root directory of this source tree.
             track.samples.push({ tMs: Date.now() - timelineStartMs, delta: groupId - track.lastGroupId });
         }
         track.lastGroupId = groupId;
+        track.lastGroupIdAtMs = Date.now();
+    }
+
+    // "Main - backup" tab: current group ID per connection (and their difference),
+    // and how long ago each connection received it.
+    function updateMainBackupUI() {
+        const nowMs = Date.now();
+        for (const mediaType of ['video', 'audio']) {
+            const main = groupIdTracks.main[mediaType];
+            const backup = groupIdTracks.backup[mediaType];
+            const idStr = (t) => t.lastGroupId === undefined ? '-' : String(t.lastGroupId);
+            const diff = main.lastGroupId !== undefined && backup.lastGroupId !== undefined
+                ? String(main.lastGroupId - backup.lastGroupId) : '-';
+            const agoStr = (t) => t.lastGroupIdAtMs === undefined ? '-' : String(nowMs - t.lastGroupIdAtMs);
+            const cap = mediaType === 'video' ? 'Video' : 'Audio';
+            document.getElementById(`mainBackup${cap}GroupId`).value = `${idStr(main)}/${idStr(backup)} (${diff})`;
+            document.getElementById(`mainBackup${cap}GroupIdAgo`).value = `${agoStr(main)} / ${agoStr(backup)}`;
+        }
     }
 
     function drawGroupIdTimeline() {
