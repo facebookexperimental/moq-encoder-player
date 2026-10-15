@@ -49,7 +49,7 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
-                <label>Track name (audio,video will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <label>Tracks prefix:<input id="trackName" type="text" value="202112241726"></label><label>Video suffix: <input id="videoTrackSuffix" type="text" value="video0"></label><label>Audio suffix: <input id="audioTrackSuffix" type="text" value="audio0"></label>
                 <div class="clear"></div>
                 <label>Media packager expected:<select id="mediaPackager">
                     <option value="loc">LOC (draft-ietf-moq-loc)</option>
@@ -896,6 +896,22 @@ LICENSE file in the root directory of this source tree.
     trackName.addEventListener("input", function (e) {
         updateFullTrackNameUI();
     });
+    videoTrackSuffix.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+    audioTrackSuffix.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+
+    function getTrackSuffix(isAudio) {
+        return document.getElementById(isAudio ? "audioTrackSuffix" : "videoTrackSuffix").value;
+    }
+
+    function validateTrackNames() {
+        if (document.getElementById("trackName").value === "" && (getTrackSuffix(false) === "" || getTrackSuffix(true) === "")) {
+            throw new Error('"Tracks prefix" is empty, so "Video suffix" and "Audio suffix" can NOT be empty');
+        }
+    }
 
     function initFromQS() {
         const qsHost = qsParams.get('host')
@@ -937,8 +953,8 @@ LICENSE file in the root directory of this source tree.
     }
 
     function updateFullTrackNameUI() {
-        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, true))}`
-        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, false))}`
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, true, getTrackSuffix(true)))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), LOCgetTrackName(document.getElementById("trackName").value, false, getTrackSuffix(false)))}`
 
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
     }
@@ -1140,6 +1156,14 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
+        try {
+            validateTrackNames();
+        } catch (err) {
+            console.error(err);
+            alert(err.message);
+            return;
+        }
+
         setOptionsDisabled(true);
         document.getElementById("btnStart").disabled = true;
         document.getElementById("btnStop").disabled = false;
@@ -1190,11 +1214,11 @@ LICENSE file in the root directory of this source tree.
         const ns_tuples = orignal_ns.split("/");
 
         downloaderConfig.moqTracks["video"].namespace = ns_tuples
-        downloaderConfig.moqTracks["video"].name = LOCgetTrackName(document.getElementById('trackName').value, false);
+        downloaderConfig.moqTracks["video"].name = LOCgetTrackName(document.getElementById('trackName').value, false, getTrackSuffix(false));
         downloaderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
 
         downloaderConfig.moqTracks["audio"].namespace = ns_tuples
-        downloaderConfig.moqTracks["audio"].name = LOCgetTrackName(document.getElementById('trackName').value, true);
+        downloaderConfig.moqTracks["audio"].name = LOCgetTrackName(document.getElementById('trackName').value, true, getTrackSuffix(true));
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });

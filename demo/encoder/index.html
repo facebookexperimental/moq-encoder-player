@@ -49,7 +49,7 @@ LICENSE file in the root directory of this source tree.
                 <div class="clear"></div>
                 <label>Namespace:<input id="namespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
                 <div class="clear"></div>
-                <label>Track name prefix (audio0, video0 will be added):<input id="trackName" type="text" value="202112241726"></label>
+                <label>Tracks prefix:<input id="trackName" type="text" value="202112241726"></label><label>Video suffix: <input id="videoTrackSuffix" type="text" value="video0"></label><label>Audio suffix: <input id="audioTrackSuffix" type="text" value="audio0"></label>
                 <div class="clear"></div>
                 <label>Media packager:<select id="mediaPackager">
                     <option value="loc">LOC (draft-ietf-moq-loc)</option>
@@ -1052,6 +1052,22 @@ LICENSE file in the root directory of this source tree.
     trackName.addEventListener("input", function (e) {
         updateFullTrackNameUI();
     });
+    videoTrackSuffix.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+    audioTrackSuffix.addEventListener("input", function (e) {
+        updateFullTrackNameUI();
+    });
+
+    function getTrackSuffix(isAudio) {
+        return document.getElementById(isAudio ? "audioTrackSuffix" : "videoTrackSuffix").value;
+    }
+
+    function validateTrackNames() {
+        if (document.getElementById("trackName").value === "" && (getTrackSuffix(false) === "" || getTrackSuffix(true) === "")) {
+            throw new Error('"Tracks prefix" is empty, so "Video suffix" and "Audio suffix" can NOT be empty');
+        }
+    }
 
     function numToStrWithPad(d, length) {
         let r = d.toString();
@@ -1365,13 +1381,13 @@ LICENSE file in the root directory of this source tree.
     // name they plot (which changes on every Start, see initStreamIDUI).
     function updateOverheadTitlesUI() {
         const trackPrefix = document.getElementById("trackName").value;
-        document.getElementById("overheadTitleAudio").textContent = getMediaTrackName(trackPrefix, true);
-        document.getElementById("overheadTitleVideo").textContent = getMediaTrackName(trackPrefix, false);
+        document.getElementById("overheadTitleAudio").textContent = getMediaTrackName(trackPrefix, true, getTrackSuffix(true));
+        document.getElementById("overheadTitleVideo").textContent = getMediaTrackName(trackPrefix, false, getTrackSuffix(false));
     }
 
     function updateFullTrackNameUI() {
-        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, true))}`
-        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, false))}`
+        const audioFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, true, getTrackSuffix(true)))}`
+        const videoFullTrackName = `${getFullTrackName(document.getElementById("namespace").value.split("/"), getMediaTrackName(document.getElementById("trackName").value, false, getTrackSuffix(false)))}`
 
         document.getElementById("fullTrackNames").value = `${audioFullTrackName}, ${videoFullTrackName}`;
 
@@ -1980,6 +1996,14 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
+        try {
+            validateTrackNames();
+        } catch (err) {
+            console.error(err);
+            alert(err.message);
+            return;
+        }
+
         resetCompensateTs();
 
         enableUI("publishing");
@@ -2075,7 +2099,7 @@ LICENSE file in the root directory of this source tree.
 
         //Get max Inflight requests & auth info
         muxerSenderConfig.moqTracks["video"].namespace = document.getElementById('namespace').value.split("/");
-        muxerSenderConfig.moqTracks["video"].name = getMediaTrackName(document.getElementById('trackName').value, false);
+        muxerSenderConfig.moqTracks["video"].name = getMediaTrackName(document.getElementById('trackName').value, false, getTrackSuffix(false));
         muxerSenderConfig.moqTracks["video"].maxInFlightRequests = parseInt(document.getElementById('maxInflightVideoRequests').value);
         muxerSenderConfig.moqTracks["video"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsVideo').value);
         muxerSenderConfig.moqTracks["video"].moqMapping = document.getElementById('moqVideoQuicMapping').value;
@@ -2087,7 +2111,7 @@ LICENSE file in the root directory of this source tree.
             muxerSenderConfig.moqTracks["video"].authInfo = document.getElementById('authInfo').value;
         }
         muxerSenderConfig.moqTracks["audio"].namespace = document.getElementById('namespace').value.split("/");
-        muxerSenderConfig.moqTracks["audio"].name = getMediaTrackName(document.getElementById('trackName').value, true);
+        muxerSenderConfig.moqTracks["audio"].name = getMediaTrackName(document.getElementById('trackName').value, true, getTrackSuffix(true));
         muxerSenderConfig.moqTracks["audio"].maxInFlightRequests = parseInt(document.getElementById('maxInflightAudioRequests').value);
         muxerSenderConfig.moqTracks["audio"].maxOpenStreams = parseInt(document.getElementById('maxQUICStreamsAudio').value);
         muxerSenderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;

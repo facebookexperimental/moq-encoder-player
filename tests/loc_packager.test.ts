@@ -275,4 +275,10 @@ describe('LOCgetTrackName', () => {
     expect(LOCgetTrackName('room1/', true)).toBe('room1/audio0');
     expect(LOCgetTrackName('room1/', false)).toBe('room1/video0');
   });
+
+  it('uses the custom suffix when provided', () => {
+    expect(LOCgetTrackName('room1/', true, 'mic')).toBe('room1/mic');
+    expect(LOCgetTrackName('room1/', false, '')).toBe('room1/');
+    expect(LOCgetTrackName('', false, 'cam')).toBe('cam');
+  });
 });
