@@ -13,7 +13,6 @@ const WORKER_PREFIX = '[VIDEO-ENC]';
 
 const WEBCODECS_TIMESCALE = 1000000;
 
-let frameDeliveredCounter = 0;
 let chunkDeliveredCounter = 0;
 
 let workerState = StateEnum.Created;
@@ -22,6 +21,9 @@ let workerState = StateEnum.Created;
 let encoderMaxQueueSize = 5;
 let keyframeEvery = 60;
 let insertNextKeyframe = false;
+// When part of an ABR ladder, keyframes are placed only by captureIndex so all
+// renditions stay aligned; no extra keyframe is forced after a dropped frame.
+let isPartOfABR = false;
 
 // Latency overlay: when enabled, stamp the capture-read wall-clock epoch (ms) into the
 // top rows of each frame before encoding so the player can later recover it and
@@ -132,10 +134,11 @@ self.addEventListener('message', async function (e) {
       keyframeEvery = e.data.keyframeEvery;
     }
     addLatencyInfoInVideo = e.data.addLatencyInfoInVideo === true;
+    isPartOfABR = e.data.isPartOfABR === true;
     sendMessageToMain(
       WORKER_PREFIX,
       'info',
-      `Encoder initialized: ${JSON.stringify(encoderConfig)}`,
+      `Encoder initialized (isPartOfABR: ${isPartOfABR}): ${JSON.stringify(encoderConfig)}`,
     );
 
     workerState = StateEnum.Running;
@@ -156,17 +159,21 @@ self.addEventListener('message', async function (e) {
   // and piped through the main thread. Used for the latency overlay so the value
   // reflects processor delivery time rather than encode time.
   const captureClkms = e.data.captureClkms;
+  // Monotonically increasing per-frame index assigned in v_capture. Gaps mean frames
+  // were dropped between capture and here.
+  const captureIndex: number = e.data.captureIndex;
 
   if (vEncoder.encodeQueueSize > encoderMaxQueueSize) {
     // Too many frames in the encoder queue, encoder is overwhelmed let's not add this frame
     sendMessageToMain(WORKER_PREFIX, 'dropped', {
       clkms: Date.now(),
       ts: vFrame.timestamp,
-      msg: 'Dropped encoding video frame',
+      msg: `Dropped encoding video frame (captureIndex: ${captureIndex})`,
     });
     vFrame.close();
-    // Insert a keyframe after dropping
-    insertNextKeyframe = true;
+    if (!isPartOfABR) {
+      insertNextKeyframe = true;
+    }
   } else {
     let frameToEncode = vFrame;
     if (addLatencyInfoInVideo) {
@@ -187,12 +194,16 @@ self.addEventListener('message', async function (e) {
         frameToEncode = vFrame;
       }
     }
-    const frameNum = frameDeliveredCounter++;
-    const insertKeyframe = frameNum % keyframeEvery === 0 || insertNextKeyframe === true;
+    // Keyed off the capture index (not a local counter) so multiple encoders fed from
+    // the same capture place keyframes on the same frames.
+    const insertKeyframe = captureIndex % keyframeEvery === 0 || insertNextKeyframe === true;
     vEncoder.encode(frameToEncode, { keyFrame: insertKeyframe });
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Encoded frame: ${frameNum}, key: ${insertKeyframe}`);
+    sendMessageToMain(
+      WORKER_PREFIX,
+      'debug',
+      `Encoded frame captureIndex: ${captureIndex}, key: ${insertKeyframe}`,
+    );
     frameToEncode.close();
     insertNextKeyframe = false;
-    frameDeliveredCounter++;
   }
 });

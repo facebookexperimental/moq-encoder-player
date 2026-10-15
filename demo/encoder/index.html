@@ -1826,7 +1826,7 @@ LICENSE file in the root directory of this source tree.
             }
 
             // Encode video frame
-            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms }, [ vFrame ]);
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms, captureIndex: e.data.captureIndex }, [ vFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
