@@ -127,6 +127,6 @@ export function createDepackager(format: PackagerFormat, mediaType: LOCMediaType
  * MOQT track name for a media type. The same in both formats, so switching
  * packagers does not change the names a subscriber has to ask for.
  */
-export function getMediaTrackName(trackPrefix: string, isAudio: boolean): string {
-  return LOCgetTrackName(trackPrefix, isAudio);
+export function getMediaTrackName(trackPrefix: string, isAudio: boolean, suffix?: string): string {
+  return LOCgetTrackName(trackPrefix, isAudio, suffix);
 }

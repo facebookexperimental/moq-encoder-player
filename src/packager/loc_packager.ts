@@ -270,7 +270,6 @@ function skipPrivateProperties(payload: ArrayBuffer | Uint8Array): Uint8Array {
   return new Uint8Array(buff, start);
 }
 
-export function LOCgetTrackName(trackPrefix: string, isAudio: boolean) {
-  const suffix = isAudio ? 'audio0' : 'video0';
-  return `${trackPrefix}${suffix}`;
+export function LOCgetTrackName(trackPrefix: string, isAudio: boolean, suffix?: string) {
+  return `${trackPrefix}${suffix ?? (isAudio ? 'audio0' : 'video0')}`;
 }
