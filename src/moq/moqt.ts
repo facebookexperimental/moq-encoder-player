@@ -916,18 +916,18 @@ function moqCreateSubgroupHeaderBytes(
   publisherPriority: number,
 ): Uint8Array {
   // Properties present (media objects always carry them; a track that sends
-  // none just writes a zero-length properties block), subgroup id present, first
-  // object of the subgroup (we are the original publisher), explicit priority.
+  // none just writes a zero-length properties block), subgroup id absent (= 0, we
+  // only send one subgroup per group), first object of the subgroup (we are the
+  // original publisher), explicit priority.
   const type = getSubgroupHeaderType({
     propertiesPresent: true,
-    subGroupIdPresent: true,
+    subGroupIdPresent: false,
     isFirstObject: true,
   });
   return concatBuffer([
     numberToVarInt(type),
     numberToVarInt(trackAlias),
     numberToVarInt(groupSeq),
-    numberToVarInt(groupSeq), // Subgroup ID
     numberToSingleByteArray(publisherPriority),
   ]);
 }

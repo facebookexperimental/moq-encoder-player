@@ -46,8 +46,8 @@ import {
 import { concatBuffer } from '../src/moq/buffer_utils.js';
 
 // The subgroup header type the encoder always emits:
-// props present + subgroup id present + first object => 0x10|0x01|0x04|0x40 = 0x55
-const SUBGROUP_HEADER_TYPE = 0x55;
+// props present + subgroup id absent (= 0) + first object => 0x10|0x01|0x40 = 0x51
+const SUBGROUP_HEADER_TYPE = 0x51;
 
 // --- Test doubles ------------------------------------------------------------
 
@@ -171,11 +171,11 @@ describe('moqDecodeDatagramType (draft-18)', () => {
 });
 
 describe('moqDecodeStreamHeaderType (draft-18)', () => {
-  it('decodes the canonical subgroup header type 0x55', () => {
+  it('decodes the canonical subgroup header type 0x51', () => {
     expect(moqDecodeStreamHeaderType(SUBGROUP_HEADER_TYPE)).toEqual({
       extensionsPresent: true,
       isEndOfGroup: false,
-      subGroupIdPresent: true,
+      subGroupIdPresent: false,
       isSubgroupIdFirstObjectId: false,
       isDefaultPriority: false,
       isFirstObject: true,
@@ -329,7 +329,7 @@ describe('object and datagram headers (draft-18)', () => {
     expect(parsed.type).toBe(SUBGROUP_HEADER_TYPE);
     expect(parsed.trackAlias).toBe(50);
     expect(parsed.groupSeq).toBe(9);
-    expect(parsed.subGroupSeq).toBe(9);
+    expect(parsed.subGroupSeq).toBeUndefined();
     expect(parsed.publisherPriority).toBe(0x0a);
     expect(parsed.options.extensionsPresent).toBe(true);
   });
