@@ -16,6 +16,8 @@ let isMainLoopInExecution = false;
 let timeCheck: number | undefined;
 let estFps = 0;
 
+let captureIndex = 0;
+
 function mainLoop(frameReader: any) {
   return new Promise(function (resolve) {
     if (isMainLoopInExecution) {
@@ -53,7 +55,9 @@ function mainLoop(frameReader: any) {
           sendMessageToMain(
             WORKER_PREFIX,
             'debug',
-            'Read frame format: ' +
+            'Read frame idx: ' +
+              captureIndex +
+              ', format: ' +
               vFrame.format +
               ', ts: ' +
               vFrame.timestamp +
@@ -62,7 +66,10 @@ function mainLoop(frameReader: any) {
           );
 
           // Send frame to process
-          (self as any).postMessage({ type: 'vframe', clkms: Date.now(), data: vFrame }, [vFrame]);
+          (self as any).postMessage(
+            { type: 'vframe', clkms: Date.now(), captureIndex: captureIndex++, data: vFrame },
+            [vFrame],
+          );
           // vFrame.close();
 
           estFps++;

@@ -27,6 +27,38 @@ LICENSE file in the root directory of this source tree.
         }
         .relay-badge.main { background: #b9f6b9; }
         .relay-badge.backup { background: #b9dcf6; }
+        .resolution-badge {
+            display: inline-block;
+            min-width: 5.5em;
+            padding: 1px 8px;
+            text-align: center;
+            border: 1px solid #4c566a;
+            border-radius: 4px;
+            font-weight: 600;
+            font-family: ui-monospace, Menlo, monospace;
+            color: #000000;
+            background: #eceff4;
+        }
+        /* The canvas keeps the frame's native pixel size; only its CSS box changes */
+        .player-view {
+            overflow: hidden;
+        }
+        .player-view.fit #videoPlayer {
+            width: 100%;
+            height: auto;
+        }
+        .player-view.original #videoPlayer {
+            max-width: none;
+        }
+        .player-info-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .player-info-row .styleform label {
+            float: none;
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
@@ -108,9 +140,20 @@ LICENSE file in the root directory of this source tree.
 
     <!-- Player -->
     <div class="boxed">
-        <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
-        <div class="styleform">
-            <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span> Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+        <div id="playerView" class="player-view fit">
+            <canvas id="videoPlayer" width="320" height="160" style="border:1px solid"></canvas>
+        </div>
+        <div class="player-info-row">
+            <div class="styleform">
+                <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span> Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+            </div>
+            <div class="styleform">
+                <label>Resolution: <span id="videoResolution" class="resolution-badge">-</span></label>
+                <label><select id="videoDisplayMode">
+                    <option value="original">Show original resolution</option>
+                    <option value="fit" selected>Fit in the canvas</option>
+                </select></label>
+            </div>
         </div>
     </div>
 
@@ -1261,6 +1304,7 @@ LICENSE file in the root directory of this source tree.
 
         currentVideoSize.width = -1;
         currentVideoSize.height = -1;
+        document.getElementById('videoResolution').textContent = '-';
 
         videoPlayerCtx = null;
         animFrame = null;
@@ -1648,6 +1692,7 @@ LICENSE file in the root directory of this source tree.
         if (needsSet) {
             document.getElementById('videoPlayer').width = currentVideoSize.width;
             document.getElementById('videoPlayer').height = currentVideoSize.height;
+            document.getElementById('videoResolution').textContent = `${currentVideoSize.width}x${currentVideoSize.height}`;
 
             // Video player ctx
             videoPlayerCtx = document.getElementById('videoPlayer').getContext('2d');
@@ -1775,6 +1820,14 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnPlaybackCompensationUpdate').addEventListener("click", () => {updatePlaybackCompensation();});
     document.getElementById('enableSpeedCompensation').addEventListener("change", () => {onToggleSpeedCompensation();});
     document.getElementById('mediaPackager').addEventListener("change", () => {updateMediaPackagerUI();});
+    function applyVideoDisplayMode() {
+        const mode = document.getElementById('videoDisplayMode').value;
+        const view = document.getElementById('playerView');
+        view.classList.toggle('fit', mode === 'fit');
+        view.classList.toggle('original', mode === 'original');
+    }
+    applyVideoDisplayMode();
+    document.getElementById('videoDisplayMode').addEventListener("change", () => { applyVideoDisplayMode(); });
     document.getElementById('useBackupRelay').addEventListener("change", (event) => {
         document.getElementById('wtBackupDestData').hidden = !event.target.checked;
     });

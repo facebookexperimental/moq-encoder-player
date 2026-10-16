@@ -13,7 +13,6 @@ const WORKER_PREFIX = '[VIDEO-ENC]';
 
 const WEBCODECS_TIMESCALE = 1000000;
 
-let frameDeliveredCounter = 0;
 let chunkDeliveredCounter = 0;
 
 let workerState = StateEnum.Created;
@@ -22,6 +21,13 @@ let workerState = StateEnum.Created;
 let encoderMaxQueueSize = 5;
 let keyframeEvery = 60;
 let insertNextKeyframe = false;
+
+// ABR lane currently configured in the encoder, returned with every chunk
+let laneName = '';
+// Pending lane switch, applied on the next frame (see switchTo)
+let pendingSwitch:
+  { encoderConfig: VideoEncoderConfig; keyframeEvery: number; laneName: string } | undefined =
+  undefined;
 
 // Latency overlay: when enabled, stamp the capture-read wall-clock epoch (ms) into the
 // top rows of each frame before encoding so the player can later recover it and
@@ -87,6 +93,7 @@ function handleChunk(chunk: any, metadata: any) {
     codec: last_codec,
     codedWidth: last_coded_width,
     codedHeight: last_coded_height,
+    laneName,
   };
 
   // Assume we are sending AVCDecoderConfigurationRecord in the metadata.description
@@ -99,7 +106,48 @@ function handleChunk(chunk: any, metadata: any) {
   self.postMessage(msg);
 }
 
-self.addEventListener('message', async function (e) {
+// Stores the new lane config; it is applied when the next frame arrives (see applyPendingSwitch)
+function switchTo(
+  newEncoderConfig: VideoEncoderConfig,
+  newKeyframeEvery: number,
+  newLaneName: string,
+) {
+  pendingSwitch = {
+    encoderConfig: newEncoderConfig,
+    keyframeEvery: newKeyframeEvery,
+    laneName: newLaneName,
+  };
+  sendMessageToMain(WORKER_PREFIX, 'info', `Switch to lane ${newLaneName} requested`);
+}
+
+async function applyPendingSwitch() {
+  if (pendingSwitch === undefined) {
+    return;
+  }
+  const sw = pendingSwitch;
+  pendingSwitch = undefined;
+  // Wait until every chunk of the old config is delivered, so each chunk carries the right laneName
+  await vEncoder.flush();
+  vEncoder.configure(sw.encoderConfig);
+  keyframeEvery = sw.keyframeEvery;
+  laneName = sw.laneName;
+  sendMessageToMain(
+    WORKER_PREFIX,
+    'info',
+    `Switched to lane ${laneName}: ${JSON.stringify(sw.encoderConfig)}, keyframeEvery: ${keyframeEvery}`,
+  );
+}
+
+// Messages are processed one at a time: a lane switch awaits the encoder flush, and the frames
+// received meanwhile must wait for it instead of being encoded with the old config
+let messageQueue = Promise.resolve();
+self.addEventListener('message', function (e) {
+  messageQueue = messageQueue
+    .then(() => processMessage(e))
+    .catch((err: any) => sendMessageToMain(WORKER_PREFIX, 'error', err?.message));
+});
+
+async function processMessage(e: MessageEvent) {
   if (workerState === StateEnum.Created) {
     workerState = StateEnum.Instantiated;
   }
@@ -132,10 +180,11 @@ self.addEventListener('message', async function (e) {
       keyframeEvery = e.data.keyframeEvery;
     }
     addLatencyInfoInVideo = e.data.addLatencyInfoInVideo === true;
+    laneName = e.data.laneName ?? '';
     sendMessageToMain(
       WORKER_PREFIX,
       'info',
-      `Encoder initialized: ${JSON.stringify(encoderConfig)}`,
+      `Encoder initialized (lane: ${laneName}): ${JSON.stringify(encoderConfig)}`,
     );
 
     workerState = StateEnum.Running;
@@ -144,6 +193,10 @@ self.addEventListener('message', async function (e) {
   if (type === 'setlatencyoverlay') {
     // Live toggle of the latency overlay (checkbox flipped during a session).
     addLatencyInfoInVideo = e.data.addLatencyInfoInVideo === true;
+    return;
+  }
+  if (type === 'switchto') {
+    switchTo(e.data.encoderConfig, e.data.keyframeEvery, e.data.laneName);
     return;
   }
   if (type !== 'vframe') {
@@ -156,16 +209,31 @@ self.addEventListener('message', async function (e) {
   // and piped through the main thread. Used for the latency overlay so the value
   // reflects processor delivery time rather than encode time.
   const captureClkms = e.data.captureClkms;
+  // Monotonically increasing per-frame index assigned in v_capture. Gaps mean frames
+  // were dropped between capture and here.
+  const captureIndex: number = e.data.captureIndex;
 
-  if (vEncoder.encodeQueueSize > encoderMaxQueueSize) {
+  let forceKeyframe = false;
+  if (pendingSwitch !== undefined) {
+    try {
+      await applyPendingSwitch();
+    } catch (err: any) {
+      sendMessageToMain(WORKER_PREFIX, 'error', `Lane switch failed: ${err?.message}`);
+      vFrame.close();
+      return;
+    }
+    // The first frame of the new config must be an I frame
+    forceKeyframe = true;
+  }
+
+  if (!forceKeyframe && vEncoder.encodeQueueSize > encoderMaxQueueSize) {
     // Too many frames in the encoder queue, encoder is overwhelmed let's not add this frame
     sendMessageToMain(WORKER_PREFIX, 'dropped', {
       clkms: Date.now(),
       ts: vFrame.timestamp,
-      msg: 'Dropped encoding video frame',
+      msg: `Dropped encoding video frame (captureIndex: ${captureIndex})`,
     });
     vFrame.close();
-    // Insert a keyframe after dropping
     insertNextKeyframe = true;
   } else {
     let frameToEncode = vFrame;
@@ -187,12 +255,17 @@ self.addEventListener('message', async function (e) {
         frameToEncode = vFrame;
       }
     }
-    const frameNum = frameDeliveredCounter++;
-    const insertKeyframe = frameNum % keyframeEvery === 0 || insertNextKeyframe === true;
+    // Keyed off the capture index (not a local counter) so multiple encoders fed from
+    // the same capture place keyframes on the same frames.
+    const insertKeyframe =
+      forceKeyframe || captureIndex % keyframeEvery === 0 || insertNextKeyframe === true;
     vEncoder.encode(frameToEncode, { keyFrame: insertKeyframe });
-    sendMessageToMain(WORKER_PREFIX, 'debug', `Encoded frame: ${frameNum}, key: ${insertKeyframe}`);
+    sendMessageToMain(
+      WORKER_PREFIX,
+      'debug',
+      `Encoded frame captureIndex: ${captureIndex}, lane: ${laneName}, key: ${insertKeyframe}`,
+    );
     frameToEncode.close();
     insertNextKeyframe = false;
-    frameDeliveredCounter++;
   }
-});
+}

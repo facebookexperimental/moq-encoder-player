@@ -26,6 +26,104 @@ LICENSE file in the root directory of this source tree.
         [hidden] {
             display: none !important;
         }
+        .two-col > .settings-box.full-width {
+            flex-basis: 100%;
+        }
+        .inline-fields {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .styleform .inline-fields label {
+            float: none;
+        }
+        .abr-switch-controls {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-left: 12px;
+            vertical-align: middle;
+        }
+        .styleform .abr-switch-controls label {
+            float: none;
+            margin: 0;
+        }
+        .lane-badge {
+            display: inline-block;
+            min-width: 2em;
+            padding: 1px 8px;
+            border: 1px solid var(--accent);
+            border-radius: 999px;
+            background-color: var(--field-bg);
+            color: var(--text);
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 12px;
+            text-align: center;
+        }
+        .abr-lanes {
+            width: 100%;
+            margin: 6px 0;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            border-spacing: 0;
+            overflow: hidden;
+        }
+        .abr-lanes th, .abr-lanes td {
+            padding: 4px 8px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .abr-lanes th {
+            background-color: var(--field-disabled-bg);
+            color: var(--muted);
+            font-weight: 600;
+        }
+        .abr-lanes tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .abr-lanes tbody tr:hover {
+            background-color: var(--field-bg);
+        }
+        .abr-lanes tbody tr.selected {
+            background-color: rgba(91, 157, 255, 0.15);
+        }
+        .abr-lanes .lane-warning {
+            margin-left: 6px;
+            cursor: help;
+        }
+        .abr-lanes .col-check, .abr-lanes .col-default {
+            width: 1%;
+            text-align: center;
+        }
+        .abr-lanes .col-default {
+            color: var(--accent);
+            font-weight: 700;
+        }
+        .abr-lanes .empty-row td {
+            color: var(--muted);
+            text-align: center;
+            font-style: italic;
+        }
+        .abr-lanes td input[type='text'] {
+            width: 100%;
+            min-width: 14em;
+            margin: 0;
+            color: var(--text);
+            background-color: transparent;
+            border: 1px solid transparent;
+        }
+        .abr-lanes td input[type='text']:hover {
+            border-color: var(--border);
+        }
+        .abr-lanes td input[type='text']:focus {
+            background-color: var(--field-bg);
+            border-color: var(--accent);
+        }
+        .abr-lanes-error {
+            color: #ff6b6b;
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs ENCODER (by Jordi Cenzano)</title>
 </head>
@@ -149,7 +247,38 @@ LICENSE file in the root directory of this source tree.
                 </div>
                 <button id="btnStart" type="button">Start</button>
                 <button id="btnStop" type="button" disabled>Stop</button>
+                <span class="abr-switch-controls">
+                    <label>Current lane: <span id="abrCurrentLane" class="lane-badge">-</span>, requested: <span id="abrRequestedLane" class="lane-badge">-</span></label>
+                    <label>Lane selector: <select id="abrLaneSelector" disabled></select></label>
+                    <button id="btnAbrSwitch" type="button" disabled>ABR Switch to</button>
+                </span>
             </form>
+        </div>
+    </div>
+
+    <!-- Media sources (collapsible, two columns) -->
+    <div class="boxed">
+        <button id="btnToggleMediaSources" type="button" class="link-btn">Media sources ▼</button>
+        <div id="mediaSources" class="two-col" hidden>
+            <fieldset class="settings-box">
+                <legend>Video</legend>
+                <div class="styleform">
+                    <form>
+                        <label>Input sources: <select id="videoSources"></select></label>
+                        <label>(If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery)</label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </fieldset>
+            <fieldset class="settings-box">
+                <legend>Audio</legend>
+                <div class="styleform">
+                    <form>
+                        <label>Input sources: <select id="audioSources"></select></label>
+                        <div class="clear"></div>
+                    </form>
+                </div>
+            </fieldset>
         </div>
     </div>
 
@@ -157,19 +286,33 @@ LICENSE file in the root directory of this source tree.
     <div class="boxed">
         <button id="btnToggleEncodingSettings" type="button" class="link-btn">Encoding settings ▼</button>
         <div id="encodingSettings" class="two-col" hidden>
-            <fieldset class="settings-box">
+            <fieldset class="settings-box full-width">
                 <legend>Video encoding params (h264)</legend>
                 <div class="styleform">
                     <form>
-                        <label>Input sources: <select id="videoSources"></select></label>
-                        <label>(If you select "Screen" and a window with small refresh rate it can affect A LOT the time to 1st frame and time to loss recovery)</label>
+                        <label>ABR lanes (Add uses the Resolution @ fps, GOP and Bitrate below; click a name to edit it). The Default lane is the one encoded:</label>
                         <div class="clear"></div>
-                        <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                        <div class="inline-fields">
+                            <label>Resolution @ fps: <select id="videoEncodingOptions"></select></label>
+                            <label>GOP (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60" size="5"></label>
+                            <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
+                            <button id="btnAbrLaneAdd" type="button">Add</button>
+                        </div>
                         <div class="clear"></div>
-                        <label>KeyFrame every (frames):<input id="videoEncodingKeyFrameEvery" type="text" value="60"
-                                size="5"></label>
+                        <table id="abrLanesTable" class="abr-lanes">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"></th>
+                                    <th>Name</th><th>Resolution @ fps</th><th>Bitrate (bps)</th><th>GOP</th>
+                                    <th class="col-default">Default</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
                         <div class="clear"></div>
-                        <label>Bitrate (bps): <input id="videoEncodingBitrateBps" type="text" value="750000" size="8"></label>
+                        <button id="btnAbrLaneDelete" type="button">Delete</button>
+                        <button id="btnAbrLaneSetDefault" type="button">Set default</button>
+                        <label id="abrLanesError" class="abr-lanes-error"></label>
                         <div class="clear"></div>
                     </form>
                 </div>
@@ -178,8 +321,6 @@ LICENSE file in the root directory of this source tree.
                 <legend>Audio encoding params</legend>
                 <div class="styleform">
                     <form>
-                        <label>Input sources: <select id="audioSources"></select></label>
-                        <div class="clear"></div>
                         <label>Codec: <select id="audioCodecOptions"></select></label>
                         <div class="clear"></div>
                         <label>Bitrate (bps): <select id="audioEncodingBitrateBpsOptions"></select></label>
@@ -446,6 +587,20 @@ LICENSE file in the root directory of this source tree.
                 } else {
                     adv.setAttribute('hidden', '');
                     advBtn.textContent = 'Advanced ▼';
+                }
+            });
+        }
+
+        const srcBtn = document.getElementById('btnToggleMediaSources');
+        const src = document.getElementById('mediaSources');
+        if (srcBtn && src) {
+            srcBtn.addEventListener('click', function () {
+                if (src.hasAttribute('hidden')) {
+                    src.removeAttribute('hidden');
+                    srcBtn.textContent = 'Media sources ▲';
+                } else {
+                    src.setAttribute('hidden', '');
+                    srcBtn.textContent = 'Media sources ▼';
                 }
             });
         }
@@ -1088,6 +1243,8 @@ LICENSE file in the root directory of this source tree.
         initStreamIDUI();
         initFromQS();
         initEncodingOptionsUI();
+        // Seeds one lane (854x480@30-750000-60) from the default encoding fields; the first lane is the default
+        onAbrLaneAdd();
         initAudioCodecOptionsUI();
         initAudioBitrateOptionsUI(document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data.codec);
         await populateVideoSourcesUI();
@@ -1106,10 +1263,8 @@ LICENSE file in the root directory of this source tree.
             currentAudioDeviceId = document.getElementById("audioSources").options[currentAudioDeviceIdIndex].value;
         }
 
-        const currentVideoEncodingIndex = document.getElementById('videoEncodingOptions').selectedIndex < 0 ? 0 : document.getElementById('videoEncodingOptions').selectedIndex;
-        const currentVideoEncodingOptions = document.getElementById("videoEncodingOptions").options[currentVideoEncodingIndex].data;
-
-        restartPreviewUI(currentVideoDeviceId, currentAudioDeviceId, currentVideoEncodingOptions.w, currentVideoEncodingOptions.h);
+        const defaultLane = getDefaultAbrLane();
+        restartPreviewUI(currentVideoDeviceId, currentAudioDeviceId, defaultLane.w, defaultLane.h);
     }
 
     function isSelectedVideoSourceScreen() {
@@ -1365,6 +1520,249 @@ LICENSE file in the root directory of this source tree.
             o.selected = true
         }
         optionsElement.options.add(o, 1);
+    }
+
+    // ABR lanes (UI only for now, not wired to the encoders)
+    // Each lane: {name, w, h, fps, level, bitrate, gop, selected, isDefault}
+    const abrLanes = [];
+    const MAX_ABR_LANES = 5;
+    const MIN_LATENCY_OVERLAY_WIDTH = 854;
+
+    function setAbrLanesErrorUI(msg) {
+        document.getElementById('abrLanesError').textContent = msg;
+    }
+
+    function validateAbrLaneName(name, ignoreIndex) {
+        if (name === '') {
+            return 'Lane name can not be empty';
+        }
+        if (abrLanes.some((lane, i) => i !== ignoreIndex && lane.name === name)) {
+            return `Lane name "${name}" already exists`;
+        }
+        return '';
+    }
+
+    function renderAbrLanesUI() {
+        const tbody = document.querySelector('#abrLanesTable tbody');
+        tbody.replaceChildren();
+        if (abrLanes.length === 0) {
+            const tr = document.createElement('tr');
+            tr.className = 'empty-row';
+            const td = document.createElement('td');
+            td.colSpan = 6;
+            td.textContent = 'No lanes, click Add';
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+        }
+        abrLanes.forEach((lane, i) => {
+            const tr = document.createElement('tr');
+            tr.classList.toggle('selected', lane.selected);
+
+            const checkTd = document.createElement('td');
+            checkTd.className = 'col-check';
+            const check = document.createElement('input');
+            check.type = 'checkbox';
+            check.checked = lane.selected;
+            check.addEventListener('change', () => {
+                lane.selected = check.checked;
+                tr.classList.toggle('selected', lane.selected);
+            });
+            checkTd.appendChild(check);
+
+            const nameTd = document.createElement('td');
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.value = lane.name;
+            nameInput.addEventListener('change', () => {
+                const newName = nameInput.value.trim();
+                const err = validateAbrLaneName(newName, i);
+                if (err !== '') {
+                    setAbrLanesErrorUI(err);
+                    nameInput.value = lane.name;
+                    return;
+                }
+                lane.name = newName;
+                nameInput.value = newName;
+                setAbrLanesErrorUI('');
+            });
+            nameTd.appendChild(nameInput);
+
+            const resTd = document.createElement('td');
+            resTd.textContent = `${lane.w}x${lane.h}@${lane.fps}`;
+            if (lane.w < MIN_LATENCY_OVERLAY_WIDTH) {
+                const warn = document.createElement('span');
+                warn.className = 'lane-warning';
+                warn.textContent = '⚠️';
+                warn.title = 'This resolution is too small to properly embed timing information in the video, we can not measure latency properly';
+                resTd.appendChild(warn);
+            }
+            const bitrateTd = document.createElement('td');
+            bitrateTd.textContent = String(lane.bitrate);
+            const gopTd = document.createElement('td');
+            gopTd.textContent = String(lane.gop);
+            const defaultTd = document.createElement('td');
+            defaultTd.className = 'col-default';
+            defaultTd.textContent = lane.isDefault ? '✓' : '';
+
+            tr.append(checkTd, nameTd, resTd, bitrateTd, gopTd, defaultTd);
+            tbody.appendChild(tr);
+        });
+    }
+
+    function onAbrLaneAdd() {
+        if (abrLanes.length >= MAX_ABR_LANES) {
+            setAbrLanesErrorUI(`Maximum of ${MAX_ABR_LANES} ABR lanes reached`);
+            return;
+        }
+        const encOptions = document.getElementById('videoEncodingOptions');
+        const res = encOptions.options[encOptions.selectedIndex < 0 ? 0 : encOptions.selectedIndex].data;
+        const bitrateStr = document.getElementById('videoEncodingBitrateBps').value.trim();
+        if (!/^[1-9]\d*$/.test(bitrateStr)) {
+            setAbrLanesErrorUI(`Invalid bitrate "${bitrateStr}"`);
+            return;
+        }
+        const gopStr = document.getElementById('videoEncodingKeyFrameEvery').value.trim();
+        if (!/^[1-9]\d{0,3}$/.test(gopStr)) {
+            setAbrLanesErrorUI(`Invalid GOP "${gopStr}", it must be an integer between 1 and 9999`);
+            return;
+        }
+        const gop = parseInt(gopStr);
+        const lane = {w: res.w, h: res.h, fps: res.fps, level: res.level, bitrate: parseInt(bitrateStr), gop, selected: false, isDefault: abrLanes.length === 0};
+        lane.name = `${lane.w}x${lane.h}@${lane.fps}-${lane.bitrate}-${lane.gop}`;
+
+        if (abrLanes.some((l) => l.w === lane.w && l.h === lane.h && l.fps === lane.fps && l.bitrate === lane.bitrate && l.gop === lane.gop)) {
+            setAbrLanesErrorUI(`Lane ${lane.w}x${lane.h}@${lane.fps} ${lane.bitrate}bps GOP ${lane.gop} already exists`);
+            return;
+        }
+        const err = validateAbrLaneName(lane.name, -1);
+        if (err !== '') {
+            setAbrLanesErrorUI(err);
+            return;
+        }
+        abrLanes.push(lane);
+        setAbrLanesErrorUI('');
+        renderAbrLanesUI();
+        if (lane.isDefault) {
+            onAbrDefaultLaneChanged();
+        }
+    }
+
+    function onAbrLaneDelete() {
+        if (!abrLanes.some((l) => l.selected)) {
+            setAbrLanesErrorUI('Select at least one lane to delete');
+            return;
+        }
+        if (abrLanes.every((l) => l.selected)) {
+            setAbrLanesErrorUI('You must have at least one default lane');
+            return;
+        }
+        // If the default lane goes away, the next surviving lane (or the previous one if none follows) becomes default
+        const defaultIndex = abrLanes.findIndex((l) => l.isDefault);
+        let newDefault = undefined;
+        if (defaultIndex >= 0 && abrLanes[defaultIndex].selected) {
+            newDefault = abrLanes.slice(defaultIndex + 1).find((l) => !l.selected) ?? abrLanes.slice(0, defaultIndex).reverse().find((l) => !l.selected);
+        }
+        const remaining = abrLanes.filter((l) => !l.selected);
+        abrLanes.length = 0;
+        abrLanes.push(...remaining);
+        if (newDefault !== undefined) {
+            newDefault.isDefault = true;
+        }
+        setAbrLanesErrorUI('');
+        renderAbrLanesUI();
+        if (newDefault !== undefined) {
+            onAbrDefaultLaneChanged();
+        }
+    }
+
+    function getDefaultAbrLane() {
+        if (abrLanes.length === 0) {
+            throw new Error('ABR lanes list is empty, add at least one lane before starting');
+        }
+        const lane = abrLanes.find((l) => l.isDefault);
+        if (lane === undefined) {
+            throw new Error('No default ABR lane, use "Set default" to pick one');
+        }
+        return lane;
+    }
+
+    function onAbrLaneSetDefault() {
+        const selected = abrLanes.filter((l) => l.selected);
+        if (selected.length !== 1) {
+            setAbrLanesErrorUI('Select exactly one lane to set it as default');
+            return;
+        }
+        const changed = !selected[0].isDefault;
+        abrLanes.forEach((l) => { l.isDefault = l === selected[0]; });
+        setAbrLanesErrorUI('');
+        renderAbrLanesUI();
+        if (changed) {
+            onAbrDefaultLaneChanged();
+        }
+    }
+
+    function buildVideoEncoderConfig(lane) {
+        return {
+            ...videoEncoderConfig.encoderConfig,
+            width: lane.w,
+            height: lane.h,
+            framerate: lane.fps,
+            codec: GetVideoCodecStringFromProfileLevel("avc1", 66, lane.level),
+            bitrate: lane.bitrate,
+        };
+    }
+
+    // Live lane switch controls next to Stop. "Current lane" is driven by the laneName of the encoded chunks
+    function setAbrSwitchUI(streaming) {
+        const selector = document.getElementById('abrLaneSelector');
+        selector.replaceChildren();
+        if (streaming) {
+            abrLanes.forEach((lane) => {
+                const o = document.createElement('option');
+                o.text = lane.name;
+                o.value = lane.name;
+                o.selected = lane.isDefault;
+                selector.options.add(o);
+            });
+        }
+        selector.disabled = !streaming;
+        document.getElementById('btnAbrSwitch').disabled = !streaming;
+        document.getElementById('abrCurrentLane').textContent = '-';
+        document.getElementById('abrRequestedLane').textContent = '-';
+    }
+
+    function onAbrSwitch() {
+        const selector = document.getElementById('abrLaneSelector');
+        if (selector.selectedIndex < 0 || vEncoderWorker == null) {
+            return;
+        }
+        const lane = abrLanes.find((l) => l.name === selector.options[selector.selectedIndex].value);
+        if (lane === undefined) {
+            return;
+        }
+        vEncoderWorker.postMessage({ type: "switchto", encoderConfig: buildVideoEncoderConfig(lane), keyframeEvery: lane.gop, laneName: lane.name });
+        document.getElementById('abrRequestedLane').textContent = lane.name;
+    }
+
+    function updateAbrCurrentLaneUI(laneName) {
+        const currentEl = document.getElementById('abrCurrentLane');
+        if (laneName === undefined || currentEl.textContent === laneName) {
+            return;
+        }
+        currentEl.textContent = laneName;
+        const requestedEl = document.getElementById('abrRequestedLane');
+        if (requestedEl.textContent === laneName) {
+            requestedEl.textContent = '-';
+        }
+    }
+
+    // The preview (capture) resolution follows the default lane
+    function onAbrDefaultLaneChanged() {
+        if (document.getElementById('vPreview').srcObject == null) {
+            return;
+        }
+        const defaultLane = getDefaultAbrLane();
+        updatePreviewVideoSettingsUI(defaultLane.w, defaultLane.h);
     }
 
     function addAudioCodecOptionUI(optionsElement, codecDesc, codecStr, isSelected) {
@@ -1691,11 +2089,9 @@ LICENSE file in the root directory of this source tree.
             selectedAudioSourceDeviceId = document.getElementById('audioSources').options[audioSourceSelectedIndex].value;
         }
 
-        // Get new selected video device
-        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
-
         // Restart preview with new selection
-        restartPreviewUI(newVideoDeviceId, selectedAudioSourceDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
+        const defaultLane = getDefaultAbrLane();
+        restartPreviewUI(newVideoDeviceId, selectedAudioSourceDeviceId, defaultLane.w, defaultLane.h);
     }
 
     function onAudioSourceChanged(newAudioDeviceId) {
@@ -1705,16 +2101,9 @@ LICENSE file in the root directory of this source tree.
         if (videoSourceSelectedIndex >= 0) {
             selectedVideoSourceDeviceId = document.getElementById('videoSources').options[videoSourceSelectedIndex].value;
         }
-        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
-
         // Restart preview with new selection
-        restartPreviewUI(selectedVideoSourceDeviceId, newAudioDeviceId, videoOptionsSelectedElementData.w, videoOptionsSelectedElementData.h);
-    }
-
-    function onVideoEncodingsSettingsChanged(newData) {
-        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
-
-        updatePreviewVideoSettingsUI(newData.w, newData.h);
+        const defaultLane = getDefaultAbrLane();
+        restartPreviewUI(selectedVideoSourceDeviceId, newAudioDeviceId, defaultLane.w, defaultLane.h);
     }
 
     function onAudioCodecChanged(newData) {
@@ -1727,9 +2116,10 @@ LICENSE file in the root directory of this source tree.
     // interactive. Controls with conditional enablement (auth token, drop
     // interval/burst) are restored by the caller after unlocking.
     function setAllOptionsDisabled(disabled) {
-        const keepEnabled = new Set(['btnStart', 'btnStop', 'btnToggleAdvanced', 'btnToggleEncodingSettings', 'addLatencyInfoInVideo']);
+        const keepEnabled = new Set(['btnStart', 'btnStop', 'btnToggleAdvanced', 'btnToggleMediaSources', 'btnToggleEncodingSettings', 'addLatencyInfoInVideo']);
         const regions = [
             document.querySelector('.boxed .styleform form'),
+            document.getElementById('mediaSources'),
             document.getElementById('encodingSettings'),
         ];
         regions.forEach((region) => {
@@ -1761,11 +2151,13 @@ LICENSE file in the root directory of this source tree.
             updateDropModeUI('audio');
             updateHoldModeUI('video');
             updateHoldModeUI('audio');
+            setAbrSwitchUI(false);
         } else if (mode == "publishing") {
             setAllOptionsDisabled(true);
             document.getElementById("btnStart").disabled = true
             document.getElementById("btnStop").disabled = false
             setForceButtonsEnabled(true, document.getElementById('useBackupRelay').checked);
+            setAbrSwitchUI(true);
         } else if (mode == "processingUpdate") {
             // Processing preview update
             document.getElementById("btnStart").disabled = true
@@ -1826,7 +2218,7 @@ LICENSE file in the root directory of this source tree.
             }
 
             // Encode video frame
-            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms }, [ vFrame ]);
+            vEncoderWorker.postMessage({ type: "vframe", vframe: vFrame, captureClkms: e.data.clkms, captureIndex: e.data.captureIndex }, [ vFrame ]);
         } else if (e.data.type === "aframe") {
             const aFrame = e.data.data;
             // Anchor the audio capture clock on its first frame.
@@ -1857,6 +2249,7 @@ LICENSE file in the root directory of this source tree.
             const compensatedTs = compensatedTsFor("video", chunk.timestamp);
 
             updateEncodedVideoTSUI(chunk.timestamp, compensatedTs);
+            updateAbrCurrentLaneUI(e.data.laneName);
             // TODO: Provide encoding video latency
             // updateEncodingVideoLatencyUI(Date.now() - (chunk.timestamp / 1000));
 
@@ -1996,8 +2389,10 @@ LICENSE file in the root directory of this source tree.
     }
 
     async function start() {
+        let defaultLane;
         try {
             validateTrackNames();
+            defaultLane = getDefaultAbrLane();
         } catch (err) {
             console.error(err);
             alert(err.message);
@@ -2013,14 +2408,9 @@ LICENSE file in the root directory of this source tree.
         startTimeline();
 
         const captureWorkersReady = createWorkers();
-        const videoOptionsSelectedElementData = document.getElementById('videoEncodingOptions').options[document.getElementById('videoEncodingOptions').selectedIndex].data;
-        // Load video encoding settings
-        videoEncoderConfig.encoderConfig.width = videoOptionsSelectedElementData.w;
-        videoEncoderConfig.encoderConfig.height = videoOptionsSelectedElementData.h;
-        videoEncoderConfig.encoderConfig.framerate = videoOptionsSelectedElementData.fps;
-        videoEncoderConfig.encoderConfig.codec = GetVideoCodecStringFromProfileLevel("avc1", 66, videoOptionsSelectedElementData.level);
-        videoEncoderConfig.encoderConfig.bitrate = parseInt(document.getElementById('videoEncodingBitrateBps').value);
-        videoEncoderConfig.keyframeEvery = parseInt(document.getElementById('videoEncodingKeyFrameEvery').value);
+        // Load video encoding settings from the default ABR lane
+        const defaultLaneEncoderConfig = buildVideoEncoderConfig(defaultLane);
+        videoEncoderConfig.keyframeEvery = defaultLane.gop;
         videoEncoderConfig.addLatencyInfoInVideo = document.getElementById('addLatencyInfoInVideo').checked;
 
         // Load audio encoding settings
@@ -2076,7 +2466,7 @@ LICENSE file in the root directory of this source tree.
         await captureWorkersReady;
 
         // Initialize encoders
-        vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: videoEncoderConfig.encoderConfig, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery, addLatencyInfoInVideo: videoEncoderConfig.addLatencyInfoInVideo });
+        vEncoderWorker.postMessage({ type: "vencoderini", encoderConfig: defaultLaneEncoderConfig, laneName: defaultLane.name, encoderMaxQueueSize: videoEncoderConfig.encoderMaxQueueSize, keyframeEvery: videoEncoderConfig.keyframeEvery, addLatencyInfoInVideo: videoEncoderConfig.addLatencyInfoInVideo });
         aEncoderWorker.postMessage({ type: "aencoderini", encoderConfig: audioEncoderConfig.encoderConfig, encoderMaxQueueSize: audioEncoderConfig.encoderMaxQueueSize });
 
         // Transport
@@ -2154,7 +2544,10 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('videoSources').addEventListener("change", (event) => {onVideoSourceChanged(event.target.options[event.target.selectedIndex].value);});
     document.getElementById('audioSources').addEventListener("change", (event) => {onAudioSourceChanged(event.target.options[event.target.selectedIndex].value);});
 
-    document.getElementById('videoEncodingOptions').addEventListener("change", (event) => {onVideoEncodingsSettingsChanged(event.target.options[event.target.selectedIndex].data);});
+    document.getElementById('btnAbrLaneAdd').addEventListener("click", () => { onAbrLaneAdd(); });
+    document.getElementById('btnAbrLaneDelete').addEventListener("click", () => { onAbrLaneDelete(); });
+    document.getElementById('btnAbrLaneSetDefault').addEventListener("click", () => { onAbrLaneSetDefault(); });
+    document.getElementById('btnAbrSwitch').addEventListener("click", () => { onAbrSwitch(); });
 
     document.getElementById('audioCodecOptions').addEventListener("change", (event) => {onAudioCodecChanged(event.target.options[event.target.selectedIndex].data);});
     document.getElementById('useAuthToken').addEventListener("change", (event) => { UIUseToken(event.target.checked) });
