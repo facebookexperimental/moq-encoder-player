@@ -1243,8 +1243,7 @@ LICENSE file in the root directory of this source tree.
         initStreamIDUI();
         initFromQS();
         initEncodingOptionsUI();
-        // Seeds one lane (854x480@30-750000-60) from the default encoding fields; the first lane is the default
-        onAbrLaneAdd();
+        initDefaultAbrLanesUI();
         initAudioCodecOptionsUI();
         initAudioBitrateOptionsUI(document.getElementById('audioCodecOptions').options[document.getElementById('audioCodecOptions').selectedIndex].data.codec);
         await populateVideoSourcesUI();
@@ -1525,7 +1524,14 @@ LICENSE file in the root directory of this source tree.
     // ABR lanes (UI only for now, not wired to the encoders)
     // Each lane: {name, w, h, fps, level, bitrate, gop, selected, isDefault}
     const abrLanes = [];
-    const MAX_ABR_LANES = 5;
+    const MAX_ABR_LANES = 10;
+    const DEFAULT_ABR_LANES = [
+        {w: 320, h: 180, fps: 15, bitrate: 250000, gop: 60},
+        {w: 320, h: 180, fps: 30, bitrate: 400000, gop: 60},
+        {w: 854, h: 480, fps: 30, bitrate: 750000, gop: 60, isDefault: true},
+        {w: 1280, h: 720, fps: 30, bitrate: 1200000, gop: 60},
+        {w: 1920, h: 1080, fps: 30, bitrate: 2000000, gop: 60},
+    ];
     const MIN_LATENCY_OVERLAY_WIDTH = 854;
 
     function setAbrLanesErrorUI(msg) {
@@ -1607,6 +1613,20 @@ LICENSE file in the root directory of this source tree.
             tr.append(checkTd, nameTd, resTd, bitrateTd, gopTd, defaultTd);
             tbody.appendChild(tr);
         });
+    }
+
+    function initDefaultAbrLanesUI() {
+        const encOptions = Array.from(document.getElementById('videoEncodingOptions').options);
+        DEFAULT_ABR_LANES.forEach((l) => {
+            const res = encOptions.find((o) => o.data.w === l.w && o.data.h === l.h && o.data.fps === l.fps).data;
+            abrLanes.push({
+                name: `${l.w}x${l.h}@${l.fps}-${l.bitrate}-${l.gop}`,
+                w: l.w, h: l.h, fps: l.fps, level: res.level, bitrate: l.bitrate, gop: l.gop,
+                selected: false, isDefault: l.isDefault === true,
+            });
+        });
+        renderAbrLanesUI();
+        onAbrDefaultLaneChanged();
     }
 
     function onAbrLaneAdd() {
