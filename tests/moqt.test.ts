@@ -38,6 +38,8 @@ import {
   MOQ_MESSAGE_REQUEST_OK,
   MOQ_MESSAGE_REQUEST_ERROR,
   MOQ_PARAMETER_SUBSCRIPTION_FILTER,
+  MOQ_PARAMETER_FORWARD,
+  MOQ_FORWARD_FALSE,
   MOQ_FORWARD_TRUE,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION,
@@ -243,6 +245,7 @@ describe('control message round trips via moqParseMsg', () => {
     expect(
       parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_SUBSCRIPTION_FILTER),
     ).toBe(true);
+    expect(parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_FORWARD)).toBe(false);
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBe('secret');
   });
 
@@ -252,6 +255,14 @@ describe('control message round trips via moqParseMsg', () => {
     const parsed = await moqParseMsg(createByobReadable(cap.getBytes()));
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBeUndefined();
     expect(parsed.data.parameters).toHaveLength(1);
+  });
+
+  it('SUBSCRIBE carries FORWARD=0 when forwarding is disabled', async () => {
+    const cap = createCaptureStream();
+    await moqSendSubscribe(cap.writerStream, 8, ['ns'], 'video', undefined, MOQ_FORWARD_FALSE);
+    const parsed = await moqParseMsg(createByobReadable(cap.getBytes()));
+    const forward = parsed.data.parameters.find((p: any) => p.name === MOQ_PARAMETER_FORWARD);
+    expect(forward?.val).toBe(MOQ_FORWARD_FALSE);
   });
 
   it('SUBSCRIBE_OK round-trips with a largest-object location', async () => {

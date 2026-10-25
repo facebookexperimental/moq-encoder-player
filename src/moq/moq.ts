@@ -47,6 +47,7 @@ import {
   moqSendSubscribeOk,
   moqSendRequestError,
   moqSendRequestUpdate,
+  moqCreateKvPair,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
@@ -64,6 +65,7 @@ import {
   MOQ_MESSAGE_PUBLISH_DONE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
   MOQ_MESSAGE_REQUEST_OK,
+  MOQ_MESSAGE_REQUEST_ERROR,
   MOQ_MESSAGE_REQUEST_UPDATE,
   MOQ_REQUEST_ERROR_DOES_NOT_EXIST,
   MOQ_REQUEST_ERROR_NOT_SUPPORTED,
@@ -1018,6 +1020,10 @@ export class Subscription {
   // subgroup streams / datagrams, routed by track alias.
   private subscribeStream: WebTransportBidirectionalStream;
   private closed = false;
+  private pendingUpdate: {
+    resolve: () => void;
+    reject: (reason?: unknown) => void;
+  } | null = null;
 
   constructor(
     namespace: string[],
@@ -1078,19 +1084,50 @@ export class Subscription {
     return this.subscribeStream.writable;
   }
 
+  _requestUpdate(requestId: number, params: KvPair[]): Promise<void> {
+    if (this.pendingUpdate !== null) {
+      return Promise.reject(new Error('A subscription update is already pending'));
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const pendingUpdate = { resolve, reject };
+      this.pendingUpdate = pendingUpdate;
+      void moqSendRequestUpdate(this.subscribeStream.writable, requestId, params).catch((error) => {
+        if (this.pendingUpdate === pendingUpdate) {
+          this.pendingUpdate = null;
+        }
+        reject(error);
+      });
+    });
+  }
+
   // Read PUBLISH_DONE / late control messages that arrive on the subscribe
   // stream after SUBSCRIBE_OK. A stream close/reset ends the subscription.
   async _runResponseLoop(): Promise<void> {
     try {
       for (;;) {
         const msg = await moqParseMsg(this.subscribeStream.readable);
-        if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
+        if (msg.type === MOQ_MESSAGE_REQUEST_OK) {
+          const pendingUpdate = this.pendingUpdate;
+          this.pendingUpdate = null;
+          pendingUpdate?.resolve();
+        } else if (msg.type === MOQ_MESSAGE_REQUEST_ERROR) {
+          const pendingUpdate = this.pendingUpdate;
+          this.pendingUpdate = null;
+          pendingUpdate?.reject(
+            new Error(`REQUEST_ERROR ${msg.data.errorCode}: ${msg.data.errorReason}`),
+          );
+        } else if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
           // Message already dumped by the central control-message logger.
           break;
         }
       }
     } catch {
       // Stream closed/reset.
+    } finally {
+      const pendingUpdate = this.pendingUpdate;
+      this.pendingUpdate = null;
+      pendingUpdate?.reject(new Error('Subscription ended before REQUEST_UPDATE was acknowledged'));
     }
   }
 
@@ -1363,6 +1400,7 @@ export class Moq {
     authInfo: string | undefined,
     onObject: ObjectCallback,
     onEndOfGroup?: EndOfGroupCallback,
+    forward?: number,
   ): Promise<Subscription> {
     if (this._state !== MoqState.Running) {
       if (this._state === MoqState.Idle) {
@@ -1381,7 +1419,7 @@ export class Moq {
       const requestId = this.allocateClientReqId();
       const subStream: WebTransportBidirectionalStream =
         await this.moqt.wt.createBidirectionalStream();
-      await moqSendSubscribe(subStream.writable, requestId, namespace, name, authInfo);
+      await moqSendSubscribe(subStream.writable, requestId, namespace, name, authInfo, forward);
       const resp = await moqParseMsg(subStream.readable);
       if (resp.type === MOQ_MESSAGE_SUBSCRIBE_OK) {
         const trackAlias = resp.data.trackAlias;
@@ -1875,6 +1913,12 @@ export class Moq {
         datagramType.isEndOfGroup,
       );
     }
+  }
+
+  async setSubscriptionForward(sub: Subscription, forward: number): Promise<void> {
+    return sub._requestUpdate(this.allocateClientReqId(), [
+      moqCreateKvPair(MOQ_PARAMETER_FORWARD, forward),
+    ]);
   }
 
   // ---- helpers -----------------------------------------------------------

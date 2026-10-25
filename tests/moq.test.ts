@@ -11,6 +11,14 @@ import {
   MOQ_CURRENT_VERSION,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
+  moqSendRequestOk,
+  moqSendRequestError,
+  moqParseMsg,
+  moqCreateKvPair,
+  MOQ_MESSAGE_REQUEST_UPDATE,
+  MOQ_PARAMETER_FORWARD,
+  MOQ_FORWARD_FALSE,
+  MOQ_FORWARD_TRUE,
 } from '../src/moq/moqt.js';
 import { concatBuffer } from '../src/moq/buffer_utils.js';
 
@@ -45,14 +53,31 @@ function fakeMoq(opts: { hangStream?: boolean; hangClose?: boolean } = {}) {
   return { moq, writes };
 }
 
-// A minimal stand-in for a WebTransport bidirectional request stream (draft-19
-// runs each PUBLISH / SUBSCRIBE on its own bidi stream). Records cancel/close so
-// teardown behaviour can be asserted.
+// A minimal stand-in for a WebTransport bidirectional request stream (draft-18
+// runs each PUBLISH / SUBSCRIBE on its own bidi stream). Records outbound bytes
+// and lets tests feed responses into the readable half.
 function fakeBidiStream() {
   const calls = { cancelled: 0, closed: 0 };
+  const writes: Uint8Array[] = [];
+  const responses = createQueuedReadable();
   const writer = {
-    write: () => Promise.resolve(),
+    write: (b: Uint8Array) => {
+      writes.push(new Uint8Array(b));
+      return Promise.resolve();
+    },
     close: () => Promise.resolve(),
+    ready: Promise.resolve(),
+    releaseLock: () => {},
+  };
+  const responseWriter = {
+    write: (b: Uint8Array) => {
+      responses.enqueue(b);
+      return Promise.resolve();
+    },
+    close: () => {
+      responses.close();
+      return Promise.resolve();
+    },
     ready: Promise.resolve(),
     releaseLock: () => {},
   };
@@ -64,15 +89,65 @@ function fakeBidiStream() {
         return Promise.resolve();
       },
     },
-    readable: {
-      cancel: () => {
-        calls.cancelled++;
-        return Promise.resolve();
-      },
-    },
+    readable: responses.readable,
     _calls: calls,
+    _writes: writes,
+    _responseWritable: { getWriter: () => responseWriter },
+    _closeResponses: responses.close,
+  };
+  stream.readable.cancel = () => {
+    calls.cancelled++;
+    responses.close();
+    return Promise.resolve();
   };
   return stream;
+}
+
+function createQueuedReadable() {
+  let buffered: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  let closed = false;
+  let wakeReaders: Array<() => void> = [];
+
+  const wake = () => {
+    const readers = wakeReaders;
+    wakeReaders = [];
+    readers.forEach((resolve) => resolve());
+  };
+  const enqueue = (bytes: Uint8Array) => {
+    buffered = concatBuffer([buffered, new Uint8Array(bytes)]);
+    wake();
+  };
+  const close = () => {
+    closed = true;
+    wake();
+  };
+  const read = async (view: Uint8Array) => {
+    while (buffered.byteLength === 0 && !closed) {
+      await new Promise<void>((resolve) => wakeReaders.push(resolve));
+    }
+    if (buffered.byteLength === 0) {
+      return { value: new Uint8Array(view.buffer, view.byteOffset, 0), done: true };
+    }
+    const size = Math.min(view.byteLength, buffered.byteLength);
+    view.set(buffered.subarray(0, size));
+    buffered = buffered.slice(size);
+    return { value: new Uint8Array(view.buffer, view.byteOffset, size), done: false };
+  };
+
+  return {
+    readable: {
+      getReader: () => ({ read, releaseLock: () => {} }),
+    } as unknown as ReadableStream<Uint8Array>,
+    enqueue,
+    close,
+  };
+}
+
+function readableFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  const queued = createQueuedReadable();
+  queued.enqueue(bytes);
+  queued.close();
+  return queued.readable;
 }
 
 function makeTrack(
@@ -325,12 +400,77 @@ describe('Subscription', () => {
   it('unsubscribe closes the request stream once and is idempotent', async () => {
     const stream = fakeBidiStream();
     const sub = new Subscription(['vc'], 'a0', 4, 9, undefined, () => false, stream);
-    // draft-19 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
+    // draft-18 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
     // writable (FIN) exactly once, even across repeated calls.
     await sub.unsubscribe();
     await sub.unsubscribe(); // no-op the second time
     expect(stream._calls.cancelled).toBe(1);
     expect(stream._calls.closed).toBe(1);
+  });
+
+  it('sends REQUEST_UPDATE and resolves when REQUEST_OK arrives', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = sub._requestUpdate(12, [
+      moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_FALSE),
+    ]);
+    await flush();
+
+    const parsed = await moqParseMsg(readableFromBytes(concatBuffer(stream._writes)));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_UPDATE);
+    expect(parsed.data.requestId).toBe(12);
+    expect(parsed.data.parameters).toEqual([
+      { name: MOQ_PARAMETER_FORWARD, val: MOQ_FORWARD_FALSE },
+    ]);
+
+    await moqSendRequestOk(stream._responseWritable);
+    await expect(update).resolves.toBeUndefined();
+    stream._closeResponses();
+    await responseLoop;
+  });
+
+  it('rejects a pending update on REQUEST_ERROR', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('REQUEST_ERROR 3: denied');
+
+    await moqSendRequestError(stream._responseWritable, 3, 'denied');
+    await update;
+    stream._closeResponses();
+    await responseLoop;
+  });
+
+  it('rejects a pending update when the response stream closes', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('Subscription ended before REQUEST_UPDATE was acknowledged');
+
+    stream._closeResponses();
+    await update;
+    await responseLoop;
+  });
+
+  it('rejects an overlapping update while one is pending', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const first = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('Subscription ended before REQUEST_UPDATE was acknowledged');
+
+    await expect(
+      sub._requestUpdate(14, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_FALSE)]),
+    ).rejects.toThrow('A subscription update is already pending');
+    stream._closeResponses();
+    await first;
+    await responseLoop;
   });
 });
 
