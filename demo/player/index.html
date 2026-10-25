@@ -395,6 +395,7 @@ LICENSE file in the root directory of this source tree.
         urlHostPort: '',
         // '' = no backup relay
         backupUrlHostPort: '',
+        backupMode: 'none',
         urlPath: '',
 
         certificateHash: null,
@@ -1255,8 +1256,8 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
-        // Hot-cold is a UI placeholder; only Hot-Hot enables the backup relay.
-        downloaderConfig.backupUrlHostPort = document.getElementById('backupMode').value === 'hot-hot' ? document.getElementById('wtBackupServerUrl').value : '';
+        downloaderConfig.backupMode = document.getElementById('backupMode').value;
+        downloaderConfig.backupUrlHostPort = downloaderConfig.backupMode !== 'none' ? document.getElementById('wtBackupServerUrl').value : '';
 
         // Packaging the publisher is expected to use: "loc" or "cmaf" (CMSF)
         downloaderConfig.packagerFormat = document.getElementById('mediaPackager').value;
@@ -1817,6 +1818,12 @@ LICENSE file in the root directory of this source tree.
     window.addEventListener("load", (event) => {initFromQS();});
     document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+    document.getElementById('btnSwitchVideoRelay').addEventListener("click", () => {
+        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType: 'video' });
+    });
+    document.getElementById('btnSwitchAudioRelay').addEventListener("click", () => {
+        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType: 'audio' });
+    });
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
     document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
