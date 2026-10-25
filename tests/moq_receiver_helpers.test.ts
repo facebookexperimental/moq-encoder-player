@@ -220,23 +220,126 @@ describe('CMSF reception', () => {
 });
 
 describe('main + backup relays', () => {
-  it('parses the backup relay url, disabled by default', () => {
+  it('parses the backup relay url and defaults its mode from the url', () => {
     const base = {
       urlHostPort: 'https://main:4433',
       moqTracks: { video: { namespace: ['vc'], name: 'v0', authInfo: 's', timebase: 1000 } },
     };
-    expect(parseReceiverConfig(base).backupUrlHostPort).toBe('');
+    expect(parseReceiverConfig(base)).toMatchObject({
+      backupUrlHostPort: '',
+      backupMode: 'none',
+    });
     expect(
-      parseReceiverConfig({ ...base, backupUrlHostPort: 'https://backup:4435' }).backupUrlHostPort,
-    ).toBe('https://backup:4435');
+      parseReceiverConfig({ ...base, backupUrlHostPort: 'https://backup:4435' }),
+    ).toMatchObject({
+      backupUrlHostPort: 'https://backup:4435',
+      backupMode: 'hot-hot',
+    });
+    expect(
+      parseReceiverConfig({
+        ...base,
+        backupUrlHostPort: 'https://backup:4435',
+        backupMode: 'hot-cold',
+      }).backupMode,
+    ).toBe('hot-cold');
   });
 
-  it('stops every relay', () => {
+  it('stops every relay and clears switching state', () => {
     const r = new MoqReceiver() as any;
     const closed: string[] = [];
     r.connections = [{ close: () => closed.push('main') }, { close: () => closed.push('backup') }];
+    r.active = { video: 'backup' };
+    r.switching.add('video');
     r.handleStop();
     expect(closed).toEqual(['main', 'backup']);
     expect(r.connections).toEqual([]);
+    expect(r.active).toEqual({});
+    expect(r.switching.size).toBe(0);
+  });
+});
+
+function relaySwitchReceiver(
+  backupMode: 'hot-hot' | 'hot-cold',
+  mainSetForward: jest.Mock,
+  backupSetForward: jest.Mock,
+): any {
+  const r = new MoqReceiver() as any;
+  r.config = { backupMode };
+  r.active = { video: 'main' };
+  r.connections = [
+    { label: 'main', setForward: mainSetForward },
+    { label: 'backup', setForward: backupSetForward },
+  ];
+  return r;
+}
+
+describe('hot-cold relay switching', () => {
+  beforeEach(() => {
+    (globalThis as any).self = { postMessage: jest.fn() };
+  });
+
+  it('enables and acknowledges the new relay before disabling the previous relay', async () => {
+    const events: string[] = [];
+    let acknowledgeEnable!: () => void;
+    const enableAcknowledged = new Promise<void>((resolve) => {
+      acknowledgeEnable = resolve;
+    });
+    const mainSetForward = jest.fn(async (_mediaType: string, forward: number) => {
+      events.push(`main:${forward}`);
+    });
+    const backupSetForward = jest.fn(async (_mediaType: string, forward: number) => {
+      events.push(`backup:${forward}:sent`);
+      await enableAcknowledged;
+      events.push(`backup:${forward}:ack`);
+    });
+    const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
+
+    const switching = r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    expect(events).toEqual(['backup:1:sent']);
+    expect(mainSetForward).not.toHaveBeenCalled();
+
+    acknowledgeEnable();
+    await switching;
+    expect(events).toEqual(['backup:1:sent', 'backup:1:ack', 'main:0']);
+    expect(r.active.video).toBe('backup');
+  });
+
+  it('keeps the active relay unchanged when enabling the new relay fails', async () => {
+    const mainSetForward = jest.fn().mockResolvedValue(undefined);
+    const backupSetForward = jest.fn().mockRejectedValue(new Error('relay rejected update'));
+    const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
+
+    await r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    expect(r.active.video).toBe('main');
+    expect(mainSetForward).not.toHaveBeenCalled();
+  });
+
+  it('ignores switch messages in hot-hot mode', async () => {
+    const mainSetForward = jest.fn().mockResolvedValue(undefined);
+    const backupSetForward = jest.fn().mockResolvedValue(undefined);
+    const r = relaySwitchReceiver('hot-hot', mainSetForward, backupSetForward);
+
+    await r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    expect(mainSetForward).not.toHaveBeenCalled();
+    expect(backupSetForward).not.toHaveBeenCalled();
+    expect(r.active.video).toBe('main');
+  });
+
+  it('ignores a concurrent switch for the same media type', async () => {
+    let acknowledgeEnable!: () => void;
+    const enableAcknowledged = new Promise<void>((resolve) => {
+      acknowledgeEnable = resolve;
+    });
+    const mainSetForward = jest.fn().mockResolvedValue(undefined);
+    const backupSetForward = jest.fn(() => enableAcknowledged);
+    const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
+
+    const first = r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    await r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    expect(backupSetForward).toHaveBeenCalledTimes(1);
+
+    acknowledgeEnable();
+    await first;
+    expect(mainSetForward).toHaveBeenCalledTimes(1);
   });
 });

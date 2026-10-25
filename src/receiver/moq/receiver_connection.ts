@@ -5,8 +5,13 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Moq, type ObjectCallback, type EndOfGroupCallback } from '../../moq/moq.js';
-import { MOQ_CURRENT_VERSION, type KvPair } from '../../moq/moqt.js';
+import {
+  Moq,
+  type Subscription,
+  type ObjectCallback,
+  type EndOfGroupCallback,
+} from '../../moq/moq.js';
+import { MOQ_CURRENT_VERSION, MOQ_FORWARD_FALSE, type KvPair } from '../../moq/moqt.js';
 import { type LOCMediaType } from '../../packager/loc_packager.js';
 import {
   createDepackager,
@@ -36,6 +41,7 @@ export class ReceiverConnection {
   // One depackager per media type, kept for the lifetime of the subscription:
   // the CMSF one is stateful (it remembers the CMAF Header).
   private depackagers: Record<string, MediaDepackager> = {};
+  private subs: Record<string, Subscription> = {};
   // Media types already reported as "waiting for a CMAF Header", so joining
   // mid-group logs once instead of once per object.
   private waitingForHeader = new Set<string>();
@@ -68,12 +74,17 @@ export class ReceiverConnection {
         if (this.closed) {
           return;
         }
-        await this.moq.subscribe(
+        const forward =
+          this.label === 'backup' && this.config.backupMode === 'hot-cold'
+            ? MOQ_FORWARD_FALSE
+            : undefined;
+        this.subs[mediaType] = await this.moq.subscribe(
           trackData.namespace,
           trackData.name,
           trackData.authInfo,
           this.objectHandler(mediaType as LOCMediaType),
           this.endOfGroupHandler(mediaType),
+          forward,
         );
         this.log(
           'info',
@@ -88,10 +99,22 @@ export class ReceiverConnection {
     }
   }
 
+  async setForward(mediaType: string, forward: number): Promise<void> {
+    if (this.moq === null) {
+      throw new Error(`${this.label} relay has no active MoQ session`);
+    }
+    const sub = this.subs[mediaType];
+    if (sub === undefined) {
+      throw new Error(`${this.label} relay has no ${mediaType} subscription`);
+    }
+    await this.moq.setSubscriptionForward(sub, forward);
+  }
+
   close(): void {
     this.closed = true;
     this.moq?.close();
     this.moq = null;
+    this.subs = {};
     this.depackagers = {};
     this.waitingForHeader.clear();
   }
