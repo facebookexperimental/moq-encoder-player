@@ -211,6 +211,15 @@ export class MoqReceiver {
         return;
       }
 
+      if (
+        this.config?.backupMode !== 'hot-cold' ||
+        !this.switching.has(mediaType) ||
+        !this.connections.includes(previous) ||
+        !this.connections.includes(next)
+      ) {
+        return;
+      }
+
       this.active[mediaType] = next.label;
       sendMessageToMain(
         WORKER_PREFIX,

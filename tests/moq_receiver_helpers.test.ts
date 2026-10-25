@@ -267,8 +267,8 @@ function relaySwitchReceiver(
   r.config = { backupMode };
   r.active = { video: 'main' };
   r.connections = [
-    { label: 'main', setForward: mainSetForward },
-    { label: 'backup', setForward: backupSetForward },
+    { label: 'main', setForward: mainSetForward, close: jest.fn() },
+    { label: 'backup', setForward: backupSetForward, close: jest.fn() },
   ];
   return r;
 }
@@ -341,5 +341,23 @@ describe('hot-cold relay switching', () => {
     acknowledgeEnable();
     await first;
     expect(mainSetForward).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore active state when stop interrupts a switch', async () => {
+    let acknowledgeEnable!: () => void;
+    const enableAcknowledged = new Promise<void>((resolve) => {
+      acknowledgeEnable = resolve;
+    });
+    const mainSetForward = jest.fn().mockResolvedValue(undefined);
+    const backupSetForward = jest.fn(() => enableAcknowledged);
+    const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
+
+    const switching = r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    r.handleStop();
+    acknowledgeEnable();
+    await switching;
+
+    expect(r.active).toEqual({});
+    expect(mainSetForward).not.toHaveBeenCalled();
   });
 });
