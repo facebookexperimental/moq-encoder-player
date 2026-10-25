@@ -55,6 +55,8 @@ export class MoqReceiver {
   // Main relay first, then the optional backup.
   private connections: ReceiverConnection[] = [];
   private config: ReceiverConfig | null = null;
+  // Preferred forwarding relay per media type. This is control-plane state used
+  // to choose the direction of the next switch; playback badges follow objects.
   private active: Record<string, RelayLabel> = {};
   private switching = new Set<string>();
 
@@ -164,6 +166,8 @@ export class MoqReceiver {
 
     const config = this.parseReceiverConfig(data.config);
     this.config = config;
+    // Main subscriptions start forwarding. In hot-cold mode only the backup
+    // subscriptions start with FORWARD=0, so every media type begins on main.
     this.active = Object.fromEntries(
       Object.keys(config.moqTracks).map((mediaType) => [mediaType, 'main' as RelayLabel]),
     );
@@ -191,6 +195,7 @@ export class MoqReceiver {
       return;
     }
 
+    // Toggle away from the relay selected by the previous successful switch.
     const previous = this.active[mediaType] === 'main' ? main : backup;
     const next = previous === main ? backup : main;
     this.switching.add(mediaType);
@@ -220,6 +225,8 @@ export class MoqReceiver {
         return;
       }
 
+      // Commit the new preference only after its FORWARD=1 is acknowledged.
+      // The old relay is disabled afterwards to avoid a media-flow gap.
       this.active[mediaType] = next.label;
       sendMessageToMain(
         WORKER_PREFIX,
@@ -256,6 +263,7 @@ export class MoqReceiver {
     }
     this.connections = [];
     this.config = null;
+    // A later init rebuilds the per-media preferences with main as the default.
     this.active = {};
     this.switching.clear();
   }
