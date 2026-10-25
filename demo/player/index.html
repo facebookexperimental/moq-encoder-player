@@ -75,7 +75,11 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>
-                <label>Use backup relay: <input type="checkbox" id="useBackupRelay"></label>
+                <label>Backup mode: <select id="backupMode">
+                    <option value="none" selected>None</option>
+                    <option value="hot-hot">Hot-Hot</option>
+                    <option value="hot-cold">Hot-cold</option>
+                </select></label>
                 <label id="wtBackupDestData" hidden>Backup WT server: <input id="wtBackupServerUrl" type="text"
                         value="https://localhost:4435/moq" size="64"></label>
                 <div class="clear"></div>
@@ -145,7 +149,10 @@ LICENSE file in the root directory of this source tree.
         </div>
         <div class="player-info-row">
             <div class="styleform">
-                <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span> Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+                <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span></label>
+                <button id="btnSwitchVideoRelay" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" disabled>Switch</button>
+                <label>Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+                <button id="btnSwitchAudioRelay" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" disabled>Switch</button>
             </div>
             <div class="styleform">
                 <label>Resolution: <span id="videoResolution" class="resolution-badge">-</span></label>
@@ -964,7 +971,7 @@ LICENSE file in the root directory of this source tree.
         const qsHostBackup = qsParams.get('hostbackup')
         if (qsHostBackup != undefined) {
             document.getElementById("wtBackupServerUrl").value = qsHostBackup;
-            document.getElementById("useBackupRelay").checked = true;
+            document.getElementById("backupMode").value = "hot-hot";
             document.getElementById("wtBackupDestData").hidden = false;
         }
         const verbose_logging = qsParams.get('verbose')
@@ -1248,7 +1255,8 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
-        downloaderConfig.backupUrlHostPort = document.getElementById('useBackupRelay').checked ? document.getElementById('wtBackupServerUrl').value : '';
+        // Hot-cold is a UI placeholder; only Hot-Hot enables the backup relay.
+        downloaderConfig.backupUrlHostPort = document.getElementById('backupMode').value === 'hot-hot' ? document.getElementById('wtBackupServerUrl').value : '';
 
         // Packaging the publisher is expected to use: "loc" or "cmaf" (CMSF)
         downloaderConfig.packagerFormat = document.getElementById('mediaPackager').value;
@@ -1265,6 +1273,7 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
+        updateRelaySwitchButtons();
     }
 
     async function stop() {
@@ -1277,6 +1286,7 @@ LICENSE file in the root directory of this source tree.
         setOptionsDisabled(false);
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
+        updateRelaySwitchButtons();
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
@@ -1828,8 +1838,15 @@ LICENSE file in the root directory of this source tree.
     }
     applyVideoDisplayMode();
     document.getElementById('videoDisplayMode').addEventListener("change", () => { applyVideoDisplayMode(); });
-    document.getElementById('useBackupRelay').addEventListener("change", (event) => {
-        document.getElementById('wtBackupDestData').hidden = !event.target.checked;
+    function updateRelaySwitchButtons() {
+        const enabled = document.getElementById('backupMode').value === 'hot-cold' &&
+            !document.getElementById('btnStop').disabled;
+        document.getElementById('btnSwitchVideoRelay').disabled = !enabled;
+        document.getElementById('btnSwitchAudioRelay').disabled = !enabled;
+    }
+    document.getElementById('backupMode').addEventListener("change", (event) => {
+        document.getElementById('wtBackupDestData').hidden = event.target.value === 'none';
+        updateRelaySwitchButtons();
     });
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps
