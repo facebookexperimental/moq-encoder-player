@@ -5,7 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Track, Subscription, MoqMapping, Moq } from '../src/moq/moq.js';
+import { Track, Subscription, MoqMapping, Moq, MoqState } from '../src/moq/moq.js';
 import {
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
   MOQ_CURRENT_VERSION,
@@ -13,14 +13,18 @@ import {
   moqSendObjectSubgroupToWriter,
   moqSendRequestOk,
   moqSendRequestError,
+  moqSendRequestUpdate,
   moqParseMsg,
   moqCreateKvPair,
   MOQ_MESSAGE_REQUEST_UPDATE,
+  MOQ_MESSAGE_REQUEST_OK,
+  MOQ_STREAM_TYPE_PADDING,
   MOQ_PARAMETER_FORWARD,
   MOQ_FORWARD_FALSE,
   MOQ_FORWARD_TRUE,
 } from '../src/moq/moqt.js';
 import { concatBuffer } from '../src/moq/buffer_utils.js';
+import { numberToVarInt } from '../src/moq/varint.js';
 
 const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -48,7 +52,6 @@ function fakeMoq(opts: { hangStream?: boolean; hangClose?: boolean } = {}) {
   const moq: any = {
     _wt: () => wt,
     _controlWriter: () => ({ getWriter: () => writer }),
-    _markObjectSent: () => {},
   };
   return { moq, writes };
 }
@@ -474,6 +477,35 @@ describe('Subscription', () => {
   });
 });
 
+describe('Padding-stream keep alive', () => {
+  it('sends and closes padding without opening a request stream', async () => {
+    const write = jest.fn(() => Promise.resolve());
+    const close = jest.fn(() => Promise.resolve());
+    const releaseLock = jest.fn();
+    const getWriter = jest.fn(() => ({
+      write,
+      close,
+      ready: Promise.resolve(),
+      releaseLock,
+    }));
+    const createUnidirectionalStream = jest.fn(async () => ({ getWriter }));
+    const moq = new Moq() as any;
+    moq._state = MoqState.Running;
+    moq.moqt.wt = {
+      createUnidirectionalStream,
+      createBidirectionalStream: jest.fn(),
+    };
+
+    await moq.sendKeepAlive();
+
+    expect(moq.moqt.wt.createBidirectionalStream).not.toHaveBeenCalled();
+    expect(createUnidirectionalStream).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith(numberToVarInt(MOQ_STREAM_TYPE_PADDING));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Track subscribers', () => {
   it('adds, removes and reports subscribers; lastSent is empty before any send', () => {
     const { moq } = fakeMoq({ hangStream: true });
@@ -493,6 +525,41 @@ describe('Track subscribers', () => {
 });
 
 describe('Track forward-state gating', () => {
+  it('acknowledges relay updates and preserves forwarding when FORWARD is omitted', async () => {
+    const stream = fakeBidiStream();
+    const { moq } = fakeMoq();
+    const track = new Track(
+      moq,
+      ['vc'],
+      'v0',
+      2,
+      2,
+      1000,
+      1000,
+      undefined,
+      MoqMapping.SubgroupPerGroup,
+      stream,
+    );
+    const responseLoop = track._runResponseLoop();
+
+    await moqSendRequestUpdate(stream._responseWritable, 4, []);
+    await flush();
+    expect(track.isForwarding()).toBe(false);
+    let parsed = await moqParseMsg(readableFromBytes(stream._writes[0]));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_OK);
+
+    await moqSendRequestUpdate(stream._responseWritable, 6, [
+      moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE),
+    ]);
+    await flush();
+    expect(track.isForwarding()).toBe(true);
+    parsed = await moqParseMsg(readableFromBytes(stream._writes[1]));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_OK);
+
+    stream._closeResponses();
+    await responseLoop;
+  });
+
   it('drops objects while not forwarding, sends once forwarding (datagram)', async () => {
     const { moq, writes } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
@@ -686,7 +753,6 @@ describe('Track byte accounting', () => {
     const moq: any = {
       _wt: () => wt,
       _controlWriter: () => ({ getWriter: () => makeWriter([]) }),
-      _markObjectSent: () => {},
     };
     return { moq, streams, datagrams };
   }

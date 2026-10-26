@@ -229,7 +229,7 @@ setup(keepAliveOpts?: KeepAliveOptions): Promise<void>
 ```
 Await connection readiness, run the SETUP handshake, and start the incoming
 stream/datagram loops. Throws if called before `init()`. Pass
-[`KeepAliveOptions`](#keepaliveoptions) to enable the idle keep-alive loop. Moves
+[`KeepAliveOptions`](#keepaliveoptions) to enable the keep-alive loop. Moves
 the session to `Running`.
 
 ```ts
@@ -461,11 +461,12 @@ new group gets the next `groupId` and `objId` 0, every other object the next
 #### `KeepAliveOptions`
 ```ts
 interface KeepAliveOptions {
-  everyMs: number;       // send a keep-alive when idle this long; <= 0 disables
-  namespace?: string;    // default 'keepAlive'
-  name?: string;         // default random
+  everyMs: number;       // PADDING stream interval; <= 0 disables
 }
 ```
+
+The keep-alive uses the draft-18 PADDING stream type, so it creates transport
+traffic without changing request, publication, subscription, or forwarding state.
 
 #### `TrackOffer`
 ```ts

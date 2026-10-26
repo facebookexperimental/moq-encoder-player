@@ -1040,6 +1040,10 @@ export async function moqSendObjectEndOfGroupToWriter(
   return bytes.byteLength;
 }
 
+export function moqSendPaddingStream(writerStream: WritableStream<Uint8Array>): Promise<void> {
+  return moqSendToStream(writerStream, numberToVarInt(MOQ_STREAM_TYPE_PADDING), true);
+}
+
 export async function moqSendObjectPerDatagramToWriter(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   trackAlias: number,

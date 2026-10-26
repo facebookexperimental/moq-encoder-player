@@ -45,6 +45,7 @@ import {
   moqSendPublishDone,
   moqSendSubscribe,
   moqSendSubscribeOk,
+  moqSendRequestOk,
   moqSendRequestError,
   moqSendRequestUpdate,
   moqCreateKvPair,
@@ -52,6 +53,7 @@ import {
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
   moqSendObjectPerDatagramToWriter,
+  moqSendPaddingStream,
   moqParseObjectHeader,
   moqParseObjectFromSubgroupHeader,
   isMoqObjectStreamHeaderType,
@@ -97,10 +99,6 @@ const LOG_PREFIX = '[MOQ]';
 
 // On SUBSCRIBE_ERROR we wait this long before retrying the subscription.
 const SLEEP_SUBSCRIBE_ERROR_MS = 2000;
-
-// Track alias 0/1 are reserved (1 for keep-alive); real tracks start at 2.
-const KEEPALIVE_TRACK_ALIAS = 1;
-const INITIAL_TRACK_ALIAS = KEEPALIVE_TRACK_ALIAS + 1;
 
 // Client request IDs step by 2 (MoQ reserves the parity for the peer).
 const CLIENT_REQUEST_ID_STEP = 2;
@@ -226,13 +224,10 @@ export interface SubscriptionInfo {
 
 /**
  * Keep-alive loop options. When passed to `Moq.setup`, the session periodically
- * sends a keep-alive PUBLISH while idle (no object sent within `everyMs`).
- * `namespace`/`name` default to 'keepAlive' and a random name.
+ * sends a draft-18 PADDING stream.
  */
 export interface KeepAliveOptions {
   everyMs: number;
-  namespace?: string;
-  name?: string;
 }
 
 /**
@@ -343,6 +338,7 @@ export class Track {
   // relay's PUBLISH_OK parks new tracks at Forward State 0 until a subscriber
   // appears.
   private forwarding = false;
+  private requestWriteChain = Promise.resolve();
   // Set when forwarding resumes (0 -> 1), so the next object starts a fresh
   // group on a new subgroup stream rather than reusing a stopped one.
   private resumeNeedsNewGroup = false;
@@ -647,11 +643,13 @@ export class Track {
     // draft-18: PUBLISH_DONE goes back on this request's own bidi stream (no
     // Request ID field — the stream identifies the request); then FIN it.
     try {
-      await moqSendPublishDone(
-        this.publishStream.writable,
-        MOQ_STATUS_TRACK_ENDED,
-        this.subscribers.length,
-        'Subscription Ended, the stream has finished',
+      await this.queueRequestWrite(() =>
+        moqSendPublishDone(
+          this.publishStream.writable,
+          MOQ_STATUS_TRACK_ENDED,
+          this.subscribers.length,
+          'Subscription Ended, the stream has finished',
+        ),
       );
       await this.publishStream.writable.close();
     } catch {
@@ -661,9 +659,10 @@ export class Track {
 
   // ---- internal (called by Moq / ObjData) --------------------------------
 
-  // The writable half of the PUBLISH request stream (used for keep-alive).
-  _publishWritable(): WritableStream<Uint8Array> {
-    return this.publishStream.writable;
+  private queueRequestWrite(send: () => Promise<void>): Promise<void> {
+    const write = this.requestWriteChain.then(send);
+    this.requestWriteChain = write.catch(() => {});
+    return write;
   }
 
   // Read REQUEST_UPDATE (Forward State toggles) and other late control messages
@@ -675,19 +674,21 @@ export class Track {
       for (;;) {
         const msg = await moqParseMsg(this.publishStream.readable);
         if (msg.type === MOQ_MESSAGE_REQUEST_UPDATE) {
-          const forward = forwardFromParameters(msg.data?.parameters ?? []);
+          const forward = (msg.data?.parameters ?? []).find(
+            (param: KvPair) => param.name === MOQ_PARAMETER_FORWARD,
+          )?.val;
           if (forward === MOQ_FORWARD_TRUE) {
             this._addSubscriber(this.publisherRequestId, MOQ_FORWARD_TRUE, msg.data.parameters);
             this._setForwarding(true);
-          } else {
+          } else if (forward === MOQ_FORWARD_FALSE) {
             this._removeSubscribersByRequestId(this.publisherRequestId);
             this._setForwarding(false);
           }
+          await this.queueRequestWrite(() => moqSendRequestOk(this.publishStream.writable));
         } else if (msg.type === MOQ_MESSAGE_PUBLISH_DONE) {
           // Message already dumped by the central control-message logger.
           break;
         }
-        // Ignore other late control messages.
       }
     } catch {
       // Stream closed/reset: the peer is done with this publication.
@@ -838,7 +839,6 @@ export class Track {
             console.error(`${LOG_PREFIX} Failed to write object ${o.groupId}/${o.objId}: ${err}`);
           }
           if (o.status === 'sent') {
-            this.moq._markObjectSent();
             if (o.callback) {
               o.callback(o);
             }
@@ -1079,12 +1079,10 @@ export class Subscription {
 
   // ---- internal (called by Moq receive loops) ----------------------------
 
-  // The writable half of the SUBSCRIBE request stream (used for keep-alive).
-  _requestWritable(): WritableStream<Uint8Array> {
-    return this.subscribeStream.writable;
-  }
-
   _requestUpdate(requestId: number, params: KvPair[]): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new Error('Cannot update a closed subscription'));
+    }
     if (this.pendingUpdate !== null) {
       return Promise.reject(new Error('A subscription update is already pending'));
     }
@@ -1178,12 +1176,10 @@ export class Moq {
 
   private tracks: Track[] = [];
   private nextClientReqId: number | undefined = undefined;
-  private nextAliasValue = INITIAL_TRACK_ALIAS;
+  private nextAliasValue = 1;
 
   // Keep-alive loop (optional; configured via setup()).
-  private keepAliveOpts: Required<KeepAliveOptions> | null = null;
   private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
-  private lastObjectSentMs = 0;
 
   // Subscriber state.
   private subscriptions: Subscription[] = [];
@@ -1481,17 +1477,12 @@ export class Moq {
 
   // ---- keep-alive --------------------------------------------------------
 
-  private startKeepAlive(opts: KeepAliveOptions): void {
-    if (opts.everyMs <= 0) {
+  private startKeepAlive({ everyMs }: KeepAliveOptions): void {
+    if (everyMs <= 0) {
       return;
     }
-    this.keepAliveOpts = {
-      everyMs: opts.everyMs,
-      namespace: opts.namespace ?? 'keepAlive',
-      name: opts.name ?? `${Math.floor(Math.random() * 10000000)}`,
-    };
-    console.log(`${LOG_PREFIX} Starting keep alive every ${opts.everyMs}ms`);
-    this.keepAliveInterval = setInterval(() => void this.maybeSendKeepAlive(), opts.everyMs);
+    console.log(`${LOG_PREFIX} Starting keep alive every ${everyMs}ms`);
+    this.keepAliveInterval = setInterval(() => void this.sendKeepAlive(), everyMs);
   }
 
   private stopKeepAlive(): void {
@@ -1499,32 +1490,17 @@ export class Moq {
       clearInterval(this.keepAliveInterval);
       this.keepAliveInterval = null;
     }
-    this.keepAliveOpts = null;
   }
 
-  // Send a keep-alive only when the session has been idle for `everyMs`. draft-18
-  // has no keep-alive PUBLISH on the control stream; instead we send a no-op
-  // REQUEST_UPDATE on an already-open request stream (a published track's stream,
-  // or failing that a subscription's). No-op when there is nothing open.
-  private async maybeSendKeepAlive(): Promise<void> {
-    const opts = this.keepAliveOpts;
-    if (opts === null || this._state !== MoqState.Running) {
+  // Draft-18 padding streams generate transport traffic without changing
+  // request, publication, or forwarding state.
+  private async sendKeepAlive(): Promise<void> {
+    if (this._state !== MoqState.Running) {
       return;
     }
-    if (Date.now() - this.lastObjectSentMs <= opts.everyMs) {
-      return;
-    }
-    const track = this.tracks[0];
-    const sub = this.subscriptions[0];
     try {
-      if (track !== undefined) {
-        await moqSendRequestUpdate(track._publishWritable(), track.publisherRequestId, []);
-      } else if (sub !== undefined) {
-        await moqSendRequestUpdate(sub._requestWritable(), sub.subscribeRequestId, []);
-      } else {
-        return;
-      }
-      console.log(`${LOG_PREFIX} Sent keep alive (request update)`);
+      const stream = await this.moqt.wt.createUnidirectionalStream();
+      await moqSendPaddingStream(stream);
     } catch (err) {
       console.warn(`${LOG_PREFIX} keep alive failed: ${err}`);
     }
@@ -1534,9 +1510,6 @@ export class Moq {
 
   _wt(): any {
     return this.moqt.wt;
-  }
-  _markObjectSent(): void {
-    this.lastObjectSentMs = Date.now();
   }
 
   // ---- incoming stream / datagram loops ----------------------------------

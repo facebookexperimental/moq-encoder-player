@@ -30,6 +30,7 @@ import {
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
   moqSendObjectPerDatagramToWriter,
+  moqSendPaddingStream,
   MOQ_MESSAGE_SETUP,
   MOQ_MESSAGE_SUBSCRIBE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
@@ -44,6 +45,7 @@ import {
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION,
   MOQ_IMPLEMENTATION_NAME,
+  MOQ_STREAM_TYPE_PADDING,
 } from '../src/moq/moqt.js';
 import { concatBuffer } from '../src/moq/buffer_utils.js';
 
@@ -332,6 +334,15 @@ describe('control message round trips via moqParseMsg', () => {
 // --- Object/datagram path ----------------------------------------------------
 
 describe('object and datagram headers (draft-18)', () => {
+  it('serializes an empty padding stream', async () => {
+    const cap = createCaptureStream();
+    const { numberToVarInt } = await import('../src/moq/varint.js');
+
+    await moqSendPaddingStream(cap.writerStream);
+
+    expect(cap.getBytes()).toEqual(numberToVarInt(MOQ_STREAM_TYPE_PADDING));
+  });
+
   it('subgroup header round-trips through moqParseObjectHeader', async () => {
     const cap = createCaptureStream();
     await moqSendSubgroupHeader(cap.writer, 50, 9, 0x0a);
