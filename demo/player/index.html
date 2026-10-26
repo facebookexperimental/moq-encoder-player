@@ -59,6 +59,30 @@ LICENSE file in the root directory of this source tree.
         .player-info-row .styleform label {
             float: none;
         }
+        .switch-relay-button {
+            min-width: 8.5em;
+        }
+        .switch-relay-button[aria-busy="true"] {
+            cursor: wait;
+        }
+        .switch-relay-button[aria-busy="true"]::before {
+            content: '';
+            display: inline-block;
+            width: 0.85em;
+            height: 0.85em;
+            margin-right: 6px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            vertical-align: -0.12em;
+            animation: relay-switch-spin 0.7s linear infinite;
+        }
+        @keyframes relay-switch-spin {
+            to { transform: rotate(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .switch-relay-button[aria-busy="true"]::before { animation: none; }
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
@@ -150,9 +174,9 @@ LICENSE file in the root directory of this source tree.
         <div class="player-info-row">
             <div class="styleform">
                 <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span></label>
-                <button id="btnSwitchVideoRelay" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" disabled>Switch</button>
+                <button id="btnSwitchVideoRelay" class="switch-relay-button" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" aria-busy="false" aria-live="polite" disabled>Switch</button>
                 <label>Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
-                <button id="btnSwitchAudioRelay" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" disabled>Switch</button>
+                <button id="btnSwitchAudioRelay" class="switch-relay-button" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" aria-busy="false" aria-live="polite" disabled>Switch</button>
             </div>
             <div class="styleform">
                 <label>Resolution: <span id="videoResolution" class="resolution-badge">-</span></label>
@@ -437,6 +461,7 @@ LICENSE file in the root directory of this source tree.
     let muxerDownloaderWorker = null;
     let audioDecoderWorker = null;
     let videoDecoderWorker = null;
+    let nextRelaySwitchRequestId = 0;
 
     // TS info
     const timingInfo = {
@@ -1274,7 +1299,7 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
-        updateRelaySwitchButtons();
+        clearRelaySwitchesInProgress();
     }
 
     async function stop() {
@@ -1287,7 +1312,7 @@ LICENSE file in the root directory of this source tree.
         setOptionsDisabled(false);
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
-        updateRelaySwitchButtons();
+        clearRelaySwitchesInProgress();
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
@@ -1545,7 +1570,9 @@ LICENSE file in the root directory of this source tree.
 
     async function processWorkerMessage(e) {
         // LOGGING
-        if (e.data.type === "debug") {
+        if (e.data.type === "switchcomplete") {
+            completeRelaySwitch(e.data.data?.mediaType, e.data.data?.requestId);
+        } else if (e.data.type === "debug") {
             // logging debug
             if (VERBOSE) {
                 console.debug(e.data.data);
@@ -1819,10 +1846,10 @@ LICENSE file in the root directory of this source tree.
     document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
     document.getElementById('btnSwitchVideoRelay').addEventListener("click", () => {
-        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType: 'video' });
+        requestRelaySwitch('video');
     });
     document.getElementById('btnSwitchAudioRelay').addEventListener("click", () => {
-        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType: 'audio' });
+        requestRelaySwitch('audio');
     });
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
@@ -1845,11 +1872,67 @@ LICENSE file in the root directory of this source tree.
     }
     applyVideoDisplayMode();
     document.getElementById('videoDisplayMode').addEventListener("change", () => { applyVideoDisplayMode(); });
+    const relaySwitchButtonIds = {
+        video: 'btnSwitchVideoRelay',
+        audio: 'btnSwitchAudioRelay',
+    };
+
+    function setRelaySwitchInProgress(mediaType, inProgress, requestId) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        if (buttonId == null) {
+            return;
+        }
+        const button = document.getElementById(buttonId);
+        button.setAttribute('aria-busy', String(inProgress));
+        button.textContent = inProgress ? 'Switching...' : 'Switch';
+        if (inProgress) {
+            button.dataset.switchRequestId = String(requestId);
+        } else {
+            delete button.dataset.switchRequestId;
+        }
+        updateRelaySwitchButtons();
+    }
+
+    function completeRelaySwitch(mediaType, requestId) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        const button = buttonId == null ? null : document.getElementById(buttonId);
+        if (button == null || button.dataset.switchRequestId !== String(requestId)) {
+            return;
+        }
+        setRelaySwitchInProgress(mediaType, false);
+    }
+
+    function clearRelaySwitchesInProgress() {
+        for (const mediaType of Object.keys(relaySwitchButtonIds)) {
+            setRelaySwitchInProgress(mediaType, false);
+        }
+    }
+
+    function requestRelaySwitch(mediaType) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        const button = buttonId == null ? null : document.getElementById(buttonId);
+        if (
+            muxerDownloaderWorker == null ||
+            button == null ||
+            button.disabled ||
+            button.getAttribute('aria-busy') === 'true'
+        ) {
+            return;
+        }
+        const requestId = ++nextRelaySwitchRequestId;
+        setRelaySwitchInProgress(mediaType, true, requestId);
+        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType, requestId });
+    }
+
     function updateRelaySwitchButtons() {
         const enabled = document.getElementById('backupMode').value === 'hot-cold' &&
             !document.getElementById('btnStop').disabled;
-        document.getElementById('btnSwitchVideoRelay').disabled = !enabled;
-        document.getElementById('btnSwitchAudioRelay').disabled = !enabled;
+        for (const buttonId of Object.values(relaySwitchButtonIds)) {
+            const button = document.getElementById(buttonId);
+            const busy = button.getAttribute('aria-busy') === 'true';
+            button.disabled = !enabled;
+            button.setAttribute('aria-disabled', String(!enabled || busy));
+        }
     }
     document.getElementById('backupMode').addEventListener("change", (event) => {
         document.getElementById('wtBackupDestData').hidden = event.target.value === 'none';

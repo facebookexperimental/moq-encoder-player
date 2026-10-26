@@ -76,7 +76,14 @@ export class MoqReceiver {
           this.handleStop();
           break;
         case 'switch':
-          await this.handleSwitch(e.data.mediaType);
+          try {
+            await this.handleSwitch(e.data.mediaType);
+          } finally {
+            sendMessageToMain(WORKER_PREFIX, 'switchcomplete', {
+              mediaType: e.data.mediaType,
+              requestId: e.data.requestId,
+            });
+          }
           break;
         default:
           sendMessageToMain(WORKER_PREFIX, 'error', `Unknown message type received: ${type}`);

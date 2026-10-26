@@ -293,15 +293,23 @@ describe('hot-cold relay switching', () => {
       events.push(`backup:${forward}:ack`);
     });
     const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
+    const completion = {
+      type: 'switchcomplete',
+      data: { mediaType: 'video', requestId: 7 },
+    };
 
-    const switching = r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    const switching = r.onMessage({
+      data: { type: 'switch', mediaType: 'video', requestId: 7 },
+    } as MessageEvent);
     expect(events).toEqual(['backup:1:sent']);
     expect(mainSetForward).not.toHaveBeenCalled();
+    expect(self.postMessage).not.toHaveBeenCalledWith(completion);
 
     acknowledgeEnable();
     await switching;
     expect(events).toEqual(['backup:1:sent', 'backup:1:ack', 'main:0']);
     expect(r.active.video).toBe('backup');
+    expect(self.postMessage).toHaveBeenCalledWith(completion);
   });
 
   it('keeps the active relay unchanged when enabling the new relay fails', async () => {
@@ -309,9 +317,15 @@ describe('hot-cold relay switching', () => {
     const backupSetForward = jest.fn().mockRejectedValue(new Error('relay rejected update'));
     const r = relaySwitchReceiver('hot-cold', mainSetForward, backupSetForward);
 
-    await r.onMessage({ data: { type: 'switch', mediaType: 'video' } } as MessageEvent);
+    await r.onMessage({
+      data: { type: 'switch', mediaType: 'video', requestId: 8 },
+    } as MessageEvent);
     expect(r.active.video).toBe('main');
     expect(mainSetForward).not.toHaveBeenCalled();
+    expect(self.postMessage).toHaveBeenCalledWith({
+      type: 'switchcomplete',
+      data: { mediaType: 'video', requestId: 8 },
+    });
   });
 
   it('ignores switch messages in hot-hot mode', async () => {
