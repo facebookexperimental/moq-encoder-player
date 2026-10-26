@@ -5,9 +5,10 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
+import { MOQ_FORWARD_FALSE, MOQ_FORWARD_TRUE } from '../../moq/moqt.js';
 import { type PackagerFormat } from '../../packager/media_packager.js';
 import { sendMessageToMain } from '../../utils/utils.js';
-import { ReceiverConnection } from './receiver_connection.js';
+import { ReceiverConnection, type RelayLabel } from './receiver_connection.js';
 
 const WORKER_PREFIX = '[MOQ-DOWNLOADER]';
 
@@ -32,6 +33,7 @@ export interface ReceiverConfig {
   urlHostPort: string;
   // Optional second relay carrying the very same objects. '' = disabled.
   backupUrlHostPort: string;
+  backupMode: 'none' | 'hot-hot' | 'hot-cold';
   isSendingStats: boolean;
   moqTracks: Record<string, TrackData>;
   certificateHash: any;
@@ -52,6 +54,11 @@ export interface ReceiverConfig {
 export class MoqReceiver {
   // Main relay first, then the optional backup.
   private connections: ReceiverConnection[] = [];
+  private config: ReceiverConfig | null = null;
+  // Preferred forwarding relay per media type. This is control-plane state used
+  // to choose the direction of the next switch; playback badges follow objects.
+  private active: Record<string, RelayLabel> = {};
+  private switching = new Set<string>();
 
   // -------------------------------------------------------------------------
   // Worker message dispatch
@@ -67,6 +74,16 @@ export class MoqReceiver {
           break;
         case 'stop':
           this.handleStop();
+          break;
+        case 'switch':
+          try {
+            await this.handleSwitch(e.data.mediaType);
+          } finally {
+            sendMessageToMain(WORKER_PREFIX, 'switchcomplete', {
+              mediaType: e.data.mediaType,
+              requestId: e.data.requestId,
+            });
+          }
           break;
         default:
           sendMessageToMain(WORKER_PREFIX, 'error', `Unknown message type received: ${type}`);
@@ -91,9 +108,20 @@ export class MoqReceiver {
   // Throws an Error if the config is invalid (empty host port or bad tracks).
   private parseReceiverConfig(raw: any): ReceiverConfig {
     const cfg = raw ?? {};
+    const backupUrlHostPort =
+      typeof cfg.backupUrlHostPort === 'string' ? cfg.backupUrlHostPort : '';
+    const backupMode =
+      cfg.backupMode === 'none' ||
+      cfg.backupMode === 'hot-hot' ||
+      cfg.backupMode === 'hot-cold'
+        ? cfg.backupMode
+        : backupUrlHostPort !== ''
+          ? 'hot-hot'
+          : 'none';
     const config: ReceiverConfig = {
       urlHostPort: typeof cfg.urlHostPort === 'string' ? cfg.urlHostPort : '',
-      backupUrlHostPort: typeof cfg.backupUrlHostPort === 'string' ? cfg.backupUrlHostPort : '',
+      backupUrlHostPort,
+      backupMode,
       isSendingStats: cfg.isSendingStats ?? false,
       moqTracks: cfg.moqTracks ?? {},
       certificateHash: cfg.certificateHash ?? null,
@@ -144,12 +172,91 @@ export class MoqReceiver {
     }
 
     const config = this.parseReceiverConfig(data.config);
+    this.config = config;
+    // Main subscriptions start forwarding. In hot-cold mode only the backup
+    // subscriptions start with FORWARD=0, so every media type begins on main.
+    this.active = Object.fromEntries(
+      Object.keys(config.moqTracks).map((mediaType) => [mediaType, 'main' as RelayLabel]),
+    );
 
     this.connections = [new ReceiverConnection('main', config.urlHostPort, config)];
     if (config.backupUrlHostPort !== '') {
       this.connections.push(new ReceiverConnection('backup', config.backupUrlHostPort, config));
     }
     await Promise.all(this.connections.map((conn) => conn.start()));
+  }
+
+  private async handleSwitch(mediaType: unknown): Promise<void> {
+    if (
+      typeof mediaType !== 'string' ||
+      this.config?.backupMode !== 'hot-cold' ||
+      this.active[mediaType] === undefined ||
+      this.switching.has(mediaType)
+    ) {
+      return;
+    }
+
+    const main = this.connections.find((connection) => connection.label === 'main');
+    const backup = this.connections.find((connection) => connection.label === 'backup');
+    if (main === undefined || backup === undefined) {
+      return;
+    }
+
+    // Toggle away from the relay selected by the previous successful switch.
+    const previous = this.active[mediaType] === 'main' ? main : backup;
+    const next = previous === main ? backup : main;
+    this.switching.add(mediaType);
+    try {
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'info',
+        `Enabling ${mediaType} forwarding from ${next.label} relay`,
+      );
+      try {
+        await next.setForward(mediaType, MOQ_FORWARD_TRUE);
+      } catch (err: any) {
+        sendMessageToMain(
+          WORKER_PREFIX,
+          'error',
+          `Can NOT enable ${mediaType} forwarding from ${next.label} relay. Err: ${err?.message}`,
+        );
+        return;
+      }
+
+      if (
+        this.config?.backupMode !== 'hot-cold' ||
+        !this.switching.has(mediaType) ||
+        !this.connections.includes(previous) ||
+        !this.connections.includes(next)
+      ) {
+        return;
+      }
+
+      // Commit the new preference only after its FORWARD=1 is acknowledged.
+      // The old relay is disabled afterwards to avoid a media-flow gap.
+      this.active[mediaType] = next.label;
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'info',
+        `${mediaType} forwarding switched to ${next.label} relay`,
+      );
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'info',
+        `Disabling ${mediaType} forwarding from ${previous.label} relay`,
+      );
+      try {
+        await previous.setForward(mediaType, MOQ_FORWARD_FALSE);
+      } catch (err: any) {
+        sendMessageToMain(
+          WORKER_PREFIX,
+          'error',
+          `Can NOT disable ${mediaType} forwarding from ${previous.label} relay. Err: ${err?.message}`,
+        );
+      }
+    } finally {
+      this.switching.delete(mediaType);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -162,5 +269,9 @@ export class MoqReceiver {
       conn.close();
     }
     this.connections = [];
+    this.config = null;
+    // A later init rebuilds the per-media preferences with main as the default.
+    this.active = {};
+    this.switching.clear();
   }
 }

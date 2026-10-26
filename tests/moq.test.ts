@@ -5,14 +5,26 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-import { Track, Subscription, MoqMapping, Moq } from '../src/moq/moq.js';
+import { Track, Subscription, MoqMapping, Moq, MoqState } from '../src/moq/moq.js';
 import {
   MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT,
   MOQ_CURRENT_VERSION,
   moqSendSubgroupHeader,
   moqSendObjectSubgroupToWriter,
+  moqSendRequestOk,
+  moqSendRequestError,
+  moqSendRequestUpdate,
+  moqParseMsg,
+  moqCreateKvPair,
+  MOQ_MESSAGE_REQUEST_UPDATE,
+  MOQ_MESSAGE_REQUEST_OK,
+  MOQ_STREAM_TYPE_PADDING,
+  MOQ_PARAMETER_FORWARD,
+  MOQ_FORWARD_FALSE,
+  MOQ_FORWARD_TRUE,
 } from '../src/moq/moqt.js';
 import { concatBuffer } from '../src/moq/buffer_utils.js';
+import { numberToVarInt } from '../src/moq/varint.js';
 
 const BASE_PRI = MOQ_PUBLISHER_PRIORITY_BASE_DEFAULT;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -40,19 +52,35 @@ function fakeMoq(opts: { hangStream?: boolean; hangClose?: boolean } = {}) {
   const moq: any = {
     _wt: () => wt,
     _controlWriter: () => ({ getWriter: () => writer }),
-    _markObjectSent: () => {},
   };
   return { moq, writes };
 }
 
-// A minimal stand-in for a WebTransport bidirectional request stream (draft-19
-// runs each PUBLISH / SUBSCRIBE on its own bidi stream). Records cancel/close so
-// teardown behaviour can be asserted.
+// A minimal stand-in for a WebTransport bidirectional request stream (draft-18
+// runs each PUBLISH / SUBSCRIBE on its own bidi stream). Records outbound bytes
+// and lets tests feed responses into the readable half.
 function fakeBidiStream() {
   const calls = { cancelled: 0, closed: 0 };
+  const writes: Uint8Array[] = [];
+  const responses = createQueuedReadable();
   const writer = {
-    write: () => Promise.resolve(),
+    write: (b: Uint8Array) => {
+      writes.push(new Uint8Array(b));
+      return Promise.resolve();
+    },
     close: () => Promise.resolve(),
+    ready: Promise.resolve(),
+    releaseLock: () => {},
+  };
+  const responseWriter = {
+    write: (b: Uint8Array) => {
+      responses.enqueue(b);
+      return Promise.resolve();
+    },
+    close: () => {
+      responses.close();
+      return Promise.resolve();
+    },
     ready: Promise.resolve(),
     releaseLock: () => {},
   };
@@ -64,15 +92,65 @@ function fakeBidiStream() {
         return Promise.resolve();
       },
     },
-    readable: {
-      cancel: () => {
-        calls.cancelled++;
-        return Promise.resolve();
-      },
-    },
+    readable: responses.readable,
     _calls: calls,
+    _writes: writes,
+    _responseWritable: { getWriter: () => responseWriter },
+    _closeResponses: responses.close,
+  };
+  stream.readable.cancel = () => {
+    calls.cancelled++;
+    responses.close();
+    return Promise.resolve();
   };
   return stream;
+}
+
+function createQueuedReadable() {
+  let buffered: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  let closed = false;
+  let wakeReaders: Array<() => void> = [];
+
+  const wake = () => {
+    const readers = wakeReaders;
+    wakeReaders = [];
+    readers.forEach((resolve) => resolve());
+  };
+  const enqueue = (bytes: Uint8Array) => {
+    buffered = concatBuffer([buffered, new Uint8Array(bytes)]);
+    wake();
+  };
+  const close = () => {
+    closed = true;
+    wake();
+  };
+  const read = async (view: Uint8Array) => {
+    while (buffered.byteLength === 0 && !closed) {
+      await new Promise<void>((resolve) => wakeReaders.push(resolve));
+    }
+    if (buffered.byteLength === 0) {
+      return { value: new Uint8Array(view.buffer, view.byteOffset, 0), done: true };
+    }
+    const size = Math.min(view.byteLength, buffered.byteLength);
+    view.set(buffered.subarray(0, size));
+    buffered = buffered.slice(size);
+    return { value: new Uint8Array(view.buffer, view.byteOffset, size), done: false };
+  };
+
+  return {
+    readable: {
+      getReader: () => ({ read, releaseLock: () => {} }),
+    } as unknown as ReadableStream<Uint8Array>,
+    enqueue,
+    close,
+  };
+}
+
+function readableFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  const queued = createQueuedReadable();
+  queued.enqueue(bytes);
+  queued.close();
+  return queued.readable;
 }
 
 function makeTrack(
@@ -325,12 +403,106 @@ describe('Subscription', () => {
   it('unsubscribe closes the request stream once and is idempotent', async () => {
     const stream = fakeBidiStream();
     const sub = new Subscription(['vc'], 'a0', 4, 9, undefined, () => false, stream);
-    // draft-19 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
+    // draft-18 has no UNSUBSCRIBE message: cancel readable (STOP_SENDING) + close
     // writable (FIN) exactly once, even across repeated calls.
     await sub.unsubscribe();
     await sub.unsubscribe(); // no-op the second time
     expect(stream._calls.cancelled).toBe(1);
     expect(stream._calls.closed).toBe(1);
+  });
+
+  it('sends REQUEST_UPDATE and resolves when REQUEST_OK arrives', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = sub._requestUpdate(12, [
+      moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_FALSE),
+    ]);
+    await flush();
+
+    const parsed = await moqParseMsg(readableFromBytes(concatBuffer(stream._writes)));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_UPDATE);
+    expect(parsed.data.requestId).toBe(12);
+    expect(parsed.data.parameters).toEqual([
+      { name: MOQ_PARAMETER_FORWARD, val: MOQ_FORWARD_FALSE },
+    ]);
+
+    await moqSendRequestOk(stream._responseWritable);
+    await expect(update).resolves.toBeUndefined();
+    stream._closeResponses();
+    await responseLoop;
+  });
+
+  it('rejects a pending update on REQUEST_ERROR', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('REQUEST_ERROR 3: denied');
+
+    await moqSendRequestError(stream._responseWritable, 3, 'denied');
+    await update;
+    stream._closeResponses();
+    await responseLoop;
+  });
+
+  it('rejects a pending update when the response stream closes', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const update = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('Subscription ended before REQUEST_UPDATE was acknowledged');
+
+    stream._closeResponses();
+    await update;
+    await responseLoop;
+  });
+
+  it('rejects an overlapping update while one is pending', async () => {
+    const stream = fakeBidiStream();
+    const sub = new Subscription(['vc'], 'v0', 4, 9, undefined, () => false, stream);
+    const responseLoop = sub._runResponseLoop();
+    const first = expect(
+      sub._requestUpdate(12, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE)]),
+    ).rejects.toThrow('Subscription ended before REQUEST_UPDATE was acknowledged');
+
+    await expect(
+      sub._requestUpdate(14, [moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_FALSE)]),
+    ).rejects.toThrow('A subscription update is already pending');
+    stream._closeResponses();
+    await first;
+    await responseLoop;
+  });
+});
+
+describe('Padding-stream keep alive', () => {
+  it('sends and closes padding without opening a request stream', async () => {
+    const write = jest.fn(() => Promise.resolve());
+    const close = jest.fn(() => Promise.resolve());
+    const releaseLock = jest.fn();
+    const getWriter = jest.fn(() => ({
+      write,
+      close,
+      ready: Promise.resolve(),
+      releaseLock,
+    }));
+    const createUnidirectionalStream = jest.fn(async () => ({ getWriter }));
+    const moq = new Moq() as any;
+    moq._state = MoqState.Running;
+    moq.moqt.wt = {
+      createUnidirectionalStream,
+      createBidirectionalStream: jest.fn(),
+    };
+
+    await moq.sendKeepAlive();
+
+    expect(moq.moqt.wt.createBidirectionalStream).not.toHaveBeenCalled();
+    expect(createUnidirectionalStream).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith(numberToVarInt(MOQ_STREAM_TYPE_PADDING));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -353,6 +525,41 @@ describe('Track subscribers', () => {
 });
 
 describe('Track forward-state gating', () => {
+  it('acknowledges relay updates and preserves forwarding when FORWARD is omitted', async () => {
+    const stream = fakeBidiStream();
+    const { moq } = fakeMoq();
+    const track = new Track(
+      moq,
+      ['vc'],
+      'v0',
+      2,
+      2,
+      1000,
+      1000,
+      undefined,
+      MoqMapping.SubgroupPerGroup,
+      stream,
+    );
+    const responseLoop = track._runResponseLoop();
+
+    await moqSendRequestUpdate(stream._responseWritable, 4, []);
+    await flush();
+    expect(track.isForwarding()).toBe(false);
+    let parsed = await moqParseMsg(readableFromBytes(stream._writes[0]));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_OK);
+
+    await moqSendRequestUpdate(stream._responseWritable, 6, [
+      moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_TRUE),
+    ]);
+    await flush();
+    expect(track.isForwarding()).toBe(true);
+    parsed = await moqParseMsg(readableFromBytes(stream._writes[1]));
+    expect(parsed.type).toBe(MOQ_MESSAGE_REQUEST_OK);
+
+    stream._closeResponses();
+    await responseLoop;
+  });
+
   it('drops objects while not forwarding, sends once forwarding (datagram)', async () => {
     const { moq, writes } = fakeMoq();
     const track = makeTrack(moq, MoqMapping.ObjectPerDatagram);
@@ -546,7 +753,6 @@ describe('Track byte accounting', () => {
     const moq: any = {
       _wt: () => wt,
       _controlWriter: () => ({ getWriter: () => makeWriter([]) }),
-      _markObjectSent: () => {},
     };
     return { moq, streams, datagrams };
   }

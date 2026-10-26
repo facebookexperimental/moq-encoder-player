@@ -558,10 +558,11 @@ export async function moqSendSubscribe(
   trackNamespace: string[],
   trackName: string,
   authInfo: string | number | undefined,
+  forward?: number,
 ): Promise<void> {
   return moqSendToStream(
     writerStream,
-    moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo),
+    moqCreateSubscribeMessageBytes(requestId, trackNamespace, trackName, authInfo, forward),
   );
 }
 
@@ -570,8 +571,13 @@ function moqCreateSubscribeMessageBytes(
   trackNamespace: string[],
   trackName: string,
   authInfo: string | number | undefined,
+  forward: number | undefined,
 ): Uint8Array {
   const params: KvPair[] = [];
+  // FORWARD defaults to 1 when omitted; only send it to suppress forwarding.
+  if (forward === MOQ_FORWARD_FALSE) {
+    params.push(moqCreateKvPair(MOQ_PARAMETER_FORWARD, MOQ_FORWARD_FALSE));
+  }
   // Request the live edge with a Largest Object subscription filter.
   params.push(
     moqCreateKvPair(
@@ -1032,6 +1038,10 @@ export async function moqSendObjectEndOfGroupToWriter(
   const bytes = moqCreateObjectEndOfGroupBytes(objSeqDelta, extensionHeaders);
   await moqSendToWriter(writer, bytes, closeStream);
   return bytes.byteLength;
+}
+
+export function moqSendPaddingStream(writerStream: WritableStream<Uint8Array>): Promise<void> {
+  return moqSendToStream(writerStream, numberToVarInt(MOQ_STREAM_TYPE_PADDING), true);
 }
 
 export async function moqSendObjectPerDatagramToWriter(

@@ -59,6 +59,30 @@ LICENSE file in the root directory of this source tree.
         .player-info-row .styleform label {
             float: none;
         }
+        .switch-relay-button {
+            min-width: 8.5em;
+        }
+        .switch-relay-button[aria-busy="true"] {
+            cursor: wait;
+        }
+        .switch-relay-button[aria-busy="true"]::before {
+            content: '';
+            display: inline-block;
+            width: 0.85em;
+            height: 0.85em;
+            margin-right: 6px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            vertical-align: -0.12em;
+            animation: relay-switch-spin 0.7s linear infinite;
+        }
+        @keyframes relay-switch-spin {
+            to { transform: rotate(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .switch-relay-button[aria-busy="true"]::before { animation: none; }
+        }
     </style>
     <title>Test Ultra low latency with WebCodecs + WebTransport PLAYER (by Jordi Cenzano)</title>
 </head>
@@ -75,7 +99,11 @@ LICENSE file in the root directory of this source tree.
                 <label id="wtDestData">WT server:<input id="wtServerUrl" type="text"
                         value="https://localhost:4433/moq" size="64"></label>
                 <div class="clear"></div>
-                <label>Use backup relay: <input type="checkbox" id="useBackupRelay"></label>
+                <label>Backup mode: <select id="backupMode">
+                    <option value="none" selected>None</option>
+                    <option value="hot-hot">Hot-Hot</option>
+                    <option value="hot-cold">Hot-cold</option>
+                </select></label>
                 <label id="wtBackupDestData" hidden>Backup WT server: <input id="wtBackupServerUrl" type="text"
                         value="https://localhost:4435/moq" size="64"></label>
                 <div class="clear"></div>
@@ -145,7 +173,10 @@ LICENSE file in the root directory of this source tree.
         </div>
         <div class="player-info-row">
             <div class="styleform">
-                <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span> Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+                <label>Video from: <span id="videoFromRelay" class="relay-badge">-</span></label>
+                <button id="btnSwitchVideoRelay" class="switch-relay-button" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" aria-busy="false" aria-live="polite" disabled>Switch</button>
+                <label>Audio from: <span id="audioFromRelay" class="relay-badge">-</span></label>
+                <button id="btnSwitchAudioRelay" class="switch-relay-button" type="button" title="Switch between main and backup. Only enabled if backup hot-cold mode is enabled" aria-busy="false" aria-live="polite" disabled>Switch</button>
             </div>
             <div class="styleform">
                 <label>Resolution: <span id="videoResolution" class="resolution-badge">-</span></label>
@@ -388,6 +419,7 @@ LICENSE file in the root directory of this source tree.
         urlHostPort: '',
         // '' = no backup relay
         backupUrlHostPort: '',
+        backupMode: 'none',
         urlPath: '',
 
         certificateHash: null,
@@ -429,6 +461,7 @@ LICENSE file in the root directory of this source tree.
     let muxerDownloaderWorker = null;
     let audioDecoderWorker = null;
     let videoDecoderWorker = null;
+    let nextRelaySwitchRequestId = 0;
 
     // TS info
     const timingInfo = {
@@ -964,7 +997,7 @@ LICENSE file in the root directory of this source tree.
         const qsHostBackup = qsParams.get('hostbackup')
         if (qsHostBackup != undefined) {
             document.getElementById("wtBackupServerUrl").value = qsHostBackup;
-            document.getElementById("useBackupRelay").checked = true;
+            document.getElementById("backupMode").value = "hot-hot";
             document.getElementById("wtBackupDestData").hidden = false;
         }
         const verbose_logging = qsParams.get('verbose')
@@ -1248,7 +1281,8 @@ LICENSE file in the root directory of this source tree.
         }
         // Get url data
         downloaderConfig.urlHostPort = document.getElementById('wtServerUrl').value;
-        downloaderConfig.backupUrlHostPort = document.getElementById('useBackupRelay').checked ? document.getElementById('wtBackupServerUrl').value : '';
+        downloaderConfig.backupMode = document.getElementById('backupMode').value;
+        downloaderConfig.backupUrlHostPort = downloaderConfig.backupMode !== 'none' ? document.getElementById('wtBackupServerUrl').value : '';
 
         // Packaging the publisher is expected to use: "loc" or "cmaf" (CMSF)
         downloaderConfig.packagerFormat = document.getElementById('mediaPackager').value;
@@ -1265,6 +1299,7 @@ LICENSE file in the root directory of this source tree.
         downloaderConfig.moqTracks["audio"].authInfo = document.getElementById('authInfo').value;
 
         muxerDownloaderWorker.postMessage({ type: "init", config: downloaderConfig });
+        clearRelaySwitchesInProgress();
     }
 
     async function stop() {
@@ -1277,6 +1312,7 @@ LICENSE file in the root directory of this source tree.
         setOptionsDisabled(false);
         document.getElementById("btnStart").disabled = false
         document.getElementById("btnStop").disabled = true
+        clearRelaySwitchesInProgress();
         document.getElementById("btnJitterAudioUpdate").disabled = true;
         document.getElementById("btnJitterVideoUpdate").disabled = true;
         document.getElementById("btnPlayerBufferUpdate").disabled = true;
@@ -1534,7 +1570,9 @@ LICENSE file in the root directory of this source tree.
 
     async function processWorkerMessage(e) {
         // LOGGING
-        if (e.data.type === "debug") {
+        if (e.data.type === "switchcomplete") {
+            completeRelaySwitch(e.data.data?.mediaType, e.data.data?.requestId);
+        } else if (e.data.type === "debug") {
             // logging debug
             if (VERBOSE) {
                 console.debug(e.data.data);
@@ -1807,6 +1845,12 @@ LICENSE file in the root directory of this source tree.
     window.addEventListener("load", (event) => {initFromQS();});
     document.getElementById('btnStart').addEventListener("click", async (event) => {await start();});
     document.getElementById('btnStop').addEventListener("click", (event) => {stop();});
+    document.getElementById('btnSwitchVideoRelay').addEventListener("click", () => {
+        requestRelaySwitch('video');
+    });
+    document.getElementById('btnSwitchAudioRelay').addEventListener("click", () => {
+        requestRelaySwitch('audio');
+    });
     document.getElementById('btnJitterAudioUpdate').addEventListener("click", (event) => {updateJitterAudio();});
     document.getElementById('btnJitterVideoUpdate').addEventListener("click", (event) => {updateJitterVideo();});
     document.getElementById('btnPlayerBufferUpdate').addEventListener("click", (event) => {updatePlayerBuffer();});
@@ -1828,8 +1872,71 @@ LICENSE file in the root directory of this source tree.
     }
     applyVideoDisplayMode();
     document.getElementById('videoDisplayMode').addEventListener("change", () => { applyVideoDisplayMode(); });
-    document.getElementById('useBackupRelay').addEventListener("change", (event) => {
-        document.getElementById('wtBackupDestData').hidden = !event.target.checked;
+    const relaySwitchButtonIds = {
+        video: 'btnSwitchVideoRelay',
+        audio: 'btnSwitchAudioRelay',
+    };
+
+    function setRelaySwitchInProgress(mediaType, inProgress, requestId) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        if (buttonId == null) {
+            return;
+        }
+        const button = document.getElementById(buttonId);
+        button.setAttribute('aria-busy', String(inProgress));
+        button.textContent = inProgress ? 'Switching...' : 'Switch';
+        if (inProgress) {
+            button.dataset.switchRequestId = String(requestId);
+        } else {
+            delete button.dataset.switchRequestId;
+        }
+        updateRelaySwitchButtons();
+    }
+
+    function completeRelaySwitch(mediaType, requestId) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        const button = buttonId == null ? null : document.getElementById(buttonId);
+        if (button == null || button.dataset.switchRequestId !== String(requestId)) {
+            return;
+        }
+        setRelaySwitchInProgress(mediaType, false);
+    }
+
+    function clearRelaySwitchesInProgress() {
+        for (const mediaType of Object.keys(relaySwitchButtonIds)) {
+            setRelaySwitchInProgress(mediaType, false);
+        }
+    }
+
+    function requestRelaySwitch(mediaType) {
+        const buttonId = relaySwitchButtonIds[mediaType];
+        const button = buttonId == null ? null : document.getElementById(buttonId);
+        if (
+            muxerDownloaderWorker == null ||
+            button == null ||
+            button.disabled ||
+            button.getAttribute('aria-busy') === 'true'
+        ) {
+            return;
+        }
+        const requestId = ++nextRelaySwitchRequestId;
+        setRelaySwitchInProgress(mediaType, true, requestId);
+        muxerDownloaderWorker.postMessage({ type: 'switch', mediaType, requestId });
+    }
+
+    function updateRelaySwitchButtons() {
+        const enabled = document.getElementById('backupMode').value === 'hot-cold' &&
+            !document.getElementById('btnStop').disabled;
+        for (const buttonId of Object.values(relaySwitchButtonIds)) {
+            const button = document.getElementById(buttonId);
+            const busy = button.getAttribute('aria-busy') === 'true';
+            button.disabled = !enabled;
+            button.setAttribute('aria-disabled', String(!enabled || busy));
+        }
+    }
+    document.getElementById('backupMode').addEventListener("change", (event) => {
+        document.getElementById('wtBackupDestData').hidden = event.target.value === 'none';
+        updateRelaySwitchButtons();
     });
 
     // When the page becomes hidden the rAF render loop pauses but the decoder keeps

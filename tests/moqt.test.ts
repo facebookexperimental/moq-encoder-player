@@ -30,6 +30,7 @@ import {
   moqSendObjectSubgroupToWriter,
   moqSendObjectEndOfGroupToWriter,
   moqSendObjectPerDatagramToWriter,
+  moqSendPaddingStream,
   MOQ_MESSAGE_SETUP,
   MOQ_MESSAGE_SUBSCRIBE,
   MOQ_MESSAGE_SUBSCRIBE_OK,
@@ -38,10 +39,13 @@ import {
   MOQ_MESSAGE_REQUEST_OK,
   MOQ_MESSAGE_REQUEST_ERROR,
   MOQ_PARAMETER_SUBSCRIPTION_FILTER,
+  MOQ_PARAMETER_FORWARD,
+  MOQ_FORWARD_FALSE,
   MOQ_FORWARD_TRUE,
   MOQ_OBJ_STATUS_END_OF_GROUP,
   MOQ_SETUP_OPTION_MOQT_IMPLEMENTATION,
   MOQ_IMPLEMENTATION_NAME,
+  MOQ_STREAM_TYPE_PADDING,
 } from '../src/moq/moqt.js';
 import { concatBuffer } from '../src/moq/buffer_utils.js';
 
@@ -243,6 +247,7 @@ describe('control message round trips via moqParseMsg', () => {
     expect(
       parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_SUBSCRIPTION_FILTER),
     ).toBe(true);
+    expect(parsed.data.parameters.some((p: any) => p.name === MOQ_PARAMETER_FORWARD)).toBe(false);
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBe('secret');
   });
 
@@ -252,6 +257,14 @@ describe('control message round trips via moqParseMsg', () => {
     const parsed = await moqParseMsg(createByobReadable(cap.getBytes()));
     expect(getAuthInfofromParameters(parsed.data.parameters)).toBeUndefined();
     expect(parsed.data.parameters).toHaveLength(1);
+  });
+
+  it('SUBSCRIBE carries FORWARD=0 when forwarding is disabled', async () => {
+    const cap = createCaptureStream();
+    await moqSendSubscribe(cap.writerStream, 8, ['ns'], 'video', undefined, MOQ_FORWARD_FALSE);
+    const parsed = await moqParseMsg(createByobReadable(cap.getBytes()));
+    const forward = parsed.data.parameters.find((p: any) => p.name === MOQ_PARAMETER_FORWARD);
+    expect(forward?.val).toBe(MOQ_FORWARD_FALSE);
   });
 
   it('SUBSCRIBE_OK round-trips with a largest-object location', async () => {
@@ -321,6 +334,15 @@ describe('control message round trips via moqParseMsg', () => {
 // --- Object/datagram path ----------------------------------------------------
 
 describe('object and datagram headers (draft-18)', () => {
+  it('serializes an empty padding stream', async () => {
+    const cap = createCaptureStream();
+    const { numberToVarInt } = await import('../src/moq/varint.js');
+
+    await moqSendPaddingStream(cap.writerStream);
+
+    expect(cap.getBytes()).toEqual(numberToVarInt(MOQ_STREAM_TYPE_PADDING));
+  });
+
   it('subgroup header round-trips through moqParseObjectHeader', async () => {
     const cap = createCaptureStream();
     await moqSendSubgroupHeader(cap.writer, 50, 9, 0x0a);
