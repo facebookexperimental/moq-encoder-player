@@ -37,8 +37,38 @@ const maxQueuedChunks = MAX_QUEUED_CHUNKS_DEFAULT;
 
 const ptsQueue = new TsQueue();
 
+// One output summary per second per decoder, not one message per frame.
+let verbose = false;
+let outputFrames = 0;
+let lastOutputLogMs = -Infinity;
+let lastInputTs: number | null = null;
+let lastInputObj: string | null = null;
+
 function processVideoFrame(vFrame: any) {
   const queueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
+  outputFrames++;
+  if (verbose) {
+    const now = Date.now();
+    if (now - lastOutputLogMs >= 1000) {
+      lastOutputLogMs = now;
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'debug',
+        `Decoded frame: ${JSON.stringify({
+          outputFrames,
+          frameTs: vFrame.timestamp,
+          frameTsMs: (vFrame.timestamp * 1000) / trackTimebase,
+          inputTs: lastInputTs,
+          latestInputObj: lastInputObj,
+          timebase: trackTimebase,
+          width: vFrame.displayWidth,
+          height: vFrame.displayHeight,
+          decoderState: videoDecoder.state,
+          decodeQueueSize: videoDecoder.decodeQueueSize,
+        })}`,
+      );
+    }
+  }
   (self as any).postMessage(
     {
       type: 'vframe',
@@ -139,12 +169,20 @@ self.addEventListener('message', async function (e) {
       ptsQueue.clear();
     }
     workerState = StateEnum.Created;
+    verbose = false;
+    outputFrames = 0;
+    lastOutputLogMs = -Infinity;
+    lastInputTs = null;
+    lastInputObj = null;
   } else if (type === 'videochunk') {
+    verbose = e.data.verbose === true;
+    lastInputTs = e.data.chunk.timestamp;
+    lastInputObj = objLabelFor(e.data);
     if (e.data.metadata !== undefined && e.data.metadata != null) {
       sendMessageToMain(
         WORKER_PREFIX,
         'debug',
-        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}`,
+        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata.byteLength}, pts: ${e.data.chunk.timestamp}, timebase: ${e.data.timebase}, type: ${e.data.chunk.type}, isDisco: ${e.data.isDisco === true}`,
       );
       if (videoDecoder != null) {
         if (lastMetadataUsed == null || !compareArrayBuffer(lastMetadataUsed, e.data.metadata)) {
@@ -178,7 +216,7 @@ self.addEventListener('message', async function (e) {
       sendMessageToMain(
         WORKER_PREFIX,
         'debug',
-        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}`,
+        `Obj: ${objLabelFor(e.data)} Received chunk, chunkSize: ${e.data.chunk.byteLength}, pts: ${e.data.chunk.timestamp}, timebase: ${e.data.timebase}, type: ${e.data.chunk.type}, isDisco: ${e.data.isDisco === true}`,
       );
     }
 

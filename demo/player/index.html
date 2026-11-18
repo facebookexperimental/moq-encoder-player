@@ -520,6 +520,90 @@ LICENSE file in the root directory of this source tree.
     const RENDER_VIDEO_EVERY_MS = 10;
 
     let videoRendererBuffer = null;
+    let videoDiagnostics = createVideoDiagnostics();
+
+    function createVideoDiagnostics() {
+        return {
+            lastLogMs: null,
+            lastFrameAtMs: null,
+            lastPaintAtMs: null,
+            lastRafAtMs: null,
+            lastLoggedAudioTsMs: null,
+            receivedFrames: 0,
+            paintedFrames: 0,
+            hiddenFrames: 0,
+            noRendererFrames: 0,
+            noFrameAttempts: 0,
+            lastRenderResult: 'not-started',
+        };
+    }
+
+    // One snapshot per second for the entire video path, driven by audio stats
+    // rather than rAF so a stopped render loop is itself visible in the logs.
+    function logVideoDiagnostics(audioStats) {
+        if (!VERBOSE) return;
+        const now = Date.now();
+        if (videoDiagnostics.lastLogMs != null && now - videoDiagnostics.lastLogMs < 1000) return;
+        let videoBuffer = null;
+        if (videoRendererBuffer != null) {
+            if (typeof videoRendererBuffer.GetStats === 'function') {
+                videoBuffer = videoRendererBuffer.GetStats();
+            } else {
+                // A cached older dist module has no GetStats. Read its existing
+                // queue fields without dequeuing or closing any buffered frame.
+                const frames = videoRendererBuffer.elementsList;
+                const n = frames.length;
+                const timebase = videoRendererBuffer.timebase;
+                const spanTicks = n > 1 ? frames[n - 1].timestamp - frames[0].timestamp
+                    : n === 1 ? (videoRendererBuffer.avgItemDur?.avg ?? 0) : 0;
+                videoBuffer = {
+                    queueSize: n,
+                    queueLengthMs: spanTicks * 1000 / timebase,
+                    totalDiscarded: videoRendererBuffer.totalDiscarded,
+                    oldestTsMs: n > 0 ? frames[0].timestamp * 1000 / timebase : null,
+                    newestTsMs: n > 0 ? frames[n - 1].timestamp * 1000 / timebase : null,
+                };
+            }
+        }
+        const audioMs = timingInfo.renderer.currentAudioTsMs;
+        let reason = 'frame-due';
+        if (document.hidden) reason = 'page-hidden';
+        else if (videoBuffer == null) reason = 'no-video-renderer';
+        else if (audioStats.playingTimestampTsMs == null || audioMs < 0) reason = 'waiting-for-audio-clock';
+        else if (videoBuffer.queueSize === 0) reason = 'empty-video-buffer';
+        else if (videoBuffer.oldestTsMs > audioMs) reason = 'video-ahead-of-audio';
+        const ageMs = (atMs) => atMs == null ? null : now - atMs;
+        const trackTsMs = (ts, track) => ts < 0 ? null : ts * 1000 / downloaderConfig.moqTracks[track].timebase;
+        console.debug('[PLAYER-DIAG] ' + JSON.stringify({
+            reason,
+            audioTimebase: downloaderConfig.moqTracks.audio.timebase,
+            videoTimebase: downloaderConfig.moqTracks.video.timebase,
+            audioPlayingMs: audioStats.playingTimestampTsMs,
+            audioMasterMs: audioMs,
+            audioClockDeltaMs: videoDiagnostics.lastLoggedAudioTsMs == null ? null : audioMs - videoDiagnostics.lastLoggedAudioTsMs,
+            audioContextState: audioStats.ctxState,
+            audioContextTime: audioStats.currentTime,
+            audioNextPlayTime: audioStats.nextPlayTime,
+            audioBufferAheadMs: audioStats.bufferAhead * 1000,
+            audioInputMs: trackTsMs(timingInfo.muxer.currentAudioTs, 'audio'),
+            audioSourceOutputMs: trackTsMs(timingInfo.decoder.currentAudioTs, 'audio'),
+            videoInputMs: trackTsMs(timingInfo.muxer.currentVideoTs, 'video'),
+            videoOutputMs: trackTsMs(timingInfo.decoder.currentVideoTs, 'video'),
+            videoBuffer,
+            videoLeadMs: videoBuffer?.oldestTsMs == null || audioMs < 0 ? null : videoBuffer.oldestTsMs - audioMs,
+            receivedFrames: videoDiagnostics.receivedFrames,
+            paintedFrames: videoDiagnostics.paintedFrames,
+            hiddenFrames: videoDiagnostics.hiddenFrames,
+            noRendererFrames: videoDiagnostics.noRendererFrames,
+            noFrameAttempts: videoDiagnostics.noFrameAttempts,
+            lastRenderResult: videoDiagnostics.lastRenderResult,
+            lastFrameAgeMs: ageMs(videoDiagnostics.lastFrameAtMs),
+            lastPaintAgeMs: ageMs(videoDiagnostics.lastPaintAtMs),
+            renderLoopAgeMs: ageMs(videoDiagnostics.lastRafAtMs),
+        }));
+        videoDiagnostics.lastLogMs = now;
+        videoDiagnostics.lastLoggedAudioTsMs = audioMs;
+    }
 
     // Extracts the frame-read epoch (ms) that the encoder overlaid into the video
     // (see src/overlay_processor). Used to estimate capture-read-to-display latency.
@@ -1353,6 +1437,7 @@ LICENSE file in the root directory of this source tree.
 
     function createVideoRendererBuffer() {
         videoRendererBuffer = new VideoRenderBuffer(downloaderConfig.moqTracks.video.timebase);
+        videoDiagnostics = createVideoDiagnostics();
     }
 
     function clearVideoRendererBuffer() {
@@ -1494,7 +1579,7 @@ LICENSE file in the root directory of this source tree.
                 timingInfo.muxer.currentAudioTs = orderedAudioData.chunk.timestamp;
                 updateChunkTSUI('audio', timingInfo.muxer.currentAudioTs);
                 updatePlayedFromRelayUI('audio', orderedAudioData.extraData.relay);
-                audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, codec: orderedAudioData.extraData.codec, isDisco: orderedAudioData.isDisco, timebase: downloaderConfig.moqTracks.audio.timebase});
+                audioDecoderWorker.postMessage({ type: "audiochunk", groupId: orderedAudioData.groupId, objId: orderedAudioData.objId, chunk: orderedAudioData.chunk, metadata: orderedAudioData.extraData.metadata, codec: orderedAudioData.extraData.codec, isDisco: orderedAudioData.isDisco, timebase: downloaderConfig.moqTracks.audio.timebase, verbose: VERBOSE});
             }
         }
         updateJitterStatsUI("audio", wtAudioJitterBuffer.GetStats());
@@ -1684,6 +1769,8 @@ LICENSE file in the root directory of this source tree.
             }
         } else if (e.data.type === "vframe") {
             const vFrame = e.data.frame;
+            videoDiagnostics.receivedFrames++;
+            videoDiagnostics.lastFrameAtMs = Date.now();
             timingInfo.decoder.currentVideoTs = vFrame.timestamp;
 
             buffersInfo.decoder.video.size = e.data.queueSize;
@@ -1695,11 +1782,13 @@ LICENSE file in the root directory of this source tree.
                 // Page hidden: the rAF render loop is paused so the canvas is not being
                 // drawn. Don't buffer invisible video - close decoder outputs immediately
                 // to keep the VideoDecoder draining (no backpressure, no stale backlog).
+                videoDiagnostics.hiddenFrames++;
                 vFrame.close();
             } else if (videoRendererBuffer != null) {
                 videoRendererBuffer.AddItem(vFrame);
             } else {
                 // No renderer (e.g. message in flight after stop): avoid leaking the frame
+                videoDiagnostics.noRendererFrames++;
                 vFrame.close();
             }
             // Downloader STATS
@@ -1787,9 +1876,11 @@ LICENSE file in the root directory of this source tree.
         }
         document.getElementById('currentRendererASystemLatency').value = `${systemAudioLatencyMs.toFixed(0)} ms`;
         updateRendererAudioUI(timingInfo.renderer.currentAudioTsMs, buffersInfo.renderer.audio, data.gapsRecovered);
+        logVideoDiagnostics(data);
     }
 
     function audioTimestamps(wcTimestamp) {
+        videoDiagnostics.lastRafAtMs = Date.now();
         const wcInterval = wcTimestamp - wcLastRender;
 
         // Update every 10ms
@@ -1804,6 +1895,9 @@ LICENSE file in the root directory of this source tree.
                 if (retData.vFrame != null) {
                     setVideoSize(retData.vFrame);
                     videoPlayerCtx.drawImage(retData.vFrame, 0, 0, retData.vFrame.displayWidth, retData.vFrame.displayHeight);
+                    videoDiagnostics.paintedFrames++;
+                    videoDiagnostics.lastPaintAtMs = Date.now();
+                    videoDiagnostics.lastRenderResult = 'painted';
 
                     timingInfo.renderer.currentVideoTsMs = retData.vFrame.timestamp * 1000 / downloaderConfig.moqTracks.video.timebase;
                     buffersInfo.renderer.video.size = retData.queueSize;
@@ -1829,9 +1923,8 @@ LICENSE file in the root directory of this source tree.
 
                     retData.vFrame.close();
                 } else {
-                    if (VERBOSE) {
-                        console.debug("NO FRAME to paint");
-                    }
+                    videoDiagnostics.noFrameAttempts++;
+                    videoDiagnostics.lastRenderResult = retData.queueSize === 0 ? 'empty-video-buffer' : 'video-ahead-of-audio';
                 }
 
                 updateRendererVideoUI(timingInfo.renderer.currentVideoTsMs, buffersInfo.renderer.video, retData.totalDiscarded);
