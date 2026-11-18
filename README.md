@@ -25,7 +25,7 @@ The source code is written in [TypeScript](https://www.typescriptlang.org/) and 
 moq-encoder-player/
 ├── demo/                   # Browser demos (HTML). They load the compiled code from dist/
 │   ├── encoder/            #   index.html (full encoder), simple.html
-│   ├── player/             #   index.html (full player), simple.html
+│   ├── player/             #   index.html (full player), simple.html, webcomponent.html (<moq-video> demo)
 │   └── shared/             #   demo.css (styles shared by the demos)
 ├── src/                    # TypeScript source code
 │   ├── index.ts            #   Library entry point (re-exports the reusable modules)
@@ -46,6 +46,7 @@ moq-encoder-player/
 │   ├── overlay_processor/  #   overlay_encoder.ts / overlay_decoder.ts (pixel latency overlay)
 │   ├── render/             #   audio_player.ts (Web Audio renderer), playback_rate_controller.ts,
 │   │                       #   video_render_buffer.ts
+│   ├── player/             #   moq_video.ts (<moq-video> custom element), moq_video_config.ts (its config)
 │   ├── utils/              #   jitter_buffer.ts, ts_queue.ts, avg_last_n_items.ts, utils.ts,
 │   │                       #   media_dumper.ts (save packaged objects to a local file),
 │   │   └── media/          #   avcc_parser.ts, avc_decoder_configuration_record_parser.ts
@@ -69,6 +70,228 @@ Install dependencies once:
 ```bash
 npm install
 ```
+
+### Web component
+
+`<moq-video>` is the full player demo ([`demo/player/index.html`](./demo/player/index.html)) wrapped as a
+standard custom element, so any website can play a MoQ stream with one tag. It reuses the same workers
+and render classes as the demo — the demo itself is unchanged — and exposes the demo's connection
+settings, its whole **Advanced** panel, live tuning, and diagnostics through properties and methods
+instead of form fields. Build first (`npm run build`): the element lives in `dist/player/moq_video.js`
+and resolves its workers relative to that file, so serve the whole `dist/` tree with its layout intact.
+Do not import it through `dist/index.js` (that entry point is side-effect-free; the element registers
+itself on import).
+
+> **Name:** custom-element names must contain a hyphen, so the tag is `<moq-video>`, not `<moqvideo>`.
+> `customElements.define('moqvideo', …)` would throw.
+
+#### 1 · Drop it in a page
+
+```html
+<!-- dist/ must be served with its layout intact; see "Run locally" below. -->
+<script type="module" src="/dist/player/moq_video.js"></script>
+
+<!-- Only src is mandatory. Everything else below shows its default. -->
+<moq-video
+  src="https://localhost:4433/moq"
+  namespace="vc"
+  tracks-prefix=""
+  video-suffix="video0"
+  audio-suffix="audio0"
+  packager="CMSF"
+  size-strategy="fitInCanvas">
+</moq-video>
+
+<script type="module">
+  const player = document.querySelector('moq-video');
+
+  // Objects and callbacks are PROPERTIES, not attributes (attributes are strings).
+  player.advancedConfig = {
+    authInfo: 'secret',
+    targetBufferSizeMs: 200,
+    audioRenderBufferMs: 200,
+    audioJitterBufferMs: 160,
+    videoJitterBufferMs: 160,
+    speedCompensation: { enabled: true, onTargetRangePercent: 20, speedUp: 1.05, slowDown: 0.95 },
+    verbose: true,
+  };
+  player.infoCallback = (info) => console.log('[moq-video]', info);
+  player.logCallback = (log) => console.log('[moq-video]', log.level, log.message);
+
+  // Start from a user gesture (a click) so the browser allows audio output.
+  document.querySelector('#play').addEventListener('click', () => player.start());
+</script>
+```
+
+A working page with buttons for Start/Stop and the live setters is
+[`demo/player/webcomponent.html`](./demo/player/webcomponent.html) — open it from the dev server
+(`http://localhost:8080/demo/player/webcomponent.html`).
+
+How it fits together:
+
+```text
+  your page ──▶ <moq-video> ──▶ shadow DOM canvas (video is painted here)
+                     │
+                     ├─▶ receiver worker ──▶ jitter buffers ──▶ decoder workers
+                     │                                              │
+                     └─▶ audio renderer ◀── audio clock ──▶ video render loop
+                                              (video is only painted
+                                               against the audio clock,
+                                               exactly as in the demo)
+```
+
+#### 2 · Parameters
+
+Attributes use kebab-case; the matching JavaScript property is camelCase
+(`tracks-prefix` ↔ `tracksPrefix`). Attributes set the initial value; afterwards the property is the
+live source of truth and is not reflected back to the attribute. `advancedConfig`, `infoCallback`
+and `logCallback` only exist as properties. Every value is readable through the property getters
+(`player.src`, `player.namespace`, …).
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `src` | string (URL) | — *(mandatory)* | Relay URL, e.g. `https://localhost:4433/moq`. Passed to WebTransport as-is. |
+| `namespace` | string | `"vc"` | Track namespace; `/` separates tuples, e.g. `"live/show"`. |
+| `tracks-prefix` | string | `""` | Prepended to both suffixes: track name is `tracksPrefix + suffix`, no separator. |
+| `video-suffix` | string | `"video0"` | Video track suffix. |
+| `audio-suffix` | string | `"audio0"` | Audio track suffix (not `audiouffix`). |
+| `packager` | `"CMSF"` \| `"LOC"` | `"CMSF"` | Packager the encoder publishes. Must match the encoder — there is no catalog to negotiate it. `CMSF`/`CMAF` both mean CMSF. |
+| `size-strategy` | `"fitInCanvas"` \| `"original"` | `"fitInCanvas"` | Canvas sizing: fit the element width, or show the frame's native resolution. Aliases `fit` / `originalResolution` are accepted. Live-updatable with `setSizeStrategy()`. |
+| `is-local` | boolean | `false` | `true` fetches the relay certificate fingerprint from `/certs/certificate_fingerprint.hex` on the page origin (the demo's `?local` mode). |
+| `autoplay` | boolean (property/attribute) | `false` | Start automatically when connected, if `src` is set (declarative use). Setting `src` later follows the restart/idle rules in §3 — prefer calling `start()` from a click, since audio still needs a user gesture in most browsers. |
+| `advancedConfig` | object (property only) | see below | The demo's whole **Advanced** panel. |
+| `infoCallback` | function \| `null` (property only) | `null` | Receives graph data only: state, timing, latency, dejitter gaps (§4). Worker logs never arrive here. |
+| `logCallback` | function \| `null` (property only) | `null` | Receives every worker log line (§4). High volume — cap and batch any DOM rendering. |
+
+Validation: an empty `src`, a malformed URL, an empty namespace, or an empty `tracksPrefix` combined
+with an empty suffix throws (properties throw immediately; `start()` rejects; bad attributes are
+reported through `infoCallback` and keep the previous value).
+
+`advancedConfig` — every field is optional; omitted fields keep their defaults. The field names are
+the ones in the table below; the aliases in parentheses are also accepted.
+
+| Field | Type | Default | When it takes effect |
+|---|---|---|---|
+| `authInfo` (`token`) | string | `"secret"` | Next `start()` — baked into the receiver config. `""` sends no token. |
+| `targetBufferSizeMs` (`playbackTargetLatencyMs`) | number, 10–30000 | `200` | **Live** — derives the three buffers below, like the demo's Update button. |
+| `audioRenderBufferMs` (`playerBufferMs`) | number, ≥ 0 | `200` | **Live**. |
+| `audioJitterBufferMs` | number, ≥ 0 | `160` | **Live**. |
+| `videoJitterBufferMs` | number, ≥ 0 | `160` | **Live**. |
+| `speedCompensation.enabled` | boolean | `true` | **Live**. |
+| `speedCompensation.onTargetRangePercent` (`onTargetRangePerct`) | number | `20` | **Live** — ±% band around the target inside which no speed correction happens. |
+| `speedCompensation.speedUp` | number, (1, 2] | `1.05` | **Live**. |
+| `speedCompensation.slowDown` | number, [0.5, 1) | `0.95` | **Live**. |
+| `verbose` | boolean | `true` | **Live** — verbose `console.debug` logging, including the 1 Hz player diagnostics. |
+
+Derived buffers: `audioRenderBufferMs = target`, `audioJitterBufferMs = videoJitterBufferMs =
+max(target − 40, 0)` (the 40 ms headroom is the demo's). Setting `targetBufferSizeMs` re-derives all
+three; setting one detailed buffer directly overrides just that one until the target changes again.
+
+#### 3 · Lifecycle — and what changes while playing
+
+```text
+                    set src / properties
+   ┌──────────┐  while idle   ┌──────────┐   start()    ┌──────────┐
+   │   idle   │──────────────▶│  idle    │─────────────▶│ starting │
+   └──────────┘  (config only)└──────────┘              └────┬─────┘
+        ▲                                                     │ init posted,
+        │ stop() / remove element                             │ workers created
+        │                                                     ▼
+        └─────────────────────────── ┌──────────┐  ◀── subscribing
+                                    │ playing  │
+                                    └────┬─────┘
+                                         │ src / namespace / tracks /
+                                         │ packager / isLocal changed
+                                         ▼
+                                    restart (stop + start)
+```
+
+- `start(): Promise<void>` — validate, create jitter buffers/workers, fetch the certificate fingerprint
+  if `isLocal`, and send the receiver `init`. Resolves in `playing` (subscribing); the relay
+  connection itself reports through `logCallback` (worker log lines, including errors) — there is
+  no separate "connected" state, as in the demo. Calling `start()` while playing is a no-op. Rejects
+  on invalid config (e.g. no `src`).
+- `stop(): Promise<void>` — cancel the render loop, send `stop` to the workers, terminate them, close
+  the audio player, and return to `idle`. Calling `stop()` while idle is a no-op. `start()` again
+  rebuilds the pipeline from the current config.
+- Removing the element from the document calls `stop()` automatically.
+- `state: 'idle' | 'starting' | 'playing' | 'stopping'` and `isPlaying` report the current state;
+  every transition also emits a `state` info object (§4).
+- **Connection settings** (`src`, `namespace`, `tracksPrefix`, `videoSuffix`, `audioSuffix`,
+  `packager`, `isLocal`) changed **while playing restart the pipeline** with the new value, like
+  changing `<video src>`. Changed while idle, they only update the pending config for the next
+  `start()`. `authInfo` never restarts: it applies on the next `start()`.
+- **Everything else is live** (the setters listed below). No restart, no interruption.
+
+Live-update methods — every setter returns the **previous** value, so the old setting is always
+recoverable, and throws (`RangeError`) on an out-of-range value without changing anything:
+
+```js
+const oldTargetBufferSize = player.setTargetBufferSize(200); // was e.g. 300
+player.setAudioRenderBufferMs(200);
+player.setAudioJitterBufferMs(160);
+player.setVideoJitterBufferMs(160);
+player.setSpeedCompensation({ enabled: true, onTargetRangePercent: 20, speedUp: 1.05 });
+player.setSpeedCompensationEnabled(false);
+player.setSizeStrategy('original');
+player.setVerbose(false);
+player.setAuthInfo('new-token');            // next start() only
+const previous = player.setAdvancedConfig({ targetBufferSizeMs: 200 }); // partial merge, live fields applied
+player.getStats();                          // snapshot: timing, buffers, latency, relay, counters
+player.getConfig();                         // effective config, defaults applied
+player.getAdvancedConfig();                 // effective advanced config
+```
+
+#### 4 · Callbacks — graph data (`infoCallback`) and logs (`logCallback`)
+
+Two separate callbacks, on purpose. `infoCallback` carries only state and the data needed to paint
+the demo player's graphs; worker log lines go to `logCallback` instead. The split matters: workers
+emit several log lines per media chunk at verbose rates, and rendering every one (for example by
+appending it to the DOM, which rewrites the whole log on each line) starves the render loop until
+video and audio appear to stop after a few seconds. Never put log rendering on the graph path, and
+cap/batch it on the log path.
+
+Set `player.infoCallback = (info) => …`, or listen for the bubbling, composed `moq-info`
+`CustomEvent` (`event.detail` is the same object). A throwing callback never breaks playback. Every
+object carries `type` and `at` (epoch ms):
+
+| `type` | When it fires | Extra fields |
+|---|---|---|
+| `state` | Every lifecycle transition | `state`, `previousState` |
+| `started` | `start()` finished, pipeline subscribing | `src`, `videoTrack`, `audioTrack` (full track names) |
+| `stopped` | `stop()` finished | — |
+| `restart` | A connection-setting change restarts playback | `reason` |
+| `stats` | At most once per second, only while audio is flowing | `stats` — the `getStats()` snapshot: `timingMs` (displayed PTS per stage/track: muxer, decoder, renderer), `videoLatencyMs` (−1 until an overlaid frame is read), `playbackSpeed`, `systemAudioLatencyMs`, `audioGapsRecovered`, `buffers` (decoder/renderer lengths), `jitter` (both buffers: `numTotalGaps`, `numTotalLostStreams`, size, length), `videoBuffer`, `relay`, `diagnostics` (received/painted/hidden/no-frame counters). Poll `getStats()` any time for a fresher snapshot. |
+| `video-size` | First frame at a new resolution is painted | `width`, `height` |
+| `relay` | The relay a track's media is playing from changes | `mediaType` (`"video"` \| `"audio"`), `relay` (`"main"` \| `"backup"` \| `"-"`) |
+| `dropped` | A worker reports a dropped frame/chunk | `message` |
+| `error` | Component failure: invalid config/attribute, unknown worker message, overlay-extractor failure | `message` |
+
+```js
+player.addEventListener('moq-info', (event) => {
+  if (event.detail.type === 'stats') updateMyHud(event.detail.stats);
+});
+```
+
+Logs: set `player.logCallback = (log) => …`, or listen for the bubbling, composed `moq-log`
+`CustomEvent`. Each log is `{ type: 'log', at, level, message }` with `level` one of `debug` (`debug`
+lines only when `verbose`), `info`, `warning`, or `error` — including worker connection errors and
+the decoder's `'warn'` messages, normalized to `warning`. Lines still reach the console when no
+`logCallback` is set, as in the demo player. Render them capped and batched (for example, keep the
+latest 200 lines and rewrite the panel at most every 250 ms, as
+[`demo/player/webcomponent.html`](./demo/player/webcomponent.html) does); a throwing log callback
+never breaks playback.
+
+```js
+player.addEventListener('moq-log', (event) => {
+  appendToCappedLogPanel(event.detail);
+});
+```
+
+Limitations, inherited from the demo: single relay only (no backup/hot-cold mode, no relay-switch
+buttons, no stats timelines/tabs — use `stats` infos instead); video is painted against the audio
+clock, so a stream with no decodable audio produces no video; the browser must support WebTransport,
+WebCodecs, and `AudioContext`.
 
 ### Run locally (development)
 
