@@ -45,8 +45,39 @@ let currentTs = -1;
 // Tracks decode-queue length (ms) for stats/backpressure warnings only.
 const ptsQueue = new TsQueue();
 
+// Match the video worker's verbose-only, once-per-second output diagnostics.
+let verbose = false;
+let outputFrames = 0;
+let lastOutputLogMs = -Infinity;
+let lastInputTs: number | null = null;
+
 function processAudioFrame(aFrame: any) {
   const queueInfo = ptsQueue.getPtsQueueLengthInfoInSecs(trackTimebase);
+  outputFrames++;
+  if (verbose) {
+    const now = Date.now();
+    if (now - lastOutputLogMs >= 1000) {
+      lastOutputLogMs = now;
+      sendMessageToMain(
+        WORKER_PREFIX,
+        'debug',
+        `Decoded frame: ${JSON.stringify({
+          outputFrames,
+          // WebCodecs retimes audio output; sourceTs is what anchors playback.
+          frameTs: aFrame.timestamp,
+          sourceTs: currentTs,
+          sourceTsMs: (currentTs * 1000) / trackTimebase,
+          inputTs: lastInputTs,
+          timebase: trackTimebase,
+          sampleRate: aFrame.sampleRate,
+          numberOfFrames: aFrame.numberOfFrames,
+          decoderState: audioDecoder.state,
+          decodeQueueSize: audioDecoder.decodeQueueSize,
+          pendingTimestamps: pendingTs.length,
+        })}`,
+      );
+    }
+  }
   (self as any).postMessage(
     {
       type: 'aframe',
@@ -123,7 +154,13 @@ self.addEventListener('message', async function (e) {
     workerState = StateEnum.Created;
     pendingTs = [];
     currentTs = -1;
+    verbose = false;
+    outputFrames = 0;
+    lastOutputLogMs = -Infinity;
+    lastInputTs = null;
   } else if (type === 'audiochunk') {
+    verbose = e.data.verbose === true;
+    lastInputTs = e.data.chunk.timestamp;
     if (audioDecoder === null) {
       // The sample rate and channel count are not carried as LOC properties;
       // they come out of the LOC Audio Config (the WebCodecs decoder
@@ -145,7 +182,7 @@ self.addEventListener('message', async function (e) {
     sendMessageToMain(
       WORKER_PREFIX,
       'debug',
-      `audio-${e.data.groupId}/${e.data.objId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata?.byteLength ?? 0}`,
+      `audio-${e.data.groupId}/${e.data.objId} Received chunk, chunkSize: ${e.data.chunk.byteLength}, metadataSize: ${e.data.metadata?.byteLength ?? 0}, pts: ${e.data.chunk.timestamp}, timebase: ${e.data.timebase}, isDisco: ${e.data.isDisco === true}`,
     );
 
     if (workerState !== StateEnum.Running) {

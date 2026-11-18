@@ -81,6 +81,21 @@ export class VideoRenderBuffer {
     return true;
   }
 
+  // Read-only snapshot of the whole render queue, including frames that are
+  // still ahead of the audio clock. Diagnostics must not dequeue or close them.
+  GetStats() {
+    return {
+      queueSize: this.elementsList.length,
+      queueLengthMs: this.bufferedSpanMs(),
+      totalDiscarded: this.totalDiscarded,
+      oldestTsMs: this.elementsList.length > 0 ? this.tsToMs(this.elementsList[0].timestamp) : null,
+      newestTsMs:
+        this.elementsList.length > 0
+          ? this.tsToMs(this.elementsList[this.elementsList.length - 1].timestamp)
+          : null,
+    };
+  }
+
   GetFirstElement() {
     const ret: any = {
       vFrame: null,
