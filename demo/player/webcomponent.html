@@ -1,0 +1,323 @@
+<!doctype html>
+
+<!--
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+-->
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="../shared/demo.css">
+    <title>MOQ video web component demo</title>
+    <style>
+        moq-video { max-width: 640px; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .page-header h1 { margin: 0; }
+        .share-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+        #infoLog, #logOutput { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+    </style>
+</head>
+
+<body>
+    <div class="page-header">
+        <h1>MOQ video web component demo</h1>
+        <div class="share-actions">
+            <button id="btnShare" type="button">Share</button>
+            <span id="shareResult"></span>
+        </div>
+    </div>
+    <p>Same pipeline as <a href="./index.html">the full player demo</a>, wrapped in
+        <code>&lt;moq-video&gt;</code>. Start from a user gesture so audio can play.
+        Without a relay at <code>https://localhost:4433/moq</code> the element reports
+        connection errors and other worker logs through <code>logCallback</code> below;
+        playback state, timing, latency and dejitter gaps arrive through
+        <code>infoCallback</code>.</p>
+
+    <!-- Data needed: only `src` is mandatory; the other fields show their defaults.
+         The same values can be passed as query-string params, e.g.
+         ?src=https://localhost:4433/moq&namespace=vc&tracks-prefix=&video-suffix=video0&audio-suffix=audio0&packager=CMSF&size-strategy=fitInCanvas -->
+    <div class="boxed">
+        <div class="styleform">
+            <form id="paramsForm">
+                <h2>Data needed</h2>
+                <label id="wtDestData">WT server:<input id="inputSrc" type="text"
+                        value="https://localhost:4433/moq" size="64"></label>
+                <div class="clear"></div>
+                <label>Namespace:<input id="inputNamespace" type="text" value="vc"></label><label>Use character '/' to separate tuples</label>
+                <div class="clear"></div>
+                <label>Tracks prefix:<input id="inputTracksPrefix" type="text" value=""></label><label>Video suffix: <input id="inputVideoSuffix" type="text" value="video0"></label><label>Audio suffix: <input id="inputAudioSuffix" type="text" value="audio0"></label>
+                <div class="clear"></div>
+                <label>Media packager expected:<select id="inputPackager">
+                    <option value="LOC">LOC (draft-ietf-moq-loc)</option>
+                    <option value="CMSF" selected>CMSF (AKA CMAF, draft-ietf-moq-cmsf)</option>
+                </select></label>
+                <label>Size strategy:<select id="inputSizeStrategy">
+                    <option value="fitInCanvas" selected>Fit in the canvas</option>
+                    <option value="original">Show original resolution</option>
+                </select></label>
+                <div class="clear"></div>
+                <label>Values apply when you commit a field (Enter / leave the field). While playing, changing a connection field restarts playback with the new value; changing the size strategy applies live. The same fields can be passed as query-string params with the same names.</label>
+                <div class="clear"></div>
+                <span id="paramsError" role="alert"></span>
+            </form>
+        </div>
+    </div>
+
+    <!-- Only `src` is mandatory; every other attribute below shows its default. -->
+    <moq-video id="player" src="https://localhost:4433/moq" namespace="vc" tracks-prefix=""
+        video-suffix="video0" audio-suffix="audio0" packager="CMSF" size-strategy="fitInCanvas">
+    </moq-video>
+
+    <div class="boxed">
+        <div class="styleform">
+            <button id="btnStart" type="button">Start</button>
+            <button id="btnStop" type="button" disabled>Stop</button>
+            <label>Target buffer (ms):
+                <input id="targetBufferMs" type="number" value="200" min="10" max="30000">
+            </label>
+            <button id="btnTargetBuffer" type="button">setTargetBufferSize</button>
+            <span id="targetBufferResult"></span>
+            <div class="clear"></div>
+            <label><input id="speedCompensation" type="checkbox" checked> Speed compensation</label>
+            <div class="clear"></div>
+            <label>State: <output id="playerState">idle</output></label>
+        </div>
+    </div>
+
+    <div class="boxed">
+        <h2>Playback info (infoCallback)</h2>
+        <p><span id="infoSummary">Waiting for playback…</span></p>
+        <pre id="infoLog">No stats yet — stats arrive at most once per second while audio is flowing. Poll player.getStats() any time for a fresh snapshot.</pre>
+    </div>
+
+    <div class="boxed">
+        <h2>Logs (logCallback)</h2>
+        <p>Worker logs are frequent (several per media chunk). Only the latest 200 lines are shown, refreshed every 250 ms, so rendering the log can never starve playback. <span id="logCount"></span></p>
+        <pre id="logOutput"></pre>
+    </div>
+</body>
+<script type="module">
+    import '../../dist/player/moq_video.js';
+
+    const player = document.getElementById('player');
+    const infoLogEl = document.getElementById('infoLog');
+    const infoSummaryEl = document.getElementById('infoSummary');
+    const logEl = document.getElementById('logOutput');
+    const logCountEl = document.getElementById('logCount');
+    const stateEl = document.getElementById('playerState');
+
+    // Objects and callbacks are properties, not attributes:
+    // advancedConfig is the demo player's whole "Advanced" panel.
+    player.advancedConfig = {
+        authInfo: 'secret',
+        targetBufferSizeMs: 200,
+        audioRenderBufferMs: 200,
+        audioJitterBufferMs: 160,
+        videoJitterBufferMs: 160,
+        speedCompensation: { enabled: true, onTargetRangePercent: 20, speedUp: 1.05, slowDown: 0.95 },
+        verbose: true,
+    };
+    // infoCallback carries graph data only: state, stats (timing/latency/
+    // dejitter gaps/buffers), video size, relay, drops and errors. Stats are
+    // replaced, never appended, so this panel stays one snapshot.
+    const infoSummary = { videoSize: '-', videoRelay: '-', audioRelay: '-', dropped: 0, lastError: '' };
+    function renderInfoSummary() {
+        infoSummaryEl.textContent =
+            `Resolution: ${infoSummary.videoSize} | Video from: ${infoSummary.videoRelay} | Audio from: ${infoSummary.audioRelay} | Dropped: ${infoSummary.dropped}` +
+            (infoSummary.lastError ? ` | Last error: ${infoSummary.lastError}` : '');
+    }
+    renderInfoSummary();
+    player.infoCallback = (info) => {
+        if (info.type === 'state') {
+            stateEl.textContent = info.state;
+        } else if (info.type === 'stats') {
+            infoLogEl.textContent = JSON.stringify(info.stats, null, 2);
+        } else if (info.type === 'video-size') {
+            infoSummary.videoSize = `${info.width}x${info.height}`;
+            renderInfoSummary();
+        } else if (info.type === 'relay') {
+            if (info.mediaType === 'video') infoSummary.videoRelay = info.relay;
+            else infoSummary.audioRelay = info.relay;
+            renderInfoSummary();
+        } else if (info.type === 'dropped') {
+            infoSummary.dropped++;
+            renderInfoSummary();
+        } else if (info.type === 'error') {
+            infoSummary.lastError = info.message;
+            renderInfoSummary();
+        }
+    };
+
+    // logCallback carries every worker log line, several per media chunk.
+    // Buffer and flush them batched and capped: appending every line to the
+    // DOM rewrites the whole log each time and starves the render loop until
+    // playback appears to stop after a few seconds.
+    const LOG_MAX_LINES = 200;
+    const LOG_FLUSH_MS = 250;
+    const logLines = [];
+    let logTotal = 0;
+    let logFlushTimer = null;
+    function flushLogs() {
+        logEl.textContent = logLines.length > 0 ? logLines.join('\n') + '\n' : '';
+        logEl.scrollTop = logEl.scrollHeight;
+        logCountEl.textContent = logTotal > 0
+            ? `${logTotal} lines received, showing latest ${logLines.length}.`
+            : '';
+    }
+    player.logCallback = (log) => {
+        logTotal++;
+        logLines.push(`[${new Date(log.at).toISOString()}] ${log.level}: ${log.message}`);
+        if (logLines.length > LOG_MAX_LINES) logLines.splice(0, logLines.length - LOG_MAX_LINES);
+        if (logFlushTimer == null) logFlushTimer = setInterval(flushLogs, LOG_FLUSH_MS);
+    };
+
+    // -- "Data needed" params: textboxes <-> element, plus query string / Share.
+    // Query-string keys use the element's attribute names; the camelCase
+    // spellings are accepted as aliases when reading the URL.
+    const paramInputs = {
+        'src': document.getElementById('inputSrc'),
+        'namespace': document.getElementById('inputNamespace'),
+        'tracks-prefix': document.getElementById('inputTracksPrefix'),
+        'video-suffix': document.getElementById('inputVideoSuffix'),
+        'audio-suffix': document.getElementById('inputAudioSuffix'),
+        'packager': document.getElementById('inputPackager'),
+        'size-strategy': document.getElementById('inputSizeStrategy'),
+    };
+    const paramAliases = {
+        'tracksPrefix': 'tracks-prefix',
+        'videoSuffix': 'video-suffix',
+        'audioSuffix': 'audio-suffix',
+        'sizeStrategy': 'size-strategy',
+    };
+    const paramsErrorEl = document.getElementById('paramsError');
+    const shareResultEl = document.getElementById('shareResult');
+
+    function applyParamToPlayer(key, value) {
+        if (key === 'src') player.src = value;
+        else if (key === 'namespace') player.namespace = value;
+        else if (key === 'tracks-prefix') player.tracksPrefix = value;
+        else if (key === 'video-suffix') player.videoSuffix = value;
+        else if (key === 'audio-suffix') player.audioSuffix = value;
+        else if (key === 'packager') player.packager = value;
+        else if (key === 'size-strategy') player.setSizeStrategy(value);
+    }
+
+    function syncParamInputsFromPlayer() {
+        paramInputs['src'].value = player.src;
+        paramInputs['namespace'].value = player.namespace;
+        paramInputs['tracks-prefix'].value = player.tracksPrefix;
+        paramInputs['video-suffix'].value = player.videoSuffix;
+        paramInputs['audio-suffix'].value = player.audioSuffix;
+        paramInputs['packager'].value = player.packager;
+        paramInputs['size-strategy'].value = player.sizeStrategy;
+    }
+
+    // Apply a value (from a textbox or the query string) and show the field
+    // as it actually is afterwards. Selects are synced from the player so a
+    // lowercase/alias value (?packager=loc, ?size-strategy=fit) shows its
+    // normalized option instead of going blank: reading a select back after
+    // assigning an unmatched value yields ''.
+    function applyParamValue(key, value) {
+        try {
+            applyParamToPlayer(key, value);
+            paramsErrorEl.textContent = '';
+            paramInputs[key].value =
+                key === 'packager' ? player.packager
+                : key === 'size-strategy' ? player.sizeStrategy
+                : value;
+        } catch (err) {
+            // Invalid value: keep the player's previous value and show the
+            // field as it actually is, instead of a value that never applied.
+            paramsErrorEl.textContent = err.message;
+            syncParamInputsFromPlayer();
+        }
+    }
+
+    function applyParamInput(key) {
+        applyParamValue(key, paramInputs[key].value);
+    }
+
+    for (const key of Object.keys(paramInputs)) {
+        paramInputs[key].addEventListener('change', () => applyParamInput(key));
+    }
+    // Enter in a textbox commits the field (change event) without reloading.
+    document.getElementById('paramsForm').addEventListener('submit', (event) => event.preventDefault());
+
+    // Fill the fields (and the player) from the query string, if present.
+    // A present-but-empty param still counts, e.g. tracks-prefix= .
+    const qsParams = new URLSearchParams(window.location.search);
+    for (const [qsKey, key] of Object.entries(paramAliases)) {
+        if (!qsParams.has(key) && qsParams.has(qsKey)) qsParams.set(key, qsParams.get(qsKey));
+    }
+    for (const key of Object.keys(paramInputs)) {
+        if (qsParams.has(key)) {
+            applyParamValue(key, qsParams.get(key));
+        }
+    }
+
+    // Share: copy this page's URL with the textbox values in the query string.
+    // Other existing query params and the hash are left untouched.
+    function buildShareUrl() {
+        const url = new URL(window.location.href);
+        for (const key of Object.keys(paramInputs)) {
+            url.searchParams.set(key, paramInputs[key].value);
+        }
+        return url.toString();
+    }
+
+    function copyWithExecCommand(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        let copied = false;
+        try {
+            copied = document.execCommand('copy');
+        } catch {
+            copied = false;
+        }
+        textarea.remove();
+        return copied;
+    }
+
+    async function share() {
+        const shareUrl = buildShareUrl();
+        shareResultEl.textContent = '';
+        try {
+            await navigator.clipboard.writeText(shareUrl);
+            shareResultEl.textContent = 'Link copied to clipboard';
+        } catch {
+            if (typeof document.execCommand === 'function' && copyWithExecCommand(shareUrl)) {
+                shareResultEl.textContent = 'Link copied to clipboard';
+            } else {
+                shareResultEl.textContent = `Could not copy automatically — copy this URL: ${shareUrl}`;
+            }
+        }
+        return shareUrl;
+    }
+    document.getElementById('btnShare').addEventListener('click', () => { void share(); });
+
+    document.getElementById('btnStart').addEventListener('click', async () => {
+        await player.start();
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = false;
+    });
+    document.getElementById('btnStop').addEventListener('click', async () => {
+        await player.stop();
+        document.getElementById('btnStart').disabled = false;
+        document.getElementById('btnStop').disabled = true;
+    });
+    document.getElementById('btnTargetBuffer').addEventListener('click', () => {
+        const oldValue = player.setTargetBufferSize(Number(document.getElementById('targetBufferMs').value));
+        document.getElementById('targetBufferResult').textContent = `previous target: ${oldValue} ms`;
+    });
+    document.getElementById('speedCompensation').addEventListener('change', (event) => {
+        player.setSpeedCompensationEnabled(event.target.checked);
+    });
+</script>
