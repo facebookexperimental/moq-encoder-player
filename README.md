@@ -265,7 +265,7 @@ object carries `type` and `at` (epoch ms):
 | `video-size` | First frame at a new resolution is painted | `width`, `height` |
 | `relay` | The relay a track's media is playing from changes | `mediaType` (`"video"` \| `"audio"`), `relay` (`"main"` \| `"backup"` \| `"-"`) |
 | `dropped` | A worker reports a dropped frame/chunk | `message` |
-| `error` | Component failure: invalid config/attribute, unknown worker message, overlay-extractor failure | `message` |
+| `error` | Component failure: invalid config/attribute, unknown worker message, overlay-extractor failure, worker `error`/`messageerror` events (a dead worker is reported here and on `logCallback` instead of failing silently) | `message` |
 
 ```js
 player.addEventListener('moq-info', (event) => {

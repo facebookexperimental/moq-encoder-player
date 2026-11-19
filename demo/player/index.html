@@ -1357,6 +1357,21 @@ LICENSE file in the root directory of this source tree.
         audioDecoderWorker.addEventListener('message', function (e) {
             processWorkerMessage(e);
         });
+        // Worker load/runtime failures (and messages that fail to deserialize)
+        // fire only as 'error'/'messageerror' events on the Worker object. With
+        // no listener they are completely silent: the worker sends nothing and
+        // the pipeline looks stuck with no log line anywhere, as happened with
+        // the video decoder in a test where the muxer advanced but no vframe
+        // ever arrived. Log them so a dead worker can never hide again.
+        const workerErrorListener = function (name) {
+            return function (e) {
+                console.error(`[WORKER] ${name} worker ${e.type}:`, e.message, e.filename, e.lineno, e.colno);
+            };
+        };
+        for (const [name, worker] of [['downloader', muxerDownloaderWorker], ['video-decoder', videoDecoderWorker], ['audio-decoder', audioDecoderWorker]]) {
+            worker.addEventListener('error', workerErrorListener(name));
+            worker.addEventListener('messageerror', workerErrorListener(name));
+        }
 
         // Ini downloaderConfig
         if (IS_LOCALHOST) {

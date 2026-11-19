@@ -991,6 +991,32 @@ export class MoqVideoElement extends HTMLElement {
     this._downloaderWorker?.addEventListener('message', handler);
     this._videoDecoderWorker?.addEventListener('message', handler);
     this._audioDecoderWorker?.addEventListener('message', handler);
+    // Worker load/runtime failures fire only as 'error'/'messageerror'
+    // events on the Worker object — with no listener they are completely
+    // silent: the worker sends nothing, its messages are dropped, and the
+    // pipeline looks stuck with no log line anywhere. Surface them on both
+    // channels so a dead worker can never look like a stalled stream.
+    const workers: Array<[string, WorkerLike | null]> = [
+      ['downloader', this._downloaderWorker],
+      ['video-decoder', this._videoDecoderWorker],
+      ['audio-decoder', this._audioDecoderWorker],
+    ];
+    for (const [name, worker] of workers) {
+      worker?.addEventListener('error', (e: unknown) => this._reportWorkerError(name, 'error', e));
+      worker?.addEventListener('messageerror', (e: unknown) =>
+        this._reportWorkerError(name, 'messageerror', e),
+      );
+    }
+  }
+
+  private _reportWorkerError(name: string, kind: string, e: unknown): void {
+    const detail = e as { message?: unknown; filename?: unknown; lineno?: unknown } | null;
+    const message =
+      `Worker "${name}" ${kind}` +
+      (detail?.message != null ? `: ${detail.message}` : '') +
+      (detail?.filename != null ? ` (${detail.filename}:${detail.lineno ?? '?'})` : '');
+    this._emitLog('error', message);
+    this._emit({ type: 'error', at: Date.now(), message });
   }
 
   private _createVideoRendererBuffer(): void {
