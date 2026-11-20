@@ -40,7 +40,7 @@ export interface PlayerStats {
   bufferAhead: number;
   rendered: number;
   gapsRecovered: number;
-  /** Media time in ms of the sample currently at the speakers, or null during silence. */
+  /** Media time in ms of the sample currently at the speakers, or null before the first segment sounds. */
   playingTimestampTsMs: number | null;
 }
 
@@ -79,6 +79,23 @@ export class GapTolerantPlayer {
   private anchorCtxStart = -1;
   /** Playback speed the current segment plays at, so the media↔clock slope is right. */
   private anchorSpeed = 1;
+
+  /**
+   * The segment before the current one, kept only until the current segment
+   * starts sounding. A new segment is anchored at `nextPlayTime`, a jitter
+   * cushion ahead of the speakers, so between the re-anchor and the moment
+   * its first sample sounds, the audio at the speakers still belongs to
+   * this previous segment. Reporting its mapping (clamped at
+   * `prevAnchorEndMs`, where it ends) keeps the sounding clock continuous
+   * across speed changes and gap recoveries instead of nulling it for a
+   * whole cushion — the renderer keys video painting off this clock, so
+   * a null froze video and then jumped/discarded a cushion of frames.
+   */
+  private prevAnchorTs = 0;
+  private prevAnchorCtxStart = -1;
+  private prevAnchorSpeed = 1;
+  /** Media time (ms) where the previous segment ends, i.e. its last sample. */
+  private prevAnchorEndMs = 0;
 
   /**
    * Buffer sources scheduled but not yet finished. Tracked so forceGap() can
@@ -126,6 +143,10 @@ export class GapTolerantPlayer {
     }
     this.activeSources.clear();
     this.nextPlayTime = 0;
+    // The pending audio was stopped, so the previous segment's mapping no
+    // longer describes anything at the speakers; the next segment must
+    // report null until it sounds rather than a stale previous anchor.
+    this.prevAnchorCtxStart = -1;
   }
 
   /** Toggle the anti-click fade-in for subsequently scheduled resumes. */
@@ -202,6 +223,9 @@ export class GapTolerantPlayer {
     this.currentPlaybackSpeed = speed;
 
     const currentTime = this.ctx.currentTime;
+    // End of the segment sounding now, before the gap handling below moves
+    // nextPlayTime: where the previous segment's mapping stops applying.
+    const boundaryCtxTime = this.nextPlayTime;
 
     // Scheduling / gap handling. Any underrun (nextPlayTime fell behind now)
     // starts a fresh contiguous segment. `isResume` (first frame or a real gap)
@@ -239,6 +263,19 @@ export class GapTolerantPlayer {
     // time nextPlayTime. This single anchor maps the clock to media time for the
     // whole segment (playback within a segment is contiguous).
     if (newSegment || speedChanged) {
+      // Stash the segment sounding now as the previous one, but only if it
+      // has started sounding: an anchor still in its pre-roll never
+      // described the speakers, and must not displace the segment that did.
+      if (this.anchorCtxStart >= 0 && this.anchorCtxStart <= currentTime) {
+        this.prevAnchorTs = this.anchorTs;
+        this.prevAnchorCtxStart = this.anchorCtxStart;
+        this.prevAnchorSpeed = this.anchorSpeed;
+        const anchorStartMs = (this.anchorTs / this.opts.timebase) * 1000;
+        this.prevAnchorEndMs = Math.max(
+          anchorStartMs,
+          anchorStartMs + (boundaryCtxTime - this.anchorCtxStart) * this.anchorSpeed * 1000,
+        );
+      }
       this.anchorTs = ts;
       this.anchorCtxStart = this.nextPlayTime;
       this.anchorSpeed = speed;
@@ -274,18 +311,32 @@ export class GapTolerantPlayer {
     this.nextPlayTime += effectiveDuration;
   }
 
-  // Media time in ms of the sample currently at the speakers (null during
-  // silence). Note this returns ms, not a raw PTS/timebase-tick timestamp.
+  // Media time in ms of the sample currently at the speakers (null only
+  // before anything has started sounding). Note this returns ms, not a raw
+  // PTS/timebase-tick timestamp.
   private currentPlayingTimeMs(): number | null {
     if (this.anchorCtxStart < 0) return null; // nothing started yet
     const latency = this.ctx.outputLatency || this.ctx.baseLatency || 0;
     const audible = this.ctx.currentTime - latency;
-    if (audible < this.anchorCtxStart) return null; // pre-roll silence before this segment
-    // anchorTs/timebase (seconds) + media seconds elapsed since the anchor. At
-    // playback speed s, media advances s× clock time, so scale the elapsed term.
-    const seconds =
-      this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart) * this.anchorSpeed;
-    return seconds * 1000;
+    if (audible >= this.anchorCtxStart) {
+      // anchorTs/timebase (seconds) + media seconds elapsed since the anchor. At
+      // playback speed s, media advances s× clock time, so scale the elapsed term.
+      const seconds =
+        this.anchorTs / this.opts.timebase + (audible - this.anchorCtxStart) * this.anchorSpeed;
+      return seconds * 1000;
+    }
+    // Pre-roll: this segment is anchored ahead of the speakers, but the
+    // audio sounding now still belongs to the previous segment. Report its
+    // mapping, clamped where that segment ends, instead of null: returning
+    // null here froze the video renderer for a whole jitter cushion on
+    // every speed change and gap recovery.
+    if (this.prevAnchorCtxStart >= 0) {
+      const prevStartMs = (this.prevAnchorTs / this.opts.timebase) * 1000;
+      const prevMs =
+        prevStartMs + (audible - this.prevAnchorCtxStart) * this.prevAnchorSpeed * 1000;
+      return Math.max(prevStartMs, Math.min(prevMs, this.prevAnchorEndMs));
+    }
+    return null; // pre-roll silence before the first segment
   }
 
   /**
@@ -311,7 +362,10 @@ export class GapTolerantPlayer {
         ctxState: this.ctx.state,
         currentTime: this.ctx.currentTime,
         nextPlayTime: this.nextPlayTime,
-        bufferAhead: Math.max(0, this.nextPlayTime - this.ctx.currentTime + this.lastBufferDuration),
+        bufferAhead: Math.max(
+          0,
+          this.nextPlayTime - this.ctx.currentTime + this.lastBufferDuration,
+        ),
         rendered: this.rendered,
         gapsRecovered: this.gapsRecovered,
         playingTimestampTsMs: this.currentPlayingTimeMs(),
