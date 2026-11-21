@@ -80,7 +80,10 @@ settings, its whole **Advanced** panel, live tuning, and diagnostics through pro
 instead of form fields. Build first (`npm run build`): the element lives in `dist/player/moq_video.js`
 and resolves its workers relative to that file, so serve the whole `dist/` tree with its layout intact.
 Do not import it through `dist/index.js` (that entry point is side-effect-free; the element registers
-itself on import).
+itself on import). To reuse it from another project, import the `moq-encoder-player/player_webcomponent`
+subpath export instead: it registers the element and re-exports the element and config types, and the
+published package still carries the whole `dist/` tree the workers need (see `exports` in
+[`package.json`](./package.json)).
 
 > **Name:** custom-element names must contain a hyphen, so the tag is `<moq-video>`, not `<moqvideo>`.
 > `customElements.define('moqvideo', …)` would throw.
@@ -89,6 +92,8 @@ itself on import).
 
 ```html
 <!-- dist/ must be served with its layout intact; see "Run locally" below. -->
+<!-- From another project: import 'moq-encoder-player/player_webcomponent'; -->
+<!-- In this repo: -->
 <script type="module" src="/dist/player/moq_video.js"></script>
 
 <!-- Only src is mandatory. Everything else below shows its default. -->
