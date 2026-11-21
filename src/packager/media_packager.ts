@@ -9,7 +9,7 @@ LICENSE file in the root directory of this source tree.
 // the subscriber — and the factories the sender and the receiver use to pick
 // one. Two formats are implemented:
 //
-//  * 'loc'  - draft-ietf-moq-loc (see ./loc_packager.ts): the payload is the
+//  * 'loc'  - draft-ietf-moq-loc-05 (see ./loc_packager.ts): the payload is the
 //             raw encoded chunk and the metadata rides the MoQ Object
 //             Properties. This is the format the player in this repo speaks.
 //  * 'cmaf' - CMSF, draft-ietf-moq-cmsf (see ./cmaf/cmaf_packager.ts): the

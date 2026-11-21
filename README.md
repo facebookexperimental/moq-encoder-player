@@ -1,8 +1,8 @@
 # moq-encoder-player
 
-MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). Media packaging can be CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), which is what the encoder and the player default to, or LOC (Low Overhead Media Container) draft-04 **+ Codecstring**; both ends have to be set to the same one, see [Packager](#packager)
+MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). Media packaging can be CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), which is what the encoder and the player default to, or LOC (Low Overhead Media Container) [draft-05](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/) (LOCv5); both ends have to be set to the same one, see [Packager](#packager)
 
-This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media packaging is based on [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) or [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
+This project provides a minimal implementation (inside the browser) of a live video and audio encoder and video / audio player based on [MOQT draft](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/), media packaging is based on [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/) or [draft-ietf-moq-loc-05](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/), the exact versions of the drafts implemented are shown in the UI of the endoder and the player.
 
 The goal if ths code is to provide a minimal live platform implementation that helps learning on low latency trade offs and facilitates experimentation.
 
@@ -349,9 +349,9 @@ Two media packagers are implemented behind a common pair of interfaces in [`src/
 
 ### LOC
 
-It uses [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 plus the `Codecstring` property** (ID `0x11`), which draft-04 does not register.
+It uses [draft-ietf-moq-loc-05](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/) **draft-05** (LOCv5), which registers the `Codecstring` property (ID `0x11`, §2.3.1.3).
 
-That addition is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
+`Codecstring` is required, not optional: LOC puts no media type on the wire (a catalog is meant to supply it) and this project implements no catalog, so `Codecstring` is the only thing that tells the player which codec to configure its decoders with. **A plain draft-04 peer, which does not register `Codecstring`, will not interoperate with this implementation.** See [src/packager/loc_packager.ts](#srcpackagerloc_packagerts) for the full property set.
 
 ### CMSF / CMAF (default in the demos)
 
@@ -551,7 +551,7 @@ Note: `opus.frameDuration` and `opus.application: 'lowdelay'` setting helps keep
 
 ### src/packager/loc_packager.ts
 
-- Implements [draft-ietf-moq-loc](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/) **draft-04 + `Codecstring`** (the `Codecstring` property is a required addition here, not an optional extra — see [Packager](#packager))
+- Implements [draft-ietf-moq-loc-05](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/) **draft-05** (LOCv5); the `Codecstring` property is required here, not an optional extra — see [Packager](#packager)
 
 The MoQ Object Payload is the LOC Private Properties block followed by the LOC Payload (the "internal data" of an `EncodedVideoChunk` / `EncodedAudioChunk`). No private properties are used, but the draft requires the block anyway, so every audio / video payload starts with an empty one: `0x0A 0x00` (type, zero length). The player skips that block, whatever it contains, before handing the media to the decoder. The metadata describing the payload travels as MoQ Object Properties (LOC Public Properties):
 
@@ -564,7 +564,7 @@ The MoQ Object Payload is the LOC Private Properties block followed by the LOC P
 | `TIMESTAMP` | `0x10` | yes | yes | yes | — |
 | `CODECSTRING` | `0x11` | yes | yes | yes | — |
 
-`CODECSTRING` is the non-draft-04 addition; every other property is registered in the draft's IANA table.
+Every property in the table, including `CODECSTRING` (`0x11`), is registered in draft-05's IANA table (§6.1).
 
 - `VIDEO_FRAME_MARKING` is the 1-byte [RFC 9626](https://www.rfc-editor.org/rfc/rfc9626) short form; its Independent bit is what tells the player a key frame from a delta frame
 - `VIDEO_CONFIG` / `AUDIO_CONFIG` carry the WebCodecs decoder `description` (an AVCDecoderConfigurationRecord, an OpusHead, or an AAC AudioSpecificConfig). The player recovers the audio sample rate and channel count from it — see `src/utils/media/audio_decoder_config_parser.ts`

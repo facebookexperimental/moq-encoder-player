@@ -5,23 +5,23 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 */
 
-// Follows "draft-ietf-moq-loc-04": https://datatracker.ietf.org/doc/draft-ietf-moq-loc/
+// Follows "draft-ietf-moq-loc-05": https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/
 //
 // No LOC Private Properties are sent, but the (empty) Private Properties block
 // still prefixes every audio / video payload, as the draft requires.
 //
-// This is draft 04 PLUS the Codecstring property (LOC_PROP_CODECSTRING, 0x11),
-// which draft 04 does not register. That addition is required here, not
-// optional: LOC puts no media type on the wire and this project has no catalog,
-// so Codecstring is the only thing telling the player which codec to configure
-// its decoders with. A plain draft-04 peer will NOT interoperate.
+// The Codecstring property (LOC_PROP_CODECSTRING, 0x11, draft-05 §2.3.1.3) is
+// required here, not optional: LOC puts no media type on the wire and this
+// project has no catalog, so Codecstring is the only thing telling the player
+// which codec to configure its decoders with. A plain draft-04 peer, which
+// does not register Codecstring, will NOT interoperate.
 
 import { buffRead, readUntilEof } from '../moq/buffer_utils.js';
 import { moqCreateKvPair, type KvPair } from '../moq/moqt.js';
 import { varIntToNumbeFromBuffer } from '../moq/varint.js';
 import type { MediaPackager, MediaDepackager } from './media_packager.js';
 
-export const LOC_PACKAGER_VERSION = '04+codecstringPR';
+export const LOC_PACKAGER_VERSION = 'draft-05';
 
 // LOC Properties (LOC §2.3, §6.1). They ride the MoQ Object Properties, whose
 // KVP encoding already matches the LOC rule: an even ID carries a varint value,

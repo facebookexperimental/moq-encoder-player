@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 import {
   LOCPackager,
+  LOC_PACKAGER_VERSION,
   LOC_PROP_TIMESCALE,
   LOC_PROP_VIDEO_FRAME_MARKING,
   LOC_PROP_VIDEO_CONFIG,
@@ -37,6 +38,14 @@ function reparse(mediaType: LOCMediaType, props: KvPair[]): LOCPackager {
 function propertyIds(props: KvPair[]): number[] {
   return props.map((p) => p.name).sort((a, b) => a - b);
 }
+
+describe('LOCPackager version', () => {
+  it('identifies the implementation as draft-ietf-moq-loc-05', () => {
+    expect(LOC_PACKAGER_VERSION).toBe('draft-05');
+    // Draft-05 §2.3.1.3 registers Codecstring at 0x11; draft-04 did not.
+    expect(LOC_PROP_CODECSTRING).toBe(0x11);
+  });
+});
 
 describe('LOCPackager properties', () => {
   const config = new Uint8Array([1, 2, 3, 4]);
