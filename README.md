@@ -1,3 +1,7 @@
+- [Encoder](https://facebookexperimental.github.io/moq-encoder-player/demo/encoder/) — publish a live camera/microphone stream (CMSF by default, LOC selectable).
+- [Player](https://facebookexperimental.github.io/moq-encoder-player/demo/player/) — play a MoQ stream, with the full diagnostics UI.
+- [`<moq-video>` on JSFiddle](https://jsfiddle.net/jordicenzano/1narxe9d/) — the same player as a reusable web component, with a packager selector (CMSF / LOC draft-05).
+
 # moq-encoder-player
 
 MOQT version: draft-18 (negotiated via ALPN token `moqt-18`). Media packaging can be CMSF (CMAF packaging, [draft-ietf-moq-cmsf](https://datatracker.ietf.org/doc/draft-ietf-moq-cmsf/)), which is what the encoder and the player default to, or LOC (Low Overhead Media Container) [draft-05](https://datatracker.ietf.org/doc/draft-ietf-moq-loc/05/) (LOCv5); both ends have to be set to the same one, see [Packager](#packager)
