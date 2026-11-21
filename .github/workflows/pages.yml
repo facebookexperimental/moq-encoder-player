@@ -1,0 +1,80 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Deploy the <moq-video> test page to GitHub Pages on every push to the
+# default branch (main). The deployed page is demo/player/webcomponent.html,
+# served with the whole demo/ tree and the freshly built dist/ tree so its
+# relative imports (../../dist/player/moq_video.js, ../shared/demo.css) and
+# the workers resolved relative to that module keep working under the
+# project-site subpath. Playback itself still needs a relay reachable from
+# the visitor's browser; the page defaults to https://localhost:4433/moq,
+# which only works when the visitor runs a relay locally.
+
+name: Deploy webcomponent test page to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; a queued deployment must not cancel
+# the one in progress, or the site could be left half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (TypeScript -> dist/)
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # Stage exactly what the site needs, preserving the repo layout the
+      # demos assume: demo/ at the artifact root and dist/ beside it.
+      # Everything else (sources, node_modules, CI files) stays out of
+      # the artifact. .nojekyll keeps Pages from running Jekyll, which
+      # would otherwise ignore underscore-prefixed paths.
+      - name: Stage demo and built output
+        run: |
+          rm -rf pages
+          mkdir -p pages
+          cp -R demo dist pages/
+          touch pages/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
