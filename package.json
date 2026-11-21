@@ -5,6 +5,16 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./player_webcomponent": {
+      "types": "./dist/player_webcomponent.d.ts",
+      "default": "./dist/player_webcomponent.js"
+    }
+  },
   "files": [
     "dist"
   ],
